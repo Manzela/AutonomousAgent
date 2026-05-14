@@ -44,6 +44,7 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - Phase 1 acceptance runbook (`docs/runbooks/phase1-acceptance.md`)
 - Telegram bot setup runbook (`docs/runbooks/telegram-bot-setup.md`)
 - Recovery runbook (`docs/runbooks/recovery.md`)
+- Worktree-per-phase branching: `phase/1` branch created from `main`, checked out at `.worktrees/phase1/`. See [ADR 0007](docs/decisions/0007-worktree-per-phase-branching.md) and [docs/conventions/branching.md](docs/conventions/branching.md).
 
 ### Notes
 - All entries above are part of Phase 1; nothing has yet been merged to `main` until Phase 1 acceptance passes.

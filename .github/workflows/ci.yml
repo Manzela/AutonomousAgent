@@ -152,7 +152,7 @@ jobs:
 
       - name: Run hadolint on Dockerfile.hermes
         if: steps.detect.outputs.has_dockerfiles == 'true'
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: deploy/Dockerfile.hermes
           ignore: DL3008,DL3009,DL3015  # apt pinning, layer caching warnings — noisy
@@ -160,7 +160,7 @@ jobs:
 
       - name: Run hadolint on Dockerfile.shell-sandbox
         if: steps.detect.outputs.has_dockerfiles == 'true'
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: deploy/sandboxes/Dockerfile.shell-sandbox
           ignore: DL3008,DL3009,DL3015

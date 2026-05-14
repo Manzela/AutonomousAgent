@@ -1,0 +1,133 @@
+budget:
+  daily_usd_cap: 100
+  per_task_input_tokens: null
+  per_task_output_tokens: null
+  per_conversation_context: null
+  alert_at_pct: 75
+
+retries:
+  litellm_max_attempts: 5
+  litellm_initial_backoff_s: 1
+  litellm_max_backoff_s: 60
+  litellm_jitter_pct: 25
+
+sandboxes:
+  shell_timeout_s: 120
+  shell_max_output_bytes: 1048576
+  modal_max_lifetime_s: 600
+  modal_network_allowlist: ["pypi.org", "github.com", "registry.npmjs.org"]
+  daytona_max_lifetime_s: 600
+
+agent:
+  max_turns_per_task: 50
+  max_concurrent_tasks: 3
+
+nudges:
+  memory_curator_interval: "0 */6 * * *"
+  skill_extractor_min_turns: 10
+  skill_extractor_min_distinct_tools: 3
+  vector_consolidator_cron: "17 3 * * *"
+  vector_prune_age_days: 90
+
+health:
+  healthchecks_io_ping_interval_s: 300
+  agent_heartbeat_interval_s: 60
+  vm_uptime_alert_threshold_s: 300
+
+snapshots:
+  gcs_snapshot_cron: "0 4 * * *"
+  gcs_retention_days: 30
+  local_db_vacuum_cron: "0 5 * * 0"
+
+approval:
+  always_ask_patterns:
+    - "rm -rf"
+    - "git push --force"
+    - "DROP TABLE"
+    - "kubectl delete"
+    - "*.private*"
+  never_ask_patterns:
+    - "ls *"
+    - "cat *"
+    - "git status"
+    - "git log*"
+    - "rg *"
+  default_for_unknown: ask
+  timeout_s: 300
+
+rl_rewards:
+  weights:
+    user_explicit: 1.0
+    user_implicit: 0.3
+    self_consistency: 0.2
+    task_completion: 0.5
+  reward_horizon_turns: 20
+  exclude_session_if_lt_turns: 5
+
+rl_training:
+  enabled: false
+  trigger_check_cron: "0 12 * * *"
+  preflight_thresholds:
+    min_new_trajectories_since_last_run: 1000
+    min_days_since_last_run: 3
+    require_dataset_schema_valid: true
+    require_eval_baseline_exists: true
+    require_reward_sanity_score_min: 0.7
+    require_gpu_quota_available: true
+    require_monthly_run_budget_available: true
+  approval:
+    require_telegram_approval: true
+    approval_timeout_h: 12
+    auto_disable_after_n_consecutive_deferrals: 3
+    estimate_includes_in_message:
+      - eval_baseline
+      - est_cost_usd
+      - est_duration_h
+      - dataset_hash
+      - dataset_size
+  guardrails:
+    max_runs_per_month: 4
+    max_run_duration_h: 24
+    gpu_type: a100-80gb
+    gpu_max_count: 1
+    estimated_cost_per_run_usd: 100
+    abort_if_actual_cost_exceeds_estimate_pct: 50
+    abort_if_eval_regresses_pct: 10
+  post_training:
+    auto_register_if_eval_improves_pct: 2
+    auto_swap_in_litellm_if_eval_improves_pct: null
+    alert_telegram_on:
+      - run_started
+      - run_completed
+      - run_failed
+      - model_registered
+
+alerts:
+  budget_pct_of_daily_cap: [50, 75, 90, 100]
+  budget_pct_of_monthly_cap: [75, 90, 100]
+  agent_heartbeat_missed_count: 3
+  vm_unreachable_min: 5
+  litellm_error_rate_5min: 0.20
+  sandbox_oom_count_5min: 5
+  scrubber_secret_leak_attempts_per_hour: 1
+  rl_run_failed: always
+  rl_run_cost_overrun_pct: 25
+  trajectory_shipper_lag_min: 30
+
+notify_channels:
+  telegram_chat_id: null
+  cloud_monitoring_email: null
+  pagerduty_routing_key: null
+
+log_retention:
+  cloud_logging_days: 30
+  cloud_logging_to_gcs_coldline_after_days: 30
+  cloud_logging_delete_after_days: 365
+  trace_sampling:
+    head_sample_rate: 1.0
+    tail_sample_errors: true
+    tail_sample_slow_p99: true
+
+local_logs_dev:
+  rotate_size_mb: 100
+  keep_files: 5

@@ -1,0 +1,211 @@
+name: autonomous-agent
+
+x-restart: &restart_policy
+  restart: unless-stopped
+
+x-logging: &json_logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "100m"
+      max-file: "5"
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
+
+volumes:
+  hermes-data:
+  chroma-data:
+  honcho-db-data:
+  workspace:
+
+services:
+
+  # ---- Storage layer ----
+
+  honcho-db:
+    image: postgres:16-alpine
+    <<: [*restart_policy, *json_logging]
+    environment:
+      POSTGRES_USER: honcho
+      POSTGRES_PASSWORD_FILE: /run/secrets/honcho_db_password
+      POSTGRES_DB: honcho
+    secrets:
+      - honcho_db_password
+    volumes:
+      - honcho-db-data:/var/lib/postgresql/data
+      - ./honcho/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honcho -d honcho"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  chroma:
+    image: chromadb/chroma:latest
+    <<: [*restart_policy, *json_logging]
+    environment:
+      CHROMA_SERVER_AUTHN_PROVIDER: chromadb.auth.token_authn.TokenAuthenticationServerProvider
+      CHROMA_SERVER_AUTHN_CREDENTIALS_FILE: /run/secrets/chroma_token
+      CHROMA_SERVER_AUTHN_CREDENTIALS_PROVIDER: chromadb.auth.token_authn.TokenConfigServerAuthCredentialsProvider
+    secrets:
+      - chroma_token
+    volumes:
+      - chroma-data:/chroma/chroma
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v2/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---- Honcho ----
+
+  honcho:
+    image: plasticlabs/honcho:latest
+    <<: [*restart_policy, *json_logging]
+    environment:
+      DATABASE_URL: postgresql://honcho:${HONCHO_DB_PASSWORD}@honcho-db:5432/honcho
+      OPENAI_API_KEY: sk-dummy-litellm-handles-auth  # pragma: allowlist secret
+      OPENAI_BASE_URL: http://litellm-proxy:4000
+    networks: [internal]
+    depends_on:
+      honcho-db: {condition: service_healthy}
+      litellm-proxy: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---- LiteLLM proxy ----
+
+  litellm-proxy:
+    image: ghcr.io/berriai/litellm:main-latest
+    <<: [*restart_policy, *json_logging]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+    secrets:
+      - litellm_master_key
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+    networks: [internal, egress]
+    depends_on:
+      otel-collector: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4000/health/liveliness"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---- OTel collector ----
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    <<: [*restart_policy, *json_logging]
+    command: ["--config", "/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel/collector.dev.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks: [internal, egress]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:13133/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ---- Sandboxes ----
+
+  shell-sandbox:
+    build:
+      context: ./sandboxes
+      dockerfile: Dockerfile.shell-sandbox
+    image: autonomousagent/shell-sandbox:0.1.0
+    <<: [*restart_policy, *json_logging]
+    network_mode: none
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+    volumes:
+      - workspace:/workspace
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 200
+    command: ["sleep", "infinity"]
+
+  playwright-mcp:
+    image: mcr.microsoft.com/playwright/mcp:latest
+    <<: [*restart_policy, *json_logging]
+    networks: [internal, egress]
+    mem_limit: 2g
+    cpus: 2.0
+
+  # ---- Hermes core ----
+
+  hermes-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.hermes
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    command: ["serve", "--port", "7878"]
+    environment:
+      HERMES_CONFIG: /app/config/cli-config.yaml
+      LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: hermes-agent
+    secrets:
+      - litellm_master_key
+    volumes:
+      - hermes-data:/data
+      - ../config/hermes:/app/config:ro
+      - ../config/limits.yaml:/app/config/limits.yaml:ro
+      - ../config/scrubber-patterns.yaml:/app/config/scrubber-patterns.yaml:ro
+      - ../config/toolsets.yaml:/app/config/toolsets.yaml:ro
+    networks: [internal]
+    depends_on:
+      litellm-proxy: {condition: service_healthy}
+      chroma: {condition: service_healthy}
+      honcho: {condition: service_healthy}
+      otel-collector: {condition: service_started}
+      shell-sandbox: {condition: service_started}
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7878/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  hermes-gateway:
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    command: ["gateway", "start"]
+    environment:
+      HERMES_CONFIG: /app/config/cli-config.yaml
+      HERMES_AGENT_URL: http://hermes-agent:7878
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_SERVICE_NAME: hermes-gateway
+    env_file:
+      - ../secrets/telegram.env  # decrypted at bootstrap
+    volumes:
+      - hermes-data:/data:ro
+      - ../config/hermes:/app/config:ro
+    networks: [internal, egress]
+    depends_on:
+      hermes-agent: {condition: service_healthy}
+
+secrets:
+  honcho_db_password:
+    file: ../secrets/honcho-db-password
+  litellm_master_key:
+    file: ../secrets/litellm-master-key
+  chroma_token:
+    file: ../secrets/chroma-token

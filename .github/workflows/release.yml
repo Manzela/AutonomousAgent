@@ -1,0 +1,76 @@
+# Release workflow — fires when a tag matching `v*` or `phase*-accepted` is pushed.
+# Generates release notes from Conventional Commits and creates a GitHub release.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "phase*-accepted"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code (full history needed for release-notes generation)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine previous tag
+        id: prev_tag
+        run: |
+          # Find the most recent tag before this one
+          CURRENT_TAG="${GITHUB_REF#refs/tags/}"
+          PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${CURRENT_TAG}\$" | head -n 1)
+          echo "current=${CURRENT_TAG}" >> "$GITHUB_OUTPUT"
+          echo "previous=${PREV_TAG:-}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release notes
+        id: notes
+        env:
+          CURRENT: ${{ steps.prev_tag.outputs.current }}
+          PREVIOUS: ${{ steps.prev_tag.outputs.previous }}
+        run: |
+          {
+            echo "## Changes since ${PREVIOUS:-the beginning of the project}"
+            echo ""
+            if [ -n "${PREVIOUS}" ]; then
+              RANGE="${PREVIOUS}..${CURRENT}"
+            else
+              RANGE="${CURRENT}"
+            fi
+            echo "### Features"
+            git log --no-merges --pretty=format:'- %s (%h)' "${RANGE}" -- | grep -E '^- feat(\(.+\))?:' || echo "- _(none)_"
+            echo
+            echo "### Fixes"
+            git log --no-merges --pretty=format:'- %s (%h)' "${RANGE}" -- | grep -E '^- fix(\(.+\))?:' || echo "- _(none)_"
+            echo
+            echo "### Security"
+            git log --no-merges --pretty=format:'- %s (%h)' "${RANGE}" -- | grep -E '^- security(\(.+\))?:' || echo "- _(none)_"
+            echo
+            echo "### Documentation"
+            git log --no-merges --pretty=format:'- %s (%h)' "${RANGE}" -- | grep -E '^- docs(\(.+\))?:' || echo "- _(none)_"
+            echo
+            echo "### Other"
+            git log --no-merges --pretty=format:'- %s (%h)' "${RANGE}" -- | grep -Ev '^- (feat|fix|security|docs)(\(.+\))?:' || echo "- _(none)_"
+            echo
+            echo "---"
+            echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS}...${CURRENT}"
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.prev_tag.outputs.current }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.prev_tag.outputs.current, '-rc') || contains(steps.prev_tag.outputs.current, '-alpha') || contains(steps.prev_tag.outputs.current, '-beta') }}
+          generate_release_notes: false  # we generate our own

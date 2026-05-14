@@ -1,0 +1,56 @@
+# gitleaks configuration — what to scan and what to exempt.
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "AutonomousAgent gitleaks config"
+
+# Use upstream's well-tested rules
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------
+# Repository-specific allowlist
+# ---------------------------------------------------------------------
+[allowlist]
+description = "Project-specific allowed patterns"
+
+# Skip the upstream Hermes Agent submodule and worktrees entirely
+paths = [
+  '''hermes-agent/.*''',
+  '''\.worktrees/.*''',
+  # sops-encrypted files are by definition secret-shaped
+  '''secrets/.*\.sops$''',
+  # Test fixtures contain intentional fake secrets
+  '''tests/.*''',
+  # uv.lock contains many hashes that look high-entropy
+  '''uv\.lock$''',
+  # detect-secrets baseline
+  '''\.secrets\.baseline$''',
+  # Documentation that includes example/dummy values for explanation
+  '''docs/runbooks/telegram-bot-setup\.md$''',
+  '''docs/runbooks/recovery\.md$''',
+  '''docs/conventions/commit-messages\.md$''',
+  '''docs/superpowers/.*\.md$''',
+  '''README\.md$''',
+  '''CHANGELOG\.md$''',
+  '''SECURITY\.md$''',
+]
+
+# Allow strings that are clearly placeholders or dummies
+regexes = [
+  '''sk-dummy-litellm-handles-auth''',
+  '''<paste-token-here>''',
+  '''<your-numeric-id>''',
+  '''<YOUR-UUID>''',
+  '''<AGE_PUBLIC_KEY>''',
+  '''81286733\+Manzela@users\.noreply\.github\.com''',
+]
+
+# Common false positives in our project
+stopwords = [
+  "example",
+  "dummy",
+  "placeholder",
+  "FAKE",
+  "test",
+  "fixture",
+]

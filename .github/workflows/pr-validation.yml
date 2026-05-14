@@ -1,0 +1,72 @@
+# PR validation — enforces our conventions on PR title and branch name.
+# See docs/conventions/commit-messages.md and docs/conventions/branching.md.
+
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, edited, reopened]
+
+permissions:
+  pull-requests: read
+  contents: read
+
+jobs:
+  validate-title:
+    name: Conventional Commit title
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Lint PR title
+        uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Allowed types: feat, fix, chore, docs, refactor, test, perf, security, build, ci, revert
+          types: |
+            feat
+            fix
+            chore
+            docs
+            refactor
+            test
+            perf
+            security
+            build
+            ci
+            revert
+          # Allowed scopes (empty list = no enforcement, just types)
+          requireScope: false
+          subjectPattern: ^(?![A-Z]).+$
+          subjectPatternError: |
+            The PR title subject must start with a lowercase letter (after `type(scope):`).
+            See docs/conventions/commit-messages.md.
+          # Disallow merge-related cruft titles
+          ignoreLabels: |
+            bot
+            dependencies
+
+  validate-branch-name:
+    name: Branch name follows convention
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check branch name pattern
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          # Allowed patterns:
+          #   phase/[1-4]
+          #   hotfix/<short-desc>
+          #   dependabot/...
+          #   docs/<short-desc>
+          #   chore/<short-desc>
+          if [[ "$BRANCH" =~ ^(phase/[1-4]|hotfix/[a-z0-9-]+|dependabot/.+|docs/[a-z0-9-]+|chore/[a-z0-9-]+|feat/[a-z0-9-]+|fix/[a-z0-9-]+|test/[a-z0-9-]+|refactor/[a-z0-9-]+)$ ]]; then
+            echo "✓ Branch name '$BRANCH' matches convention"
+          else
+            echo "::error::Branch name '$BRANCH' does not match convention."
+            echo "::error::Allowed: phase/{1-4}, hotfix/<desc>, feat/<desc>, fix/<desc>, docs/<desc>, chore/<desc>, refactor/<desc>, test/<desc>, dependabot/*"
+            echo "::error::See docs/conventions/branching.md"
+            exit 1
+          fi

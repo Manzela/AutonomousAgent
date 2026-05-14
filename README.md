@@ -5,6 +5,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Phase](https://img.shields.io/badge/Phase-1%20(local)-blue.svg)](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-green.svg)](docs/conventions/commit-messages.md)
+[![CI](https://github.com/Manzela/AutonomousAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/Manzela/AutonomousAgent/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/codeql.yml)
+[![Secret Scan](https://github.com/Manzela/AutonomousAgent/actions/workflows/secret-scan.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/secret-scan.yml)
+[![Built with Hermes Agent](https://img.shields.io/badge/Built%20on-Hermes%20Agent-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 
 ## What this is
 
@@ -87,14 +91,71 @@ To set up your environment:
 ./scripts/verify-prereqs.sh    # checks Docker, sops, age, gcloud, etc.
 ```
 
+## Workflow & Branching
+
+Each phase lives on its own long-running branch checked out under `.worktrees/`:
+
+```
+main                           ← branch: main      (only accepted, tagged work)
+.worktrees/phase1/             ← branch: phase/1   (Phase 1 development)
+.worktrees/phase2/             ← branch: phase/2   (created when Phase 2 starts)
+.worktrees/phase3/             ← branch: phase/3
+.worktrees/phase4/             ← branch: phase/4
+```
+
+`main` only contains commits that have passed an acceptance gate. Phase work merges into `main` via `--no-ff` + a `phaseN-accepted` tag. Hotfixes branch from `main` and cherry-pick to active phase branches.
+
+Full details: [docs/conventions/branching.md](docs/conventions/branching.md), [ADR 0007](docs/decisions/0007-worktree-per-phase-branching.md).
+
+## CI/CD
+
+Every PR runs:
+
+| Check | Tool | Config |
+|---|---|---|
+| Python lint + format | `ruff` + `ruff-format` | `pyproject.toml` |
+| Shell lint | `shellcheck` | strict mode + quoting |
+| YAML lint | `yamllint` | [.yamllint.yml](.yamllint.yml) |
+| Dockerfile lint | `hadolint` | advisory baseline |
+| Markdown lint | `markdownlint-cli2` | [.markdownlint.jsonc](.markdownlint.jsonc) |
+| Unit tests | `pytest` | `tests/unit/` |
+| Config validation | `lib/limits_validator` | `config/limits-schema.json` |
+| Compose render | `docker compose config` | `deploy/docker-compose.yml` |
+| PR title format | Conventional Commits | [.github/workflows/pr-validation.yml](.github/workflows/pr-validation.yml) |
+| Branch name format | regex against allowed patterns | same |
+| CodeQL | static analysis | weekly + per-PR |
+| Secret scan | `gitleaks` + `detect-secrets` | [.gitleaks.toml](.gitleaks.toml) + [.secrets.baseline](.secrets.baseline) |
+| Dependency review | GitHub Dependency Review | per-PR |
+| Dependency updates | Dependabot | weekly grouped PRs |
+| Release notes | auto-generated from Conventional Commits | on `v*` or `phaseN-accepted` tag |
+
+Workflow definitions: [.github/workflows/](.github/workflows/).
+
 ## Security
 
-- All secrets sops-encrypted with age recipients
-- Never commit plaintext secrets — `pre-commit` blocks the obvious patterns; `detect-secrets` baseline catches the rest
-- The agent's own output passes through the scrubber before persist or send
+- All secrets sops-encrypted at rest with age recipients
+- Never commit plaintext secrets — pre-commit blocks the obvious patterns; `detect-secrets` baseline + `gitleaks` in CI catch the rest
+- Output secret scrubbing on every model response and tool result
+- Approval gates for destructive operations (Telegram inline keyboard)
 - `panic` mode halts everything immediately; see [docs/runbooks/recovery.md](docs/runbooks/recovery.md)
+- Egress allowlist prevents arbitrary outbound traffic
 
-Report security issues privately (don't open public issues).
+Vulnerability disclosure: see [SECURITY.md](SECURITY.md). Do **not** open public issues for security vulnerabilities.
+
+## Reference Documentation
+
+| Document | Purpose |
+|---|---|
+| [Architecture spec](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md) | The complete design (12 sections) |
+| [Phase 1 plan](docs/superpowers/plans/2026-05-14-phase1-local-deployment.md) | ~50-task implementation plan for Phase 1 |
+| [Session-complete artifact](docs/superpowers/specs/SESSION-COMPLETE-2026-05-15-hermes-agent-full-architecture.md) | Resume-from-cold reference; survives context loss |
+| [Architecture index](docs/architecture/README.md) | Reading order for newcomers |
+| [Architecture Decision Records](docs/decisions/) | Point-in-time decisions and tradeoffs (MADR format) |
+| [Conventions](docs/conventions/) | Commits, branching, logging, code style |
+| [Runbooks](docs/runbooks/) | Operational procedures (acceptance, recovery, setup) |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to work in this repo |
+| [CHANGELOG.md](CHANGELOG.md) | All notable changes |
+| [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy |
 
 ## License
 

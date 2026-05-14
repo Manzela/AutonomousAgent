@@ -1,0 +1,32 @@
+// markdownlint-cli2 configuration.
+// Reference: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+{
+  "default": true,
+
+  // MD013 (line length): we use long lines for tables, code, and URL fragments
+  "MD013": false,
+
+  // MD033 (inline HTML): allowed; we use <table>, <details>, <p align> in README
+  "MD033": false,
+
+  // MD041 (first-line-h1): not all docs are pages with H1 (changelog uses ##)
+  "MD041": false,
+
+  // MD024 (no-duplicate-heading): allow same heading text in different sections
+  "MD024": { "siblings_only": true },
+
+  // MD025 (single-h1): some long docs have multiple top-level sections
+  "MD025": false,
+
+  // MD026 (trailing punctuation in heading): allow ?, : in headings
+  "MD026": { "punctuation": ".,;!" },
+
+  // MD036 (no-emphasis-as-heading): we use bold for table-cell emphasis
+  "MD036": false,
+
+  // MD040 (fenced code blocks must specify language): we mostly do but allow plain
+  "MD040": false,
+
+  // MD046 (code block style): allow both fenced (```) and indented
+  "MD046": { "style": "fenced" }
+}

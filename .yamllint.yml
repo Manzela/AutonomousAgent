@@ -1,0 +1,39 @@
+# yamllint config — sensible defaults for our YAML.
+# Reference: https://yamllint.readthedocs.io/en/stable/configuration.html
+
+extends: default
+
+rules:
+  # Allow long lines; modern editors wrap and our compose files have URL values
+  line-length:
+    max: 200
+    level: warning
+
+  # Enforce 2-space indent (our convention; see docs/conventions/code-style.md)
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # We use comments liberally for explanation
+  comments:
+    require-starting-space: true
+    min-spaces-from-content: 1
+
+  # Allow lower-case truthy values (yes/no, on/off) common in compose files
+  truthy:
+    allowed-values: ['true', 'false', 'yes', 'no', 'on', 'off']
+    check-keys: false
+
+  # Don't enforce trailing newline check on files we know vary
+  new-line-at-end-of-file: enable
+
+  # Document start markers (---) are optional; we don't require them
+  document-start: disable
+
+ignore: |
+  hermes-agent/
+  .worktrees/
+  .venv/
+  node_modules/
+  .secrets.baseline

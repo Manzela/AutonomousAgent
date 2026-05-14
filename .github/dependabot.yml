@@ -1,0 +1,84 @@
+# Dependabot configuration — automated dependency updates.
+#
+# Coverage:
+#   - GitHub Actions (every workflow uses-line)
+#   - Python dependencies via pyproject.toml + uv.lock
+#   - Docker base images in our Dockerfiles + docker-compose
+#
+# Security updates fire immediately; routine updates batched weekly to reduce noise.
+
+version: 2
+
+updates:
+  # ----------------------------------------------------------------
+  # GitHub Actions — runs in workflow files
+  # ----------------------------------------------------------------
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: [dependencies, github-actions]
+    commit-message:
+      prefix: "chore(ci)"
+      include: scope
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ----------------------------------------------------------------
+  # Python — pyproject.toml at repo root
+  # ----------------------------------------------------------------
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 10
+    labels: [dependencies, python]
+    commit-message:
+      prefix: "chore(deps)"
+      include: scope
+    groups:
+      python-dev:
+        dependency-type: development
+        patterns: ["*"]
+      python-prod:
+        dependency-type: production
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # ----------------------------------------------------------------
+  # Docker — Dockerfiles in deploy/
+  # ----------------------------------------------------------------
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(deploy)"
+      include: scope
+
+  - package-ecosystem: docker
+    directory: /deploy/sandboxes
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "chore(deploy)"
+      include: scope

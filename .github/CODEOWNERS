@@ -1,0 +1,18 @@
+# CODEOWNERS — automatic reviewer assignment for PRs.
+# Pattern reference: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Single-developer project; everything is owned by @Manzela.
+# When the project gains contributors, sub-paths can be reassigned to specialists.
+
+* @Manzela
+
+# Security-critical paths get explicit ownership for clarity even though the
+# global rule already catches them. Listed below for future fork/team scenarios.
+
+/secrets/                  @Manzela
+/.sops.yaml                @Manzela
+/.gitleaks.toml            @Manzela
+/.secrets.baseline         @Manzela
+/.github/workflows/        @Manzela
+/SECURITY.md               @Manzela
+/docs/decisions/           @Manzela   # ADRs are architectural; require deliberate review

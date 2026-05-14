@@ -45,9 +45,26 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - Telegram bot setup runbook (`docs/runbooks/telegram-bot-setup.md`)
 - Recovery runbook (`docs/runbooks/recovery.md`)
 - Worktree-per-phase branching: `phase/1` branch created from `main`, checked out at `.worktrees/phase1/`. See [ADR 0007](docs/decisions/0007-worktree-per-phase-branching.md) and [docs/conventions/branching.md](docs/conventions/branching.md).
+- Architecture spec, Phase 1 plan, and session-complete artifact under `docs/superpowers/specs/` and `docs/superpowers/plans/`.
+
+### Added (CI/CD + SDLC infrastructure)
+- GitHub Actions workflows under `.github/workflows/`:
+  - `ci.yml` — Python lint (ruff/format), shell lint (shellcheck), YAML lint (yamllint), Dockerfile lint (hadolint), Markdown lint (markdownlint-cli2), unit tests (pytest), config validation (limits.yaml schema), compose render validation
+  - `secret-scan.yml` — gitleaks (full history) + detect-secrets (baseline diff), per-PR + weekly schedule
+  - `codeql.yml` — CodeQL static analysis for Python, per-PR + weekly schedule
+  - `dependency-review.yml` — dependency vulnerability + license review on every PR
+  - `pr-validation.yml` — Conventional Commits PR title + branch name pattern enforcement
+  - `release.yml` — auto-generated release notes on `v*` or `phase*-accepted` tag push
+- `.github/dependabot.yml` — weekly grouped dependency updates for GitHub Actions, Python (pip), and Docker base images
+- `.github/CODEOWNERS` — automatic reviewer assignment
+- `SECURITY.md` — vulnerability disclosure policy with severity tiers and response timelines
+- `.gitleaks.toml` — gitleaks configuration with project-specific allowlist
+- `.yamllint.yml` — yamllint configuration (2-space indent, 200-col line length, common project conventions)
+- `.markdownlint.jsonc` — markdownlint-cli2 configuration tuned for our docs style
+- README badges for CI / CodeQL / Secret Scan status, plus expanded sections for Workflow & Branching, CI/CD checklist, Security policy, and a Reference Documentation index
 
 ### Notes
 - All entries above are part of Phase 1; nothing has yet been merged to `main` until Phase 1 acceptance passes.
 - See [docs/superpowers/plans/2026-05-14-phase1-local-deployment.md](docs/superpowers/plans/2026-05-14-phase1-local-deployment.md) for the implementation plan that produces these changes.
 
-[Unreleased]: https://github.com/<owner>/AutonomousAgent/compare/v0.0.0...HEAD
+[Unreleased]: https://github.com/Manzela/AutonomousAgent/compare/v0.0.0...HEAD

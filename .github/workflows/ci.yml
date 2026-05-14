@@ -1,0 +1,324 @@
+# Continuous Integration — runs on every PR and on push to main.
+#
+# Jobs are designed to be cheap, fast, and informative. They run in parallel
+# where possible and fail loudly with actionable error messages.
+#
+# Matrix:
+#   - lint            (ruff, ruff-format check) — Python style + format
+#   - shell-lint      (shellcheck)              — Bash strict-mode + quoting
+#   - yaml-lint       (yamllint)                — YAML well-formedness
+#   - dockerfile-lint (hadolint)                — Dockerfile best practices
+#   - unit-tests      (pytest)                  — Unit test suite
+#   - validate-config (limits_validator)        — limits.yaml schema validity
+#   - validate-compose (docker compose config)  — Compose render check
+#   - markdown-lint   (markdownlint-cli2)       — Markdown style
+#
+# Each job is independent and can be re-run individually from the GitHub UI.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Python lint: ruff (linter) + ruff-format (formatter check)
+  # ------------------------------------------------------------------
+  lint-python:
+    name: Lint Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up uv (fast Python installer)
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Install ruff
+        run: uv tool install ruff
+
+      - name: Skip if no Python files
+        id: detect
+        run: |
+          if find . -name "*.py" -not -path "./.venv/*" -not -path "./hermes-agent/*" -not -path "./.worktrees/*" | grep -q .; then
+            echo "has_python=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_python=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Python files at this revision; skipping lint."
+          fi
+
+      - name: Run ruff check
+        if: steps.detect.outputs.has_python == 'true'
+        run: ruff check . --exclude hermes-agent --exclude .worktrees --output-format=github
+
+      - name: Run ruff format check
+        if: steps.detect.outputs.has_python == 'true'
+        run: ruff format --check . --exclude hermes-agent --exclude .worktrees
+
+  # ------------------------------------------------------------------
+  # Shell lint: shellcheck on every executable bash script
+  # ------------------------------------------------------------------
+  lint-shell:
+    name: Lint Shell
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+
+      - name: Skip if no shell scripts
+        id: detect
+        run: |
+          if find scripts -name "*.sh" 2>/dev/null | grep -q .; then
+            echo "has_shell=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_shell=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No shell scripts at this revision; skipping shellcheck."
+          fi
+
+      - name: Run shellcheck
+        if: steps.detect.outputs.has_shell == 'true'
+        run: |
+          # Ignore SC1091 (sourced file) since secrets/.env paths are dynamic.
+          shellcheck --severity=warning --exclude=SC1091 scripts/*.sh
+
+  # ------------------------------------------------------------------
+  # YAML lint
+  # ------------------------------------------------------------------
+  lint-yaml:
+    name: Lint YAML
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pipx install yamllint
+
+      - name: Run yamllint
+        run: |
+          # Skip Hermes upstream submodule and worktrees (not our concern)
+          yamllint -c .yamllint.yml \
+            $(find . -type f \( -name "*.yml" -o -name "*.yaml" \) \
+              -not -path "./.git/*" \
+              -not -path "./hermes-agent/*" \
+              -not -path "./.worktrees/*" \
+              -not -path "./.venv/*" \
+              2>/dev/null) || true
+          # Re-run failing-mode for files that should pass strictly
+          if [ -d deploy ]; then
+            yamllint -c .yamllint.yml deploy/
+          fi
+
+  # ------------------------------------------------------------------
+  # Dockerfile lint with hadolint
+  # ------------------------------------------------------------------
+  lint-dockerfile:
+    name: Lint Dockerfiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Skip if no Dockerfiles
+        id: detect
+        run: |
+          if find deploy -name "Dockerfile*" 2>/dev/null | grep -q .; then
+            echo "has_dockerfiles=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_dockerfiles=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Dockerfiles at this revision; skipping hadolint."
+          fi
+
+      - name: Run hadolint on Dockerfile.hermes
+        if: steps.detect.outputs.has_dockerfiles == 'true'
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: deploy/Dockerfile.hermes
+          ignore: DL3008,DL3009,DL3015  # apt pinning, layer caching warnings — noisy
+        continue-on-error: true  # advisory until we baseline
+
+      - name: Run hadolint on Dockerfile.shell-sandbox
+        if: steps.detect.outputs.has_dockerfiles == 'true'
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: deploy/sandboxes/Dockerfile.shell-sandbox
+          ignore: DL3008,DL3009,DL3015
+        continue-on-error: true
+
+  # ------------------------------------------------------------------
+  # Unit tests via pytest
+  # ------------------------------------------------------------------
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: false  # skip Hermes submodule for unit tests; it's not needed
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: latest
+
+      - name: Skip if no test suite
+        id: detect
+        run: |
+          if [ -f pyproject.toml ] && [ -d tests/unit ]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::pyproject.toml or tests/unit/ missing at this revision; skipping unit tests."
+          fi
+
+      - name: Set up Python
+        if: steps.detect.outputs.has_tests == 'true'
+        run: uv venv .venv --python 3.11
+
+      - name: Install dev dependencies
+        if: steps.detect.outputs.has_tests == 'true'
+        run: |
+          source .venv/bin/activate
+          uv pip install -e ".[dev]"
+
+      - name: Run pytest
+        if: steps.detect.outputs.has_tests == 'true'
+        run: |
+          source .venv/bin/activate
+          pytest tests/unit/ -v --tb=short --junitxml=junit.xml
+
+      - name: Upload test results
+        if: always() && steps.detect.outputs.has_tests == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-results
+          path: junit.xml
+          retention-days: 14
+
+  # ------------------------------------------------------------------
+  # Validate config/limits.yaml against its JSON schema
+  # ------------------------------------------------------------------
+  validate-config:
+    name: Validate config/limits.yaml
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Skip if no limits.yaml
+        id: detect
+        run: |
+          if [ -f config/limits.yaml ] && [ -f config/limits-schema.json ] && [ -f lib/limits_validator.py ]; then
+            echo "has_config=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_config=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::config/limits.yaml or schema or validator missing; skipping."
+          fi
+
+      - name: Set up Python and install validator deps
+        if: steps.detect.outputs.has_config == 'true'
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install pyyaml jsonschema
+
+      - name: Validate limits.yaml
+        if: steps.detect.outputs.has_config == 'true'
+        run: |
+          source .venv/bin/activate
+          python -m lib.limits_validator config/limits.yaml
+
+  # ------------------------------------------------------------------
+  # Validate docker-compose YAML renders cleanly
+  # ------------------------------------------------------------------
+  validate-compose:
+    name: Validate docker-compose
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Skip if no compose files
+        id: detect
+        run: |
+          if [ -f deploy/docker-compose.yml ]; then
+            echo "has_compose=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_compose=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::deploy/docker-compose.yml missing; skipping compose validation."
+          fi
+
+      - name: Stub secrets and env vars (so eager loading succeeds)
+        if: steps.detect.outputs.has_compose == 'true'
+        run: |
+          mkdir -p secrets
+          # env_file is loaded eagerly by compose at parse time
+          touch secrets/telegram.env
+          # secrets: blocks are lazy, but the files must exist for `config` to validate paths
+          touch secrets/honcho-db-password
+          touch secrets/litellm-master-key
+          touch secrets/chroma-token
+          # Stub HOME-mounted gcloud creds path
+          mkdir -p ~/.config/gcloud
+
+      - name: Render production stack
+        if: steps.detect.outputs.has_compose == 'true'
+        run: docker compose -f deploy/docker-compose.yml config > /dev/null
+
+      - name: Render dev override
+        if: steps.detect.outputs.has_compose == 'true' && hashFiles('deploy/docker-compose.dev.yml') != ''
+        run: docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml config > /dev/null
+
+      - name: Render test override
+        if: steps.detect.outputs.has_compose == 'true' && hashFiles('deploy/docker-compose.test.yml') != ''
+        run: docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.test.yml config > /dev/null
+
+  # ------------------------------------------------------------------
+  # Markdown lint (Markdownlint CLI 2)
+  # ------------------------------------------------------------------
+  lint-markdown:
+    name: Lint Markdown
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Run markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@v17
+        with:
+          globs: |
+            **/*.md
+            !hermes-agent/**
+            !.worktrees/**
+            !node_modules/**
+            !CHANGELOG.md
+        continue-on-error: true  # advisory until we tune the ruleset

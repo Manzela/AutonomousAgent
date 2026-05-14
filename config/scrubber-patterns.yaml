@@ -1,0 +1,43 @@
+# Each pattern: name, regex, replacement, severity (info/warning/critical).
+# Replacement uses Python re.sub format (\1, \2, ...).
+patterns:
+  - name: aws_access_key_id
+    regex: '\bAKIA[0-9A-Z]{16}\b'
+    replacement: '[REDACTED:aws_access_key_id]'
+    severity: critical
+  - name: aws_secret_access_key
+    regex: '\b(?i:aws[_-]?(?:secret[_-]?)?access[_-]?key)["\s:=]+([A-Za-z0-9/+=]{40})\b'
+    replacement: '\1[REDACTED:aws_secret_access_key]'
+    severity: critical
+  - name: openai_api_key
+    regex: '\bsk-[A-Za-z0-9_-]{20,}\b'
+    replacement: '[REDACTED:openai_or_anthropic_key]'
+    severity: critical
+  - name: anthropic_api_key
+    regex: '\bsk-ant-[A-Za-z0-9_-]{20,}\b'
+    replacement: '[REDACTED:anthropic_key]'
+    severity: critical
+  - name: github_pat
+    regex: '\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b'
+    replacement: '[REDACTED:github_pat]'
+    severity: critical
+  - name: jwt
+    regex: '\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b'
+    replacement: '[REDACTED:jwt]'
+    severity: warning
+  - name: gcp_service_account_json
+    regex: '"type":\s*"service_account"'
+    replacement: '[REDACTED:gcp_sa_json_marker]'
+    severity: critical
+  - name: private_key_pem
+    regex: '-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----'
+    replacement: '[REDACTED:private_key_pem]'
+    severity: critical
+  - name: telegram_bot_token
+    regex: '\b\d{8,12}:[A-Za-z0-9_-]{30,40}\b'
+    replacement: '[REDACTED:telegram_bot_token]'
+    severity: critical
+  - name: high_entropy_hex
+    regex: '\b[a-f0-9]{40,}\b'
+    replacement: '[REDACTED:high_entropy_hex]'
+    severity: info  # info-only because of false-positive risk

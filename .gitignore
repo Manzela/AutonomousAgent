@@ -1,0 +1,48 @@
+# Secrets — anything ending in plaintext values, never committed
+secrets/*.env
+secrets/*.json
+secrets/*.txt
+!secrets/*.sops
+!secrets/.gitignore
+!secrets/README.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Docker / runtime
+*.log
+logs/
+trajectories/queue/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/settings.json
+
+# Hermes runtime data (lives in volumes; never committed)
+hermes-data/
+chroma-data/
+honcho-db-data/
+phoenix-data/
+workspace/
+snapshots/
+
+# Local overrides
+docker-compose.override.yml
+.env
+.env.local

@@ -1,0 +1,66 @@
+# Hermes Agent CLI configuration for Phase 1 local deployment.
+# Full reference: hermes-agent/cli-config.yaml.example
+
+llm:
+  provider: openai-compatible
+  base_url: http://litellm-proxy:4000
+  api_key: sk-dummy-litellm-handles-auth  # pragma: allowlist secret
+  model_id: vertex_ai/claude-opus-4-7
+  max_tokens: 8192
+  temperature: 0.7
+
+memory:
+  enabled: true
+  data_dir: /data
+  curator_cron: "0 */6 * * *"
+
+skills:
+  enabled: true
+  skills_dir: /app/skills
+  extractor:
+    min_turns: 10
+    min_distinct_tools: 3
+
+session:
+  storage: sqlite
+  sqlite_path: /data/sessions.db
+  fts5_enabled: true
+
+honcho:
+  enabled: true
+  base_url: http://honcho:8001
+
+vector_memory:
+  enabled: true
+  provider: chroma
+  chroma_url: http://chroma:8000
+  collection: hermes_memory
+
+mcp_servers:
+  github:
+    type: stdio
+    command: gh-mcp-server
+  context7:
+    type: http
+    url: https://mcp.context7.com/sse
+  playwright:
+    type: http
+    url: http://playwright-mcp:8002
+
+terminal_backend: docker
+docker_backend:
+  container: shell-sandbox
+  workspace_path: /workspace
+
+telemetry:
+  otel_endpoint: http://otel-collector:4317
+  service_name: hermes-agent
+  service_version: 0.1.0
+
+approval:
+  config_path: /app/config/limits.yaml  # reads `approval` section from limits
+
+logs:
+  format: json
+  level: INFO
+  destination: stdout

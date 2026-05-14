@@ -1,0 +1,9 @@
+{
+  "session_id": "test-session-001",
+  "turns": [
+    {"role": "user", "content": "List files in workspace"},
+    {"role": "assistant", "tool_calls": [{"name": "ls", "args": {"path": "/workspace"}}]},
+    {"role": "tool", "content": "(empty)"},
+    {"role": "assistant", "content": "Workspace is empty."}
+  ]
+}

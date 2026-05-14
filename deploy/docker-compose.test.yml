@@ -1,0 +1,39 @@
+# Test overrides: mocked LLM, ephemeral storage, no real network egress.
+
+services:
+  litellm-proxy:
+    image: stoplight/prism:5
+    command: ["mock", "-h", "0.0.0.0", "-p", "4000", "/specs/openai-mock.yaml"]
+    volumes:
+      - ../tests/fixtures/openai-mock.yaml:/specs/openai-mock.yaml:ro
+    networks: [internal]
+    depends_on: []
+    secrets: []
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/v1/models"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  chroma:
+    tmpfs:
+      - /chroma/chroma:size=256M
+    volumes: []
+
+  honcho-db:
+    tmpfs:
+      - /var/lib/postgresql/data:size=256M
+    volumes: []
+
+  hermes-gateway:
+    profiles: ["disabled"]  # no Telegram in tests
+
+  hermes-agent:
+    volumes:
+      - ../config/hermes:/app/config:ro
+      - ../config/limits.yaml:/app/config/limits.yaml:ro
+      - ../config/scrubber-patterns.yaml:/app/config/scrubber-patterns.yaml:ro
+      - ../config/toolsets.yaml:/app/config/toolsets.yaml:ro
+      # No persistent hermes-data — ephemeral for tests
+    tmpfs:
+      - /data:size=256M

@@ -9,13 +9,13 @@ patterns:
     regex: '\b(?i:aws[_-]?(?:secret[_-]?)?access[_-]?key)["\s:=]+([A-Za-z0-9/+=]{40})\b'
     replacement: '\1[REDACTED:aws_secret_access_key]'
     severity: critical
-  - name: openai_api_key
-    regex: '\bsk-[A-Za-z0-9_-]{20,}\b'
-    replacement: '[REDACTED:openai_or_anthropic_key]'
-    severity: critical
   - name: anthropic_api_key
     regex: '\bsk-ant-[A-Za-z0-9_-]{20,}\b'
     replacement: '[REDACTED:anthropic_key]'
+    severity: critical
+  - name: openai_api_key
+    regex: '\bsk-[A-Za-z0-9_-]{20,}\b'
+    replacement: '[REDACTED:openai_or_anthropic_key]'
     severity: critical
   - name: github_pat
     regex: '\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b'

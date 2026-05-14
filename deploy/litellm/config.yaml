@@ -1,0 +1,38 @@
+model_list:
+  - model_name: vertex_ai/claude-opus-4-7
+    litellm_params:
+      model: vertex_ai/claude-opus-4-7
+      vertex_project: i-for-ai
+      vertex_location: us-east5
+  - model_name: vertex_ai/claude-sonnet-4-6
+    litellm_params:
+      model: vertex_ai/claude-sonnet-4-6
+      vertex_project: i-for-ai
+      vertex_location: us-east5
+
+litellm_settings:
+  drop_params: true
+  num_retries: 5
+  request_timeout: 600
+  telemetry: false  # we use OTel directly, not LiteLLM's anonymous telemetry
+  cache: false
+  set_verbose: false
+  json_logs: true
+
+  # Budget enforcement
+  max_budget: 100  # USD per day, hard cap
+  budget_duration: 24h
+  alert_to_webhook_url: ""  # set after Phase 2 cloud monitoring is up
+
+  callbacks: ["otel"]
+
+# OpenTelemetry export
+litellm_otel:
+  endpoint: http://otel-collector:4317
+  service_name: litellm-proxy
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: ""  # no LiteLLM DB; we own state
+  enforced_params: []
+  proxy_batch_write_at: 60

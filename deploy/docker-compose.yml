@@ -161,9 +161,13 @@ services:
     volumes:
       - hermes-data:/data
       - ../config/hermes:/app/config:ro
-      - ../config/limits.yaml:/app/config/limits.yaml:ro
-      - ../config/scrubber-patterns.yaml:/app/config/scrubber-patterns.yaml:ro
-      - ../config/toolsets.yaml:/app/config/toolsets.yaml:ro
+      # The three files below CANNOT be mounted into /app/config/* because
+      # docker forbids a bind-mount file inside a bind-mount directory when
+      # the file's source is outside that directory's source. Mounted at
+      # /app/runtime/* and resolved by the agent via env-var paths.
+      - ../config/limits.yaml:/app/runtime/limits.yaml:ro
+      - ../config/scrubber-patterns.yaml:/app/runtime/scrubber-patterns.yaml:ro
+      - ../config/toolsets.yaml:/app/runtime/toolsets.yaml:ro
     depends_on:
       litellm-proxy: {condition: service_healthy}
       otel-collector: {condition: service_started}

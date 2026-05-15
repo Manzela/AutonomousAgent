@@ -43,7 +43,8 @@ if [ -f telegram.env ]; then
 fi
 
 if [ -f honcho-db-password ]; then
-  export HONCHO_DB_PASSWORD="$(cat honcho-db-password)"
+  HONCHO_DB_PASSWORD="$(cat honcho-db-password)"
+  export HONCHO_DB_PASSWORD
 fi
 
 # Derive secrets/hermes-provider.env so the `hermes` container sees the

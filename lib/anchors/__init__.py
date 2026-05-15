@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 from typing import Any
 
@@ -60,12 +61,12 @@ def _slash_confirm(raw_args: str) -> str:
     return "TODO(P1-1 task 6): transition draft_locked → locked."
 
 
-def _setup_new_cli(subparser) -> None:
+def _setup_new_cli(subparser: argparse.ArgumentParser) -> None:
     """`hermes new <intent>` — operator-side spec creation (CLI, not Telegram)."""
     subparser.add_argument("intent", help="Free-form intent string for the new TaskSpec.")
 
 
-def _handle_new_cli(args) -> int:
+def _handle_new_cli(args: argparse.Namespace) -> int:
     """Handler for `hermes new <intent>`."""
     print(f"TODO(P1-1 task 6): create draft TaskSpec for intent: {args.intent}")
     return 0

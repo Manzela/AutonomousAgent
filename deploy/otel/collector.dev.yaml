@@ -16,14 +16,18 @@ processors:
     spike_limit_percentage: 25
 
 exporters:
+  # otlphttp is the modern alias name (otelcol-contrib >= 0.150 deprecated otlphttp/)
   otlphttp/phoenix:
     endpoint: http://phoenix:6006/v1/traces
     tls:
       insecure: true
+    # Phoenix accepts OTLP HTTP on 6006/v1/traces in addition to its UI
   debug:
     verbosity: basic
   file:
-    path: /var/log/otel/traces.jsonl
+    # Use /tmp (always writable in container, no volume mount needed).
+    # For persistent dev traces, swap to a named volume + bind mount.
+    path: /tmp/otel-traces.jsonl
 
 service:
   pipelines:

@@ -37,7 +37,10 @@ services:
   # for the future re-enable; it's gitignored from runtime when not used.
 
   chroma:
-    image: chromadb/chroma:latest
+    # Pinned (was :latest) — Chroma's slim image rotates quickly and
+    # `latest` shipped a build whose API surface and bundled tools we
+    # cannot fully predict.
+    image: chromadb/chroma:0.5.20
     <<: [*restart_policy, *json_logging]
     environment:
       CHROMA_SERVER_AUTHN_PROVIDER: chromadb.auth.token_authn.TokenAuthenticationServerProvider
@@ -48,24 +51,38 @@ services:
     volumes:
       - chroma-data:/chroma/chroma
     networks: [internal]
+    # The chroma image does NOT ship curl — use python's stdlib (always present).
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/v2/heartbeat"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/api/v2/heartbeat',timeout=3); sys.exit(0 if r.status==200 else 1)"
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   # ---- Honcho (disabled in Phase 1; see note at honcho-db removal above) ----
 
   # ---- LiteLLM proxy ----
 
   litellm-proxy:
-    image: ghcr.io/berriai/litellm:main-latest
+    # Pinned (was main-latest) — recent main builds require a Postgres
+    # database for prisma-managed spend tracking and fail to start without
+    # DATABASE_URL. v1.50.0 is the last release before that requirement
+    # became mandatory; for our single-tenant use case we don't need
+    # spend persistence beyond OTel.
+    image: ghcr.io/berriai/litellm:v1.50.0-stable
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+      # Tell prisma to skip migrations entirely (no DB)
+      DISABLE_SCHEMA_UPDATE: "True"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
     secrets:
       - litellm_master_key
     volumes:
@@ -74,11 +91,13 @@ services:
     networks: [internal, egress]
     depends_on:
       otel-collector: {condition: service_started}
+    # litellm v1.50 ships with curl present.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:4000/health/liveliness"]
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 30s
 
   # ---- OTel collector ----
 

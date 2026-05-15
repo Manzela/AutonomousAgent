@@ -23,7 +23,7 @@ PER_AXIS_MODEL = {
     "code-correctness": "vertex_ai/claude-sonnet-4-6",
     "safety": "vertex_ai/claude-opus-4-7",
     "scope-fit": "vertex_ai/claude-sonnet-4-6",
-    "completeness": "vertex_ai/gemini-3.1-pro",
+    "completeness": "vertex_ai/gemini-3.1-pro-preview",
 }
 
 

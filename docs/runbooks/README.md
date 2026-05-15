@@ -7,6 +7,7 @@ Operational procedures for running and recovering AutonomousAgent.
 | Runbook | When to use |
 |---|---|
 | [telegram-bot-setup.md](telegram-bot-setup.md) | One-time: create the Telegram bot for the messaging gateway |
+| [healthcheck-cron-setup.md](healthcheck-cron-setup.md) | One-time per host: register the 5-minute Healthchecks.io ping cron |
 | [phase1-acceptance.md](phase1-acceptance.md) | End of Phase 1: validate the local deployment works end-to-end |
 | [recovery.md](recovery.md) | Stack is broken, panic was invoked, or you need to restore from a snapshot |
 

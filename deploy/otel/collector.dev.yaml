@@ -1,0 +1,45 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # otlphttp is the modern alias name (otelcol-contrib >= 0.150 deprecated otlphttp/)
+  otlphttp/phoenix:
+    endpoint: http://phoenix:6006/v1/traces
+    tls:
+      insecure: true
+    # Phoenix accepts OTLP HTTP on 6006/v1/traces in addition to its UI
+  debug:
+    verbosity: basic
+  # The `file` exporter was removed; otelcol-contrib's default user can't
+  # write to /tmp without an explicit volume + chown, and we don't need
+  # an additional sink (Phoenix already persists traces and Cloud Trace
+  # will be the prod sink in Phase 2).
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlphttp/phoenix]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]

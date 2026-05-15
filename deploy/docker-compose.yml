@@ -1,0 +1,233 @@
+name: autonomous-agent
+
+x-restart: &restart_policy
+  restart: unless-stopped
+
+x-logging: &json_logging
+  logging:
+    driver: json-file
+    options:
+      max-size: "100m"
+      max-file: "5"
+
+networks:
+  internal:
+    driver: bridge
+    internal: true
+  egress:
+    driver: bridge
+
+volumes:
+  hermes-data:
+  # chroma-data: removed (Phase 1 — using Chroma Cloud instead of self-hosted)
+  # honcho-db-data: removed (Phase 1 — Honcho disabled)
+  workspace:
+
+services:
+
+  # ---- Storage layer ----
+  #
+  # NOTE: honcho-db service removed for Phase 1. Honcho integration is
+  # disabled in cli-config.yaml because upstream Honcho doesn't publish a
+  # public Docker image. To re-enable: build Honcho's Dockerfile from source,
+  # restore both this service and the `honcho` service below, and flip
+  # `honcho.enabled: true` in config/hermes/cli-config.yaml.
+  #
+  # The encrypted secret `secrets/honcho-db-password.sops` is preserved
+  # for the future re-enable; it's gitignored from runtime when not used.
+
+  # ---- Chroma (cloud-managed in Phase 1) ----
+  #
+  # The previous self-hosted `chroma` service was removed in favor of
+  # Chroma Cloud (api.trychroma.com). Reasons:
+  #   - One less service to operate / health-check
+  #   - Chroma's recent `latest` image churn was a constant source of
+  #     drift (auth API renames, dropped curl in slim base, etc.)
+  #   - Chroma Cloud provides snapshots + replication out of the box
+  #
+  # The connection details are passed to hermes-agent via
+  # `secrets/chroma-cloud.env.sops` (decrypted at bootstrap):
+  #   CHROMA_CLOUD_API_KEY  — bearer token
+  #   CHROMA_CLOUD_HOST     — api.trychroma.com
+  #   CHROMA_CLOUD_TENANT   — default_tenant
+  #   CHROMA_CLOUD_DATABASE — default_database
+
+  # ---- Honcho (disabled in Phase 1; see note at honcho-db removal above) ----
+
+  # ---- LiteLLM proxy ----
+
+  litellm-proxy:
+    # Pinned (was main-latest, then v1.50.0-stable which doesn't exist as
+    # a published tag). v1.84.0 is the most recent non-prerelease tag on
+    # the BerriAI/litellm GHCR registry as of 2026-05-15. Recent builds
+    # try to run prisma migrations at startup; we suppress that by setting
+    # DISABLE_SCHEMA_UPDATE + STORE_MODEL_IN_DB=False below — for our
+    # single-tenant use case we don't need spend persistence beyond OTel.
+    image: ghcr.io/berriai/litellm:v1.84.0
+    <<: [*restart_policy, *json_logging]
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+      # Tell prisma to skip migrations entirely (no DB)
+      DISABLE_SCHEMA_UPDATE: "True"
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      LITELLM_NO_TELEMETRY: "True"
+    secrets:
+      - litellm_master_key
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+    networks: [internal, egress]
+    depends_on:
+      otel-collector: {condition: service_started}
+    # litellm v1.84 image does NOT ship curl; use the bundled venv python.
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:4000/health/liveliness',timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ---- OTel collector ----
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    <<: [*restart_policy, *json_logging]
+    command: ["--config", "/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel/collector.dev.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks: [internal, egress]
+    # The opentelemetry-collector-contrib distroless image ships no probe
+    # binaries (no wget, curl, sh, nc, python). With nothing to exec, the
+    # only signal we have is the container's own restart-on-failure policy
+    # and its OTLP receiver behavior visible to upstream services.
+
+  # ---- Sandboxes ----
+
+  shell-sandbox:
+    build:
+      context: ./sandboxes
+      dockerfile: Dockerfile.shell-sandbox
+    image: autonomousagent/shell-sandbox:0.1.0
+    <<: [*restart_policy, *json_logging]
+    network_mode: none
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+    volumes:
+      - workspace:/workspace
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 200
+    command: ["sleep", "infinity"]
+
+  # ---- GitHub MCP (sidecar HTTP mode) ----
+  #
+  # Official server image from github/github-mcp-server. Hermes connects
+  # via HTTP MCP protocol (matches Context7 pattern, simpler than stdio).
+  # Toolset = `all`: actions, code_security, copilot, dependabot, discussions,
+  # gists, git, issues, labels, notifications, orgs, projects, pull_requests,
+  # repos, secret_protection, security_advisories, stargazers, users.
+  # Required PAT scopes: repo, workflow, read:org, security_events.
+
+  github-mcp:
+    image: ghcr.io/github/github-mcp-server:latest
+    <<: [*restart_policy, *json_logging]
+    command: ["http", "--port", "8003", "--toolsets", "all"]
+    environment:
+      # PAT injected via env_file (decrypted at bootstrap from sops). The
+      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
+      # and uses it to authenticate every API call to api.github.com.
+      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_pat
+    secrets:
+      - github_pat
+    networks: [internal, egress]   # needs api.github.com egress
+    # The official ghcr.io/github/github-mcp-server image is distroless —
+    # no wget, curl, sh, python. Nothing to exec for a healthcheck. The
+    # server logs "HTTP server listening addr=:8003" when ready; downstream
+    # services (hermes) verify connectivity via 401 probes during startup.
+
+  # ---- Playwright MCP (deferred from Phase 1) ----
+  #
+  # The mcr.microsoft.com/playwright/mcp:latest image's default entrypoint
+  # exits cleanly when no client connects (it expects to be invoked with
+  # specific MCP-server flags that we haven't researched). Disabled for
+  # Phase 1; cli-config.yaml's `mcp_servers.playwright` entry is also
+  # commented out. Will re-enable in a follow-up commit once the right
+  # invocation is confirmed.
+
+  # ---- Hermes core ----
+  #
+  # The original spec called for two services (hermes-agent serving an HTTP
+  # admin endpoint + hermes-gateway long-polling Telegram). Reality: hermes
+  # has no `serve` subcommand. The gateway IS the agent — it long-polls
+  # Telegram, dispatches each message through the agent loop, and persists
+  # state to the shared volume. So we collapse to one service running
+  # `hermes gateway run` (the foreground variant; `start` requires
+  # systemd/launchd which isn't present in our distroless container).
+
+  hermes:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.hermes
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    command: ["gateway", "run"]
+    environment:
+      HERMES_CONFIG: /app/config/cli-config.yaml
+      LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: hermes
+      # Auto-approve hooks/commands without a TTY (we're in Docker).
+      HERMES_ACCEPT_HOOKS: "1"
+    env_file:
+      - ../secrets/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
+      - ../secrets/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
+      - ../secrets/hermes-provider.env  # OPENAI_API_KEY, OPENAI_BASE_URL, HERMES_*_MODEL
+    secrets:
+      - litellm_master_key
+    # Egress: needs to reach Telegram (api.telegram.org), Chroma Cloud
+    # (api.trychroma.com), GitHub MCP, Context7. Tool calls that route
+    # to shell-sandbox stay on the internal network.
+    networks: [internal, egress]
+    volumes:
+      - hermes-data:/data
+      # Hermes reads its config from /root/.hermes/config.yaml exclusively
+      # (the HERMES_CONFIG env var is for `hermes config edit`, not for
+      # runtime resolution). Mount our cli-config.yaml directly there.
+      - ../config/hermes/cli-config.yaml:/root/.hermes/config.yaml:ro
+      - ../config/hermes/AGENTS.md:/root/.hermes/AGENTS.md:ro
+      - ../config/hermes/MEMORY.md:/root/.hermes/MEMORY.md:ro
+      - ../config/hermes/USER.md:/root/.hermes/USER.md:ro
+      - ../config/hermes/SOUL.md:/root/.hermes/SOUL.md:ro
+      # Canonical SDLC + security playbook for any new-repo creation work.
+      # AGENTS.md instructs the agent to consult this BEFORE creating repos.
+      - ../docs/conventions/new-repo-template.md:/root/.hermes/new-repo-template.md:ro
+      # Our project's own runtime configs (limits/scrubber/toolsets) live
+      # at /app/runtime/ — separate from Hermes' config namespace.
+      - ../config/limits.yaml:/app/runtime/limits.yaml:ro
+      - ../config/scrubber-patterns.yaml:/app/runtime/scrubber-patterns.yaml:ro
+      - ../config/toolsets.yaml:/app/runtime/toolsets.yaml:ro
+    depends_on:
+      litellm-proxy: {condition: service_healthy}
+      otel-collector: {condition: service_started}
+      shell-sandbox: {condition: service_started}
+      github-mcp: {condition: service_started}    # distroless image has no probe binaries
+      # chroma: removed (Phase 1 — Chroma Cloud, no local service)
+      # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
+
+secrets:
+  # honcho_db_password: removed (Phase 1 — Honcho disabled)
+  # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
+  litellm_master_key:
+    file: ../secrets/litellm-master-key
+  github_pat:
+    file: ../secrets/github-pat

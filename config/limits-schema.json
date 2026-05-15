@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["budget", "retries", "sandboxes", "agent", "nudges", "health", "snapshots", "approval", "rl_rewards", "rl_training", "alerts", "notify_channels", "log_retention", "local_logs_dev"],
+  "additionalProperties": false,
+  "properties": {
+    "budget": {
+      "type": "object",
+      "required": ["daily_usd_cap", "alert_at_pct"],
+      "properties": {
+        "daily_usd_cap": {"type": "number", "minimum": 0},
+        "per_task_input_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "per_task_output_tokens": {"type": ["integer", "null"], "minimum": 0},
+        "per_conversation_context": {"type": ["integer", "null"], "minimum": 0},
+        "alert_at_pct": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "retries": {
+      "type": "object",
+      "required": ["litellm_max_attempts", "litellm_initial_backoff_s", "litellm_max_backoff_s", "litellm_jitter_pct"],
+      "properties": {
+        "litellm_max_attempts": {"type": "integer", "minimum": 1, "maximum": 20},
+        "litellm_initial_backoff_s": {"type": "number", "minimum": 0},
+        "litellm_max_backoff_s": {"type": "number", "minimum": 1},
+        "litellm_jitter_pct": {"type": "integer", "minimum": 0, "maximum": 100}
+      }
+    },
+    "sandboxes": {
+      "type": "object",
+      "required": ["shell_timeout_s", "shell_max_output_bytes", "modal_max_lifetime_s", "modal_network_allowlist", "daytona_max_lifetime_s"],
+      "properties": {
+        "shell_timeout_s": {"type": "integer", "minimum": 1},
+        "shell_max_output_bytes": {"type": "integer", "minimum": 1024},
+        "modal_max_lifetime_s": {"type": "integer", "minimum": 1},
+        "modal_network_allowlist": {"type": "array", "items": {"type": "string"}},
+        "daytona_max_lifetime_s": {"type": "integer", "minimum": 1}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "required": ["max_turns_per_task", "max_concurrent_tasks"],
+      "properties": {
+        "max_turns_per_task": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "max_concurrent_tasks": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    },
+    "nudges": {
+      "type": "object",
+      "required": ["memory_curator_interval", "skill_extractor_min_turns", "skill_extractor_min_distinct_tools", "vector_consolidator_cron", "vector_prune_age_days"],
+      "properties": {
+        "memory_curator_interval": {"type": "string"},
+        "skill_extractor_min_turns": {"type": "integer", "minimum": 1},
+        "skill_extractor_min_distinct_tools": {"type": "integer", "minimum": 1},
+        "vector_consolidator_cron": {"type": "string"},
+        "vector_prune_age_days": {"type": "integer", "minimum": 1}
+      }
+    },
+    "health": {
+      "type": "object",
+      "required": ["healthchecks_io_ping_interval_s", "agent_heartbeat_interval_s", "vm_uptime_alert_threshold_s"],
+      "properties": {
+        "healthchecks_io_ping_interval_s": {"type": "integer", "minimum": 30},
+        "agent_heartbeat_interval_s": {"type": "integer", "minimum": 10},
+        "vm_uptime_alert_threshold_s": {"type": "integer", "minimum": 60}
+      }
+    },
+    "snapshots": {
+      "type": "object",
+      "required": ["gcs_snapshot_cron", "gcs_retention_days", "local_db_vacuum_cron"],
+      "properties": {
+        "gcs_snapshot_cron": {"type": "string"},
+        "gcs_retention_days": {"type": "integer", "minimum": 1},
+        "local_db_vacuum_cron": {"type": "string"}
+      }
+    },
+    "approval": {
+      "type": "object",
+      "required": ["always_ask_patterns", "never_ask_patterns", "default_for_unknown", "timeout_s"],
+      "properties": {
+        "always_ask_patterns": {"type": "array", "items": {"type": "string"}},
+        "never_ask_patterns": {"type": "array", "items": {"type": "string"}},
+        "default_for_unknown": {"type": "string", "enum": ["ask", "allow", "deny"]},
+        "timeout_s": {"type": "integer", "minimum": 1}
+      }
+    },
+    "rl_rewards": {
+      "type": "object",
+      "required": ["weights", "reward_horizon_turns", "exclude_session_if_lt_turns"],
+      "properties": {
+        "weights": {
+          "type": "object",
+          "required": ["user_explicit", "user_implicit", "self_consistency", "task_completion"],
+          "properties": {
+            "user_explicit": {"type": "number"},
+            "user_implicit": {"type": "number"},
+            "self_consistency": {"type": "number"},
+            "task_completion": {"type": "number"}
+          }
+        },
+        "reward_horizon_turns": {"type": "integer", "minimum": 1},
+        "exclude_session_if_lt_turns": {"type": "integer", "minimum": 1}
+      }
+    },
+    "rl_training": {
+      "type": "object",
+      "required": ["enabled", "trigger_check_cron", "preflight_thresholds", "approval", "guardrails", "post_training"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "trigger_check_cron": {"type": "string"},
+        "preflight_thresholds": {"type": "object"},
+        "approval": {"type": "object"},
+        "guardrails": {"type": "object"},
+        "post_training": {"type": "object"}
+      }
+    },
+    "alerts": {"type": "object"},
+    "notify_channels": {
+      "type": "object",
+      "properties": {
+        "telegram_chat_id": {"type": ["string", "integer", "null"]},
+        "cloud_monitoring_email": {"type": ["string", "null"]},
+        "pagerduty_routing_key": {"type": ["string", "null"]}
+      }
+    },
+    "log_retention": {"type": "object"},
+    "local_logs_dev": {"type": "object"}
+  }
+}

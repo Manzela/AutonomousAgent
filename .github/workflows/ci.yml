@@ -53,7 +53,10 @@ jobs:
           version: latest
 
       - name: Install ruff
-        run: uv tool install ruff
+        # Pinned to match .pre-commit-config.yaml (astral-sh/ruff-pre-commit
+        # rev v0.6.9). Bumping requires updating both in lockstep — format
+        # heuristics change across ruff minor versions.
+        run: uv tool install ruff@0.6.9
 
       - name: Skip if no Python files
         id: detect

@@ -89,15 +89,17 @@ check "hermes container alive" bash -c '
   [ "$status" = "running" ] || { echo "status=$status"; exit 1; }
 '
 
-echo "Smoke test 8/8: Gemini 3.1 Pro round-trip via litellm → Vertex AI"
+echo "Smoke test 8/8: Gemini 3.1 Pro Preview round-trip via litellm → Vertex AI"
 # Verifies the model_list addition from P1-2 Task 14 is reachable end-to-end.
 # Required by P1-2's judge.completeness routing (uses 1M ctx).
-check "real LLM call (vertex_ai/gemini-3.1-pro)" bash -c '
+# Gemini 3.1 Pro Preview is a thinking model — give it a generous max_tokens budget
+# (thoughts + 1 token of answer typically takes 100+ tokens internally).
+check "real LLM call (vertex_ai/gemini-3.1-pro-preview)" bash -c '
   master_key=$(cat "'"$ROOT"'/secrets/litellm-master-key" 2>/dev/null)
   resp=$(curl -fsS -X POST http://localhost:4000/v1/chat/completions \
     -H "Authorization: Bearer ${master_key}" \
     -H "Content-Type: application/json" \
-    -d "{\"model\":\"vertex_ai/gemini-3.1-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: pong\"}],\"max_tokens\":10}")
+    -d "{\"model\":\"vertex_ai/gemini-3.1-pro-preview\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with only: pong\"}],\"max_tokens\":2048}")
   echo "$resp" | grep -iq pong || { echo "no pong in: $resp"; exit 1; }
 '
 

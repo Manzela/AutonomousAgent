@@ -6,7 +6,15 @@ model:
   # name in plugins/model-providers/ for "any other OpenAI-compatible
   # endpoint". LiteLLM accepts the OpenAI chat-completions schema at
   # `${OPENAI_BASE_URL}/v1/chat/completions`.
-  default: "vertex_ai/claude-opus-4-7"
+  #
+  # Default model: Sonnet 4.6 (was Opus 4.7). Sonnet has ~10× higher
+  # per-minute quota on Vertex AI and is still frontier-tier for routine
+  # work. Opus 4.7 stays in the LiteLLM model_list and is invoked
+  # explicitly for `class:reasoning` / `class:headline` once the multi-LLM
+  # mesh (P3) ships per-class routing tags. Until then, treating Sonnet
+  # as the default keeps the bot responsive without paying the Opus
+  # quota tax on every casual message.
+  default: "vertex_ai/claude-sonnet-4-6"
   provider: "custom"
   base_url: "http://litellm-proxy:4000"
   # api_key is read from the OPENAI_API_KEY env var (set by

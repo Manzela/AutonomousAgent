@@ -3,12 +3,12 @@ model_list:
     litellm_params:
       model: vertex_ai/claude-opus-4-7
       vertex_project: i-for-ai
-      vertex_location: us-east5
+      vertex_location: europe-west1   # Anthropic Vertex region migrated from us-east5 to dodge Claude Code's parallel quota usage on i-for-ai + lower latency from Israel (~50ms vs ~140ms). Fresh per-region per-minute quota bucket.
   - model_name: vertex_ai/claude-sonnet-4-6
     litellm_params:
       model: vertex_ai/claude-sonnet-4-6
       vertex_project: i-for-ai
-      vertex_location: us-east5
+      vertex_location: europe-west1   # Anthropic Vertex region migrated from us-east5 to dodge Claude Code's parallel quota usage on i-for-ai + lower latency from Israel (~50ms vs ~140ms). Fresh per-region per-minute quota bucket.
 
 litellm_settings:
   drop_params: true

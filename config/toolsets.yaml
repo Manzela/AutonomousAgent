@@ -7,6 +7,13 @@
 #   cloud_sandbox    — Modal/Daytona ephemeral microVM (Phase 2 onward)
 #
 # First match wins. Unknown tools fall through to `default_tier`.
+#
+# evaluate_after (P1-2): controls whether the orchestrator hook dispatches
+# the 4-judge evaluator panel after a tool call from this route.
+#   false → read-only / pure-info routes; too cheap to be worth evaluating.
+#   true  → mutating, side-effecting, dispatching, or arbitrary-code routes;
+#           judge panel is worth the cost. When in doubt, prefer `true`
+#           (orchestrator can opt out per-call later).
 
 default_tier: shell_sandbox
 
@@ -14,15 +21,20 @@ routes:
   # in-process (safe reads)
   - match: ["read_file", "ls", "grep", "rg", "find_files", "glob"]
     tier: in_process
+    evaluate_after: false
   # shell sandbox
   - match: ["shell", "bash", "git", "jq", "run_command"]
     tier: shell_sandbox
+    evaluate_after: true
   # browser sandbox
   - match: ["browser_*", "playwright_*", "web_scrape", "screenshot"]
     tier: browser_sandbox
+    evaluate_after: true
   # external HTTPS MCPs
   - match: ["github_*", "context7_*"]
     tier: external_https
+    evaluate_after: true
   # arbitrary code execution
   - match: ["run_python", "run_javascript", "exec_code", "code_interpreter"]
     tier: cloud_sandbox
+    evaluate_after: true

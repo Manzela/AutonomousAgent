@@ -7,14 +7,19 @@ model:
   # endpoint". LiteLLM accepts the OpenAI chat-completions schema at
   # `${OPENAI_BASE_URL}/v1/chat/completions`.
   #
-  # Default model: Sonnet 4.6 (was Opus 4.7). Sonnet has ~10× higher
-  # per-minute quota on Vertex AI and is still frontier-tier for routine
-  # work. Opus 4.7 stays in the LiteLLM model_list and is invoked
-  # explicitly for `class:reasoning` / `class:headline` once the multi-LLM
-  # mesh (P3) ships per-class routing tags. Until then, treating Sonnet
-  # as the default keeps the bot responsive without paying the Opus
-  # quota tax on every casual message.
-  default: "vertex_ai/claude-sonnet-4-6"
+  # Default: Opus 4.7 — the highest-quality model in our mesh, per the
+  # quality-first selection criterion. Opus quota was previously hitting
+  # 429s in us-east5 (saturated by Claude Code's parallel usage on
+  # i-for-AI) and in europe-west1 (sales-managed regional cap of 0).
+  # Both fixed by switching the LiteLLM `vertex_location` to `global`
+  # — i-for-AI has a 24M tokens/min global Opus quota at <1% utilization.
+  #
+  # Once the multi-LLM mesh (P3) ships per-class routing tags, ~80% of
+  # traffic (chatter, memory curation, routine sub-agent dispatch) will
+  # route to Sonnet 4.6 automatically while Opus stays the default for
+  # `class:reasoning` / `class:headline`. Until then, all traffic gets
+  # the highest-quality model.
+  default: "vertex_ai/claude-opus-4-7"
   provider: "custom"
   base_url: "http://litellm-proxy:4000"
   # api_key is read from the OPENAI_API_KEY env var (set by

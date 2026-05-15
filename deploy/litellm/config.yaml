@@ -3,12 +3,12 @@ model_list:
     litellm_params:
       model: vertex_ai/claude-opus-4-7
       vertex_project: i-for-ai
-      vertex_location: europe-west1   # Anthropic Vertex region migrated from us-east5 to dodge Claude Code's parallel quota usage on i-for-ai + lower latency from Israel (~50ms vs ~140ms). Fresh per-region per-minute quota bucket.
+      vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
   - model_name: vertex_ai/claude-sonnet-4-6
     litellm_params:
       model: vertex_ai/claude-sonnet-4-6
       vertex_project: i-for-ai
-      vertex_location: europe-west1   # Anthropic Vertex region migrated from us-east5 to dodge Claude Code's parallel quota usage on i-for-ai + lower latency from Israel (~50ms vs ~140ms). Fresh per-region per-minute quota bucket.
+      vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
 
 litellm_settings:
   drop_params: true

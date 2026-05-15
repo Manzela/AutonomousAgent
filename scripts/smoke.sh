@@ -11,6 +11,17 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/deploy/docker-compose.dev.yml")
 
+# Auto-decrypt secrets if any plaintext is missing — smoke tests need
+# the Telegram bot token + LiteLLM master key to run their probes.
+# Idempotent: decrypt-secrets.sh re-runs cleanly even if files already exist.
+if [ ! -f "$ROOT/secrets/telegram.env" ] || [ ! -f "$ROOT/secrets/litellm-master-key" ]; then
+  echo "→ Decrypting secrets (plaintext missing)..."
+  "$ROOT/scripts/decrypt-secrets.sh" >/dev/null 2>&1 || {
+    echo "✗ decrypt-secrets.sh failed; check sops + age key at ~/.config/sops/age/keys.txt"
+    exit 1
+  }
+fi
+
 failures=0
 check() {
   local name="$1"

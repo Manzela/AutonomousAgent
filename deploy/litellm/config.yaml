@@ -9,6 +9,11 @@ model_list:
       model: vertex_ai/claude-sonnet-4-6
       vertex_project: i-for-ai
       vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro
+      vertex_project: i-for-ai
+      vertex_location: us-central1   # Default region for Gemini 3.1 Pro on Vertex; revisit if latency matters. P1-2 judge.completeness routing target (1M ctx).
 
 litellm_settings:
   drop_params: true

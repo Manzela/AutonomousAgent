@@ -41,7 +41,8 @@ def compute_spec_sha(spec: TaskSpec) -> str:
 class SpecStore:
     """Persistence layer for TaskSpec instances.
 
-    File layout: ``<root>/<spec_id>.json``. Atomic via tmp+rename.
+    File layout: ``<root>/<spec_id>.json``. Atomic via tmp + os.replace
+    (POSIX rename that overwrites target; works on Windows too).
     """
 
     def __init__(self, root: Path):

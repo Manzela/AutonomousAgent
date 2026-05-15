@@ -57,9 +57,7 @@ mcp_servers:
   context7:
     type: http
     url: https://mcp.context7.com/sse
-  playwright:
-    type: http
-    url: http://playwright-mcp:8002
+  # playwright: deferred from Phase 1 — see compose-level note for details.
 
 terminal_backend: docker
 docker_backend:

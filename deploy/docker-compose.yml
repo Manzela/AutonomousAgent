@@ -126,12 +126,14 @@ services:
     pids_limit: 200
     command: ["sleep", "infinity"]
 
-  playwright-mcp:
-    image: mcr.microsoft.com/playwright/mcp:latest
-    <<: [*restart_policy, *json_logging]
-    networks: [internal, egress]
-    mem_limit: 2g
-    cpus: 2.0
+  # ---- Playwright MCP (deferred from Phase 1) ----
+  #
+  # The mcr.microsoft.com/playwright/mcp:latest image's default entrypoint
+  # exits cleanly when no client connects (it expects to be invoked with
+  # specific MCP-server flags that we haven't researched). Disabled for
+  # Phase 1; cli-config.yaml's `mcp_servers.playwright` entry is also
+  # commented out. Will re-enable in a follow-up commit once the right
+  # invocation is confirmed.
 
   # ---- Hermes core ----
 

@@ -24,17 +24,17 @@ exporters:
     # Phoenix accepts OTLP HTTP on 6006/v1/traces in addition to its UI
   debug:
     verbosity: basic
-  file:
-    # Use /tmp (always writable in container, no volume mount needed).
-    # For persistent dev traces, swap to a named volume + bind mount.
-    path: /tmp/otel-traces.jsonl
+  # The `file` exporter was removed; otelcol-contrib's default user can't
+  # write to /tmp without an explicit volume + chown, and we don't need
+  # an additional sink (Phoenix already persists traces and Cloud Trace
+  # will be the prod sink in Phase 2).
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [otlphttp/phoenix, file]
+      exporters: [otlphttp/phoenix]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
@@ -42,4 +42,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [file]
+      exporters: [debug]

@@ -33,6 +33,8 @@ litellm_otel:
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  database_url: ""  # no LiteLLM DB; we own state
-  enforced_params: []
-  proxy_batch_write_at: 60
+  # Note: `enforced_params` removed (presence triggers a Pro-only check
+  # in LiteLLM v1.84+ even when the value is an empty list). Also
+  # removed `database_url: ""` and `proxy_batch_write_at` — both relate
+  # to the prisma DB integration we are explicitly disabling via env
+  # vars in docker-compose.yml (DISABLE_SCHEMA_UPDATE, STORE_MODEL_IN_DB).

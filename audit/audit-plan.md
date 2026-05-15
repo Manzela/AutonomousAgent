@@ -271,6 +271,8 @@ The original draft of this tier was a single Qwen 3.6 Code endpoint with class-b
   - `docs/decisions/0008-multi-llm-specialization-mesh.md` — ADR formalizing the choice
 - **Effort**: 1 day.
 
+> **Status update (2026-05-15) — deviation #1: Google-family judge pulled forward from P3 to P1-2.** The completeness judge for the P1-2 evaluator panel now routes to a Google model on Vertex AI in `i-for-ai`, enabled and verified live on 2026-05-15. The actual model is **`vertex_ai/gemini-3.1-pro-preview`** (Preview tier; 1M ctx; thinking model — judges using this axis must allow generous `max_output_tokens` because thoughts count against the budget), reachable only via the `global` endpoint (us-central1 returns 404). The `gemini-2.5-pro` row in the table above remains the documented P3 mesh target — when P3 lands the row may be re-pointed to whatever the latest stable Gemini is at that time. LiteLLM `model_list` entry: `deploy/litellm/config.yaml` (commit `64ccdaf`, PR #16). Routing key in `lib/evaluators/orchestrator_hook.py` — `PER_AXIS_MODEL["completeness"]`.
+
 ### P3-2 · Provision GCP A100 80GB + Qwen Coder 32B vLLM service
 
 - **What**: Single `a2-highgpu-1g` (1× A100 80GB) Compute Engine instance. Run `vllm serve Qwen/Qwen2.5-Coder-32B-Instruct` (or "Qwen 3.6 Code" if released by deployment date) — fits 80GB at FP16 with 32K context, ~120 tok/s.

@@ -33,7 +33,7 @@ Slug part is `[a-z0-9-]+`.
 
 ### Session branches
 
-In-flight parallel sessions (see [session-coordination.md](../superpowers/session-coordination.md)) use `session-<letter>/<phase-tag>-task-<NN>-<slug>`. **This pattern is not yet in the regex.** The widening PR is tracked in the open backlog; until it lands, session PRs need either branch renames or the regex extension before they can merge to `main`.
+In-flight parallel sessions (see [session-coordination.md](../superpowers/session-coordination.md)) use `session-<letter>/<path>`, where `<path>` is one or more kebab-case segments separated by `/`. The canonical form is `session-<letter>/p<N>-<M>-task-<NN>-<slug>` (e.g. `session-b/p1-2-task-16-judge`); a legacy form without the phase-tag is also accepted (`session-a/task-05-anchors-register`). PR titles still need to follow the Conventional Commits format separately (`type(scope): lowercase subject`).
 
 ## PR title format
 

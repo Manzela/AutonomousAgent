@@ -83,10 +83,22 @@ check "limits.yaml valid" bash -c '
   cd "'"$ROOT"'" && .venv/bin/python -m lib.limits_validator config/limits.yaml
 '
 
-echo "Smoke test 7/7: hermes container is running (gateway loop alive)"
+echo "Smoke test 7/8: hermes container is running (gateway loop alive)"
 check "hermes container alive" bash -c '
   status=$(docker inspect autonomous-agent-hermes-1 --format "{{.State.Status}}" 2>/dev/null)
   [ "$status" = "running" ] || { echo "status=$status"; exit 1; }
+'
+
+echo "Smoke test 8/8: Gemini 3.1 Pro round-trip via litellm → Vertex AI"
+# Verifies the model_list addition from P1-2 Task 14 is reachable end-to-end.
+# Required by P1-2's judge.completeness routing (uses 1M ctx).
+check "real LLM call (vertex_ai/gemini-3.1-pro)" bash -c '
+  master_key=$(cat "'"$ROOT"'/secrets/litellm-master-key" 2>/dev/null)
+  resp=$(curl -fsS -X POST http://localhost:4000/v1/chat/completions \
+    -H "Authorization: Bearer ${master_key}" \
+    -H "Content-Type: application/json" \
+    -d "{\"model\":\"gemini-3.1-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: pong\"}],\"max_tokens\":10}")
+  echo "$resp" | grep -iq pong || { echo "no pong in: $resp"; exit 1; }
 '
 
 echo
@@ -94,4 +106,4 @@ if [ "$failures" -gt 0 ]; then
   echo "❌ $failures smoke check(s) failed"
   exit 1
 fi
-echo "✅ All 7 smoke checks passed"
+echo "✅ All 8 smoke checks passed"

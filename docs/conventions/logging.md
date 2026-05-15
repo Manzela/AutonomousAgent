@@ -80,3 +80,23 @@ Logs at `logs/` are gitignored.
 - Cloud Logging hot: 30 days
 - GCS coldline after 30 days: another 11 months
 - Hard delete after 365 days
+
+## Hermes-Specific Event Catalog
+
+### State Events
+- `TASK_CREATED`: New task added to Kanban queue.
+- `TASK_STATE_TRANSITION`: Task moved across Kanban states.
+- `CHECKPOINT_WRITTEN`: State serialized to disk.
+- `CHECKPOINT_RESUMED`: State loaded from disk after crash.
+
+### Execution Events
+- `TOOL_CALL_STARTED`: Sent execution request to sandbox.
+- `TOOL_CALL_COMPLETED`: Received sandbox output.
+- `EVALUATOR_VOTE_RECORDED`: An evaluator (code, safety, completeness) recorded its vote.
+- `CONSENSUS_REACHED`: Multi-evaluator loop reached a decision.
+
+### Error & Recovery Events
+- `LLM_API_ERROR`: Upstream Litellm/Vertex AI error.
+- `RETRY_TRIGGERED`: Exponential backoff initiated (Self-Heal).
+- `ESCALATION_TRIGGERED`: Telegram escalation sent (Fail-Loud).
+- `MEMORY_REJECTED_APPENDED`: Failure loop identified, written to `REJECTED.md`.

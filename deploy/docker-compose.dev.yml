@@ -1,0 +1,27 @@
+# Dev overrides: adds Phoenix for local trace viewing, exposes ports for inspection.
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6006:6006"
+      - "127.0.0.1:4317:4317"  # Phoenix exposes its own OTLP receiver on 4317
+    volumes:
+      - phoenix-data:/mnt/data
+    networks: [internal]
+
+  hermes:
+    volumes:
+      - ../config/hermes:/app/config:rw  # writable in dev for live config edits
+
+  litellm-proxy:
+    ports:
+      - "127.0.0.1:4000:4000"  # exposed for direct probing
+
+  # chroma dev port-mapping removed (Phase 1 — using Chroma Cloud)
+
+  # honcho dev port-mapping removed (Phase 1 — Honcho disabled)
+
+volumes:
+  phoenix-data:

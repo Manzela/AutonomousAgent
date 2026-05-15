@@ -49,3 +49,6 @@ docker-compose.override.yml
 
 # Phase worktrees (each is a checkout of phase/N branch)
 .worktrees/
+
+# Firecrawl scratch dir for audit research
+.firecrawl/

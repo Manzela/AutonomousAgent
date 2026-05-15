@@ -1,0 +1,45 @@
+model_list:
+  - model_name: vertex_ai/claude-opus-4-7
+    litellm_params:
+      model: vertex_ai/claude-opus-4-7
+      vertex_project: i-for-ai
+      vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
+  - model_name: vertex_ai/claude-sonnet-4-6
+    litellm_params:
+      model: vertex_ai/claude-sonnet-4-6
+      vertex_project: i-for-ai
+      vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
+  - model_name: gemini-3.1-pro
+    litellm_params:
+      model: vertex_ai/gemini-3.1-pro
+      vertex_project: i-for-ai
+      vertex_location: us-central1   # Default region for Gemini 3.1 Pro on Vertex; revisit if latency matters. P1-2 judge.completeness routing target (1M ctx).
+
+litellm_settings:
+  drop_params: true
+  num_retries: 5
+  request_timeout: 600
+  telemetry: false  # we use OTel directly, not LiteLLM's anonymous telemetry
+  cache: false
+  set_verbose: false
+  json_logs: true
+
+  # Budget enforcement
+  max_budget: 100  # USD per day, hard cap
+  budget_duration: 24h
+  alert_to_webhook_url: ""  # set after Phase 2 cloud monitoring is up
+
+  callbacks: ["otel"]
+
+# OpenTelemetry export
+litellm_otel:
+  endpoint: http://otel-collector:4317
+  service_name: litellm-proxy
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Note: `enforced_params` removed (presence triggers a Pro-only check
+  # in LiteLLM v1.84+ even when the value is an empty list). Also
+  # removed `database_url: ""` and `proxy_batch_write_at` — both relate
+  # to the prisma DB integration we are explicitly disabling via env
+  # vars in docker-compose.yml (DISABLE_SCHEMA_UPDATE, STORE_MODEL_IN_DB).

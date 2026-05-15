@@ -1,0 +1,31 @@
+# Test overrides: mocked LLM, ephemeral storage, no real network egress.
+
+services:
+  litellm-proxy:
+    image: stoplight/prism:5
+    command: ["mock", "-h", "0.0.0.0", "-p", "4000", "/specs/openai-mock.yaml"]
+    volumes:
+      - ../tests/fixtures/openai-mock.yaml:/specs/openai-mock.yaml:ro
+    networks: [internal]
+    depends_on: []
+    secrets: []
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:4000/v1/models"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # chroma in tests inherits the base `chroma-data:/chroma/chroma` volume
+  # (CI tears down with `docker compose down -v`). Same compose-v2 limitation
+  # noted below for hermes-agent applies here.
+
+  # honcho-db tmpfs override removed (Phase 1 — Honcho disabled)
+
+  hermes:
+    profiles: ["disabled"]  # no Telegram in tests (the agent-as-gateway lives off)
+
+  # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
+  # named volume. CI tears it down with `docker compose down -v` between runs,
+  # so it is effectively ephemeral. (We previously tried `tmpfs: /data` here
+  # but compose v2 cannot un-mount a base volume from an override — both
+  # stack and the union fails to render.)

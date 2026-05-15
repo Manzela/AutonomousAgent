@@ -150,6 +150,20 @@ Vulnerability disclosure: see [SECURITY.md](SECURITY.md). Do **not** open public
 
 ## Reference Documentation
 
+### Get up to speed quickly
+
+| If you want to… | Read this |
+|---|---|
+| **Understand what this is and why** | This README, then [Architecture index](docs/architecture/README.md) |
+| **Set up the stack on your Mac** | [Quickstart](#quick-start), then [docs/runbooks/phase1-acceptance.md](docs/runbooks/phase1-acceptance.md) |
+| **Open your first PR** | [docs/conventions/pull-requests.md](docs/conventions/pull-requests.md) (PR lifecycle, conventions, common failure patterns) |
+| **Understand CI and what blocks merges** | [docs/ci-cd.md](docs/ci-cd.md) |
+| **Coordinate with other parallel sessions** | [docs/superpowers/session-coordination.md](docs/superpowers/session-coordination.md) |
+| **Cut a release** | [docs/release-process.md](docs/release-process.md) |
+| **Recover from an incident** | [docs/runbooks/recovery.md](docs/runbooks/recovery.md) |
+
+### Reference
+
 | Document | Purpose |
 |---|---|
 | [Architecture spec](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md) | The complete design (12 sections) |
@@ -157,8 +171,11 @@ Vulnerability disclosure: see [SECURITY.md](SECURITY.md). Do **not** open public
 | [Session-complete artifact](docs/superpowers/specs/SESSION-COMPLETE-2026-05-15-hermes-agent-full-architecture.md) | Resume-from-cold reference; survives context loss |
 | [Architecture index](docs/architecture/README.md) | Reading order for newcomers |
 | [Architecture Decision Records](docs/decisions/) | Point-in-time decisions and tradeoffs (MADR format) |
-| [Conventions](docs/conventions/) | Commits, branching, logging, code style |
+| [Conventions](docs/conventions/) | Commits, branching, logging, code style, **pull requests** |
 | [Runbooks](docs/runbooks/) | Operational procedures (acceptance, recovery, setup) |
+| [CI/CD overview](docs/ci-cd.md) | Per-workflow deep-dive + local-reproduction recipes |
+| [Release process](docs/release-process.md) | SemVer policy + tag-driven release flow |
+| [Parallel-session coordination](docs/superpowers/session-coordination.md) | How multiple Claude sessions cohabit the repo |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to work in this repo |
 | [CHANGELOG.md](CHANGELOG.md) | All notable changes |
 | [SECURITY.md](SECURITY.md) | Vulnerability disclosure policy |

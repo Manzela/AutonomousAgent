@@ -30,10 +30,15 @@ routes:
   - match: ["browser_*", "playwright_*", "web_scrape", "screenshot"]
     tier: browser_sandbox
     evaluate_after: true
-  # external HTTPS MCPs
-  - match: ["github_*", "context7_*"]
+  # external HTTPS MCPs — split: context7 docs lookups are pure-read,
+  # github_* is bundled-write (orchestrator can opt out per-call for
+  # github_get_*/list_*/search_* via the per-tool override path).
+  - match: ["context7_*"]
     tier: external_https
-    evaluate_after: true
+    evaluate_after: false   # pure documentation read; not worth a judge panel
+  - match: ["github_*"]
+    tier: external_https
+    evaluate_after: true    # github_* bundles writes (create_pr, merge, comment); default-on, orchestrator opts out per-call for known reads
   # arbitrary code execution
   - match: ["run_python", "run_javascript", "exec_code", "code_interpreter"]
     tier: cloud_sandbox

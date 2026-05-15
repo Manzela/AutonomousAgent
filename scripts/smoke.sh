@@ -34,7 +34,7 @@ check() {
   fi
 }
 
-echo "Smoke test 1/7: all expected containers running"
+echo "Smoke test 1/8: all expected containers running"
 check "containers running" bash -c '
   expected=(hermes litellm-proxy phoenix otel-collector shell-sandbox)
   for svc in "${expected[@]}"; do
@@ -45,13 +45,13 @@ check "containers running" bash -c '
   done
 '
 
-echo "Smoke test 2/7: litellm-proxy is healthy"
+echo "Smoke test 2/8: litellm-proxy is healthy"
 check "litellm-proxy healthy" bash -c '
   status=$(docker inspect autonomous-agent-litellm-proxy-1 --format "{{.State.Health.Status}}" 2>/dev/null)
   [ "$status" = "healthy" ] || { echo "status=$status"; exit 1; }
 '
 
-echo "Smoke test 3/7: real LLM round-trip via litellm → Vertex AI"
+echo "Smoke test 3/8: real LLM round-trip via litellm → Vertex AI"
 # Use Sonnet (claude-sonnet-4-6) for the smoke check — it shares the same
 # integration path as Opus but has more headroom under the per-minute quota
 # on the i-for-ai project. The smoke goal is "the chain works", not "Opus is
@@ -66,19 +66,19 @@ check "real LLM call (vertex_ai/claude-sonnet-4-6)" bash -c '
   echo "$resp" | grep -iq pong || { echo "no pong in: $resp"; exit 1; }
 '
 
-echo "Smoke test 4/7: Telegram bot reachable from gateway"
+echo "Smoke test 4/8: Telegram bot reachable from gateway"
 check "egress allowed (TG getMe)" bash -c '
   TG_TOKEN=$(grep -E "^TELEGRAM_BOT_TOKEN=" "'"$ROOT"'/secrets/telegram.env" | cut -d= -f2)
   curl -fsS "https://api.telegram.org/bot${TG_TOKEN}/getMe" | grep -q ok
 '
 
-echo "Smoke test 5/7: shell-sandbox cannot reach external network"
+echo "Smoke test 5/8: shell-sandbox cannot reach external network"
 check "egress denied (shell-sandbox)" bash -c '
   ! docker exec autonomous-agent-shell-sandbox-1 \
     bash -c "curl -fsS --max-time 3 https://example.com >/dev/null 2>&1"
 '
 
-echo "Smoke test 6/7: limits.yaml validates against schema"
+echo "Smoke test 6/8: limits.yaml validates against schema"
 check "limits.yaml valid" bash -c '
   cd "'"$ROOT"'" && .venv/bin/python -m lib.limits_validator config/limits.yaml
 '
@@ -97,7 +97,7 @@ check "real LLM call (vertex_ai/gemini-3.1-pro)" bash -c '
   resp=$(curl -fsS -X POST http://localhost:4000/v1/chat/completions \
     -H "Authorization: Bearer ${master_key}" \
     -H "Content-Type: application/json" \
-    -d "{\"model\":\"gemini-3.1-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: pong\"}],\"max_tokens\":10}")
+    -d "{\"model\":\"vertex_ai/gemini-3.1-pro\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with just: pong\"}],\"max_tokens\":10}")
   echo "$resp" | grep -iq pong || { echo "no pong in: $resp"; exit 1; }
 '
 

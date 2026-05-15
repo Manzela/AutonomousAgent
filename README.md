@@ -6,7 +6,6 @@
 [![Phase](https://img.shields.io/badge/Phase-1%20(local)-blue.svg)](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md)
 [![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-green.svg)](docs/conventions/commit-messages.md)
 [![CI](https://github.com/Manzela/AutonomousAgent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/Manzela/AutonomousAgent/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/codeql.yml)
 [![Secret Scan](https://github.com/Manzela/AutonomousAgent/actions/workflows/secret-scan.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/secret-scan.yml)
 [![Built with Hermes Agent](https://img.shields.io/badge/Built%20on-Hermes%20Agent-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 
@@ -109,7 +108,7 @@ Full details: [docs/conventions/branching.md](docs/conventions/branching.md), [A
 
 ## CI/CD
 
-Every PR runs:
+We deliberately keep the workflow surface minimal to conserve GitHub Actions minutes. Every PR runs:
 
 | Check | Tool | Config |
 |---|---|---|
@@ -117,17 +116,24 @@ Every PR runs:
 | Shell lint | `shellcheck` | strict mode + quoting |
 | YAML lint | `yamllint` | [.yamllint.yml](.yamllint.yml) |
 | Dockerfile lint | `hadolint` | advisory baseline |
-| Markdown lint | `markdownlint-cli2` | [.markdownlint.jsonc](.markdownlint.jsonc) |
 | Unit tests | `pytest` | `tests/unit/` |
 | Config validation | `lib/limits_validator` | `config/limits-schema.json` |
 | Compose render | `docker compose config` | `deploy/docker-compose.yml` |
 | PR title format | Conventional Commits | [.github/workflows/pr-validation.yml](.github/workflows/pr-validation.yml) |
 | Branch name format | regex against allowed patterns | same |
-| CodeQL | static analysis | weekly + per-PR |
 | Secret scan | `gitleaks` + `detect-secrets` | [.gitleaks.toml](.gitleaks.toml) + [.secrets.baseline](.secrets.baseline) |
-| Dependency review | GitHub Dependency Review | per-PR |
-| Dependency updates | Dependabot | weekly grouped PRs |
-| Release notes | auto-generated from Conventional Commits | on `v*` or `phaseN-accepted` tag |
+
+All 11 are required-status-checks for merging into `main` (branch protection enforces).
+
+Plus:
+
+| Workflow | Trigger | Purpose |
+|---|---|---|
+| Secret scan | 1st of each month | Catches drift between PRs |
+| Dependabot | monthly grouped PRs | Action / pip / Docker base image updates |
+| Release notes | on `v*` or `phaseN-accepted` tag push | Auto-generated from Conventional Commits |
+
+**Removed to save Actions minutes** (with notes): CodeQL (no Python on `main` until Phase 1 merges; will be reintroduced then); Dependency Review (requires GitHub Advanced Security on private repos to be effective); Markdown lint (advisory only); duplicate `push: main` triggers (PRs already cover the path); weekly cadence reduced to monthly for both Dependabot and the secret-scan schedule.
 
 Workflow definitions: [.github/workflows/](.github/workflows/).
 

@@ -48,14 +48,12 @@ and this project adheres to [Semantic Versioning 2.0.0](https://semver.org/spec/
 - Architecture spec, Phase 1 plan, and session-complete artifact under `docs/superpowers/specs/` and `docs/superpowers/plans/`.
 
 ### Added (CI/CD + SDLC infrastructure)
-- GitHub Actions workflows under `.github/workflows/`:
-  - `ci.yml` — Python lint (ruff/format), shell lint (shellcheck), YAML lint (yamllint), Dockerfile lint (hadolint), Markdown lint (markdownlint-cli2), unit tests (pytest), config validation (limits.yaml schema), compose render validation
-  - `secret-scan.yml` — gitleaks (full history) + detect-secrets (baseline diff), per-PR + weekly schedule
-  - `codeql.yml` — CodeQL static analysis for Python, per-PR + weekly schedule
-  - `dependency-review.yml` — dependency vulnerability + license review on every PR
+- GitHub Actions workflows under `.github/workflows/` (deliberately minimal to conserve Actions minutes):
+  - `ci.yml` — Python lint (ruff/format), shell lint (shellcheck), YAML lint (yamllint), Dockerfile lint (hadolint), unit tests (pytest), config validation (limits.yaml schema), compose render validation
+  - `secret-scan.yml` — gitleaks (full history) + detect-secrets (baseline diff), per-PR + monthly schedule
   - `pr-validation.yml` — Conventional Commits PR title + branch name pattern enforcement
   - `release.yml` — auto-generated release notes on `v*` or `phase*-accepted` tag push
-- `.github/dependabot.yml` — weekly grouped dependency updates for GitHub Actions, Python (pip), and Docker base images
+- `.github/dependabot.yml` — monthly grouped dependency updates for GitHub Actions, Python (pip), and Docker base images
 - `.github/CODEOWNERS` — automatic reviewer assignment
 - `SECURITY.md` — vulnerability disclosure policy with severity tiers and response timelines
 - `.gitleaks.toml` — gitleaks configuration with project-specific allowlist

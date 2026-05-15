@@ -3,26 +3,29 @@
 # Jobs are designed to be cheap, fast, and informative. They run in parallel
 # where possible and fail loudly with actionable error messages.
 #
-# Matrix:
-#   - lint            (ruff, ruff-format check) — Python style + format
-#   - shell-lint      (shellcheck)              — Bash strict-mode + quoting
-#   - yaml-lint       (yamllint)                — YAML well-formedness
-#   - dockerfile-lint (hadolint)                — Dockerfile best practices
-#   - unit-tests      (pytest)                  — Unit test suite
-#   - validate-config (limits_validator)        — limits.yaml schema validity
-#   - validate-compose (docker compose config)  — Compose render check
-#   - markdown-lint   (markdownlint-cli2)       — Markdown style
+# Matrix (kept minimal to conserve Actions minutes across the account):
+#   - lint-python      (ruff + ruff-format)        — Python style + format
+#   - lint-shell       (shellcheck)                — Bash strict-mode + quoting
+#   - lint-yaml        (yamllint)                  — YAML well-formedness
+#   - lint-dockerfile  (hadolint)                  — Dockerfile best practices
+#   - unit-tests       (pytest)                    — Unit test suite
+#   - validate-config  (limits_validator)          — limits.yaml schema validity
+#   - validate-compose (docker compose config)     — Compose render check
 #
 # Each job is independent and can be re-run individually from the GitHub UI.
+# Markdown lint, CodeQL, and Dependency Review were removed — the first was
+# advisory-only, the latter two require GitHub Advanced Security on private
+# repos to be useful and cost compute on every PR.
 
 name: CI
 
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
   workflow_dispatch:
+  # Note: no `push: main` trigger. PRs are the only path to main (branch
+  # protection enforces it), and CI already ran on the PR before merge.
+  # Re-running on the resulting merge commit duplicates compute for no signal.
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:
@@ -301,24 +304,3 @@ jobs:
         if: steps.detect.outputs.has_compose == 'true' && hashFiles('deploy/docker-compose.test.yml') != ''
         run: docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.test.yml config > /dev/null
 
-  # ------------------------------------------------------------------
-  # Markdown lint (Markdownlint CLI 2)
-  # ------------------------------------------------------------------
-  lint-markdown:
-    name: Lint Markdown
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - name: Check out code
-        uses: actions/checkout@v6
-
-      - name: Run markdownlint-cli2
-        uses: DavidAnson/markdownlint-cli2-action@v17
-        with:
-          globs: |
-            **/*.md
-            !hermes-agent/**
-            !.worktrees/**
-            !node_modules/**
-            !CHANGELOG.md
-        continue-on-error: true  # advisory until we tune the ruleset

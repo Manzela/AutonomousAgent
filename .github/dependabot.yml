@@ -5,7 +5,9 @@
 #   - Python dependencies via pyproject.toml + uv.lock
 #   - Docker base images in our Dockerfiles + docker-compose
 #
-# Security updates fire immediately; routine updates batched weekly to reduce noise.
+# Security updates fire immediately regardless of schedule.
+# Routine updates batched MONTHLY (changed from weekly) to conserve Actions
+# minutes — every Dependabot PR triggers the full required CI matrix.
 
 version: 2
 
@@ -16,8 +18,8 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+      day: monday  # first Monday of the month
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -36,8 +38,8 @@ updates:
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+      day: monday  # first Monday of the month
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 10
@@ -60,8 +62,8 @@ updates:
   - package-ecosystem: docker
     directory: /deploy
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+      day: monday  # first Monday of the month
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -73,8 +75,8 @@ updates:
   - package-ecosystem: docker
     directory: /deploy/sandboxes
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
+      day: monday  # first Monday of the month
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 3

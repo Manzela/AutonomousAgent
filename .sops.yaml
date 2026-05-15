@@ -1,0 +1,6 @@
+creation_rules:
+  # Match any file under secrets/ (plaintext source for `sops -e <file>` and
+  # the encrypted .sops output). README.md / .gitignore are tracked but never
+  # passed to `sops`, so they are unaffected.
+  - path_regex: secrets/.+
+    age: age1z4c2kx2eg3f9hpnm3p9frun3ndllm0tj49tx3m79362v5rzpcgtq3r9a0a

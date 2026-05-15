@@ -1,0 +1,28 @@
+# Routing rules: tool name pattern → sandbox tier.
+# Tiers (in order of permissiveness):
+#   in_process       — runs in agent process (read-only, host FS)
+#   shell_sandbox    — Docker container, no network, restricted FS
+#   browser_sandbox  — Playwright container, network allowlisted per call
+#   external_https   — outbound HTTPS to allowlisted MCPs
+#   cloud_sandbox    — Modal/Daytona ephemeral microVM (Phase 2 onward)
+#
+# First match wins. Unknown tools fall through to `default_tier`.
+
+default_tier: shell_sandbox
+
+routes:
+  # in-process (safe reads)
+  - match: ["read_file", "ls", "grep", "rg", "find_files", "glob"]
+    tier: in_process
+  # shell sandbox
+  - match: ["shell", "bash", "git", "jq", "run_command"]
+    tier: shell_sandbox
+  # browser sandbox
+  - match: ["browser_*", "playwright_*", "web_scrape", "screenshot"]
+    tier: browser_sandbox
+  # external HTTPS MCPs
+  - match: ["github_*", "context7_*"]
+    tier: external_https
+  # arbitrary code execution
+  - match: ["run_python", "run_javascript", "exec_code", "code_interpreter"]
+    tier: cloud_sandbox

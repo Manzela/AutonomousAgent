@@ -1,0 +1,100 @@
+# Hermes Agent CLI configuration for Phase 1 local deployment.
+# Full reference: hermes-agent/cli-config.yaml.example
+
+model:
+  # The Hermes provider plugin we use is `custom` — that's the canonical
+  # name in plugins/model-providers/ for "any other OpenAI-compatible
+  # endpoint". LiteLLM accepts the OpenAI chat-completions schema at
+  # `${OPENAI_BASE_URL}/v1/chat/completions`.
+  #
+  # Default: Opus 4.7 — the highest-quality model in our mesh, per the
+  # quality-first selection criterion. Opus quota was previously hitting
+  # 429s in us-east5 (saturated by Claude Code's parallel usage on
+  # i-for-AI) and in europe-west1 (sales-managed regional cap of 0).
+  # Both fixed by switching the LiteLLM `vertex_location` to `global`
+  # — i-for-AI has a 24M tokens/min global Opus quota at <1% utilization.
+  #
+  # Once the multi-LLM mesh (P3) ships per-class routing tags, ~80% of
+  # traffic (chatter, memory curation, routine sub-agent dispatch) will
+  # route to Sonnet 4.6 automatically while Opus stays the default for
+  # `class:reasoning` / `class:headline`. Until then, all traffic gets
+  # the highest-quality model.
+  default: "vertex_ai/claude-opus-4-7"
+  provider: "custom"
+  base_url: "http://litellm-proxy:4000"
+  # api_key is read from the OPENAI_API_KEY env var (set by
+  # secrets/hermes-provider.env at bootstrap, sourced from the LiteLLM
+  # master key so requests are authenticated against the proxy).
+
+memory:
+  enabled: true
+  data_dir: /data
+  curator_cron: "0 */6 * * *"
+
+skills:
+  enabled: true
+  skills_dir: /app/skills
+  extractor:
+    min_turns: 10
+    min_distinct_tools: 3
+
+session:
+  storage: sqlite
+  sqlite_path: /data/sessions.db
+  fts5_enabled: true
+
+honcho:
+  # Disabled in Phase 1: upstream Honcho doesn't publish a public Docker image
+  # and their current architecture requires redis + pgvector (not the simple
+  # postgres we scoped). Will be reintroduced once we build their Dockerfile
+  # from source.
+  enabled: false
+  base_url: http://honcho:8001
+
+vector_memory:
+  enabled: true
+  provider: chroma
+  # Cloud-hosted (was http://chroma:8000 self-hosted). Connection details
+  # come from secrets/chroma-cloud.env.sops:
+  #   CHROMA_CLOUD_API_KEY, CHROMA_CLOUD_HOST, CHROMA_CLOUD_TENANT, CHROMA_CLOUD_DATABASE
+  # The hermes-agent reads these env vars at startup.
+  chroma_host: ${CHROMA_CLOUD_HOST}
+  chroma_port: 443
+  chroma_ssl: true
+  chroma_headers:
+    x-chroma-token: ${CHROMA_CLOUD_API_KEY}
+  chroma_tenant: ${CHROMA_CLOUD_TENANT}
+  chroma_database: ${CHROMA_CLOUD_DATABASE}
+  collection: hermes_memory
+
+mcp_servers:
+  github:
+    # Sidecar HTTP MCP service (deploy/docker-compose.yml `github-mcp`).
+    # Runs ghcr.io/github/github-mcp-server in HTTP mode on port 8003,
+    # authenticated via the GITHUB_PERSONAL_ACCESS_TOKEN sops-encrypted
+    # secret. All toolsets enabled (--toolsets all): repos, pull_requests,
+    # issues, actions, code_security, dependabot, secret_protection, etc.
+    type: http
+    url: http://github-mcp:8003
+  context7:
+    type: http
+    url: https://mcp.context7.com/sse
+  # playwright: deferred from Phase 1 — see compose-level note for details.
+
+terminal_backend: docker
+docker_backend:
+  container: shell-sandbox
+  workspace_path: /workspace
+
+telemetry:
+  otel_endpoint: http://otel-collector:4317
+  service_name: hermes-agent
+  service_version: 0.1.0
+
+approval:
+  config_path: /app/config/limits.yaml  # reads `approval` section from limits
+
+logs:
+  format: json
+  level: INFO
+  destination: stdout

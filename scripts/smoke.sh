@@ -9,7 +9,6 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.yml" -f "$ROOT/deploy/docker-compose.dev.yml")
 
 # Auto-decrypt secrets if any plaintext is missing — smoke tests need
 # the Telegram bot token + LiteLLM master key to run their probes.

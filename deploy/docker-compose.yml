@@ -68,7 +68,7 @@ services:
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
       # Tell prisma to skip migrations entirely (no DB)
       DISABLE_SCHEMA_UPDATE: "True"
@@ -158,13 +158,14 @@ services:
     environment:
       HERMES_CONFIG: /app/config/cli-config.yaml
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_SERVICE_NAME: hermes
       # Auto-approve hooks/commands without a TTY (we're in Docker).
       HERMES_ACCEPT_HOOKS: "1"
     env_file:
-      - ../secrets/telegram.env       # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_IDS
-      - ../secrets/chroma-cloud.env   # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
+      - ../secrets/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
+      - ../secrets/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
+      - ../secrets/hermes-provider.env  # OPENAI_API_KEY, OPENAI_BASE_URL, HERMES_*_MODEL
     secrets:
       - litellm_master_key
     # Egress: needs to reach Telegram (api.telegram.org), Chroma Cloud
@@ -173,11 +174,16 @@ services:
     networks: [internal, egress]
     volumes:
       - hermes-data:/data
-      - ../config/hermes:/app/config:ro
-      # The three files below cannot be mounted into /app/config/* because
-      # docker forbids a bind-mount file inside a bind-mount directory when
-      # the file's source is outside that directory's source. Mounted at
-      # /app/runtime/* and resolved by the agent via env-var paths.
+      # Hermes reads its config from /root/.hermes/config.yaml exclusively
+      # (the HERMES_CONFIG env var is for `hermes config edit`, not for
+      # runtime resolution). Mount our cli-config.yaml directly there.
+      - ../config/hermes/cli-config.yaml:/root/.hermes/config.yaml:ro
+      - ../config/hermes/AGENTS.md:/root/.hermes/AGENTS.md:ro
+      - ../config/hermes/MEMORY.md:/root/.hermes/MEMORY.md:ro
+      - ../config/hermes/USER.md:/root/.hermes/USER.md:ro
+      - ../config/hermes/SOUL.md:/root/.hermes/SOUL.md:ro
+      # Our project's own runtime configs (limits/scrubber/toolsets) live
+      # at /app/runtime/ — separate from Hermes' config namespace.
       - ../config/limits.yaml:/app/runtime/limits.yaml:ro
       - ../config/scrubber-patterns.yaml:/app/runtime/scrubber-patterns.yaml:ro
       - ../config/toolsets.yaml:/app/runtime/toolsets.yaml:ro

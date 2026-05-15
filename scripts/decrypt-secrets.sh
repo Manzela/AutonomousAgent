@@ -46,4 +46,18 @@ if [ -f honcho-db-password ]; then
   export HONCHO_DB_PASSWORD="$(cat honcho-db-password)"
 fi
 
+# Derive secrets/hermes-provider.env so the `hermes` container sees the
+# LiteLLM proxy as an OpenAI-compatible provider. Hermes' provider auto-
+# detection reads OPENAI_API_KEY + OPENAI_BASE_URL from env, not from
+# cli-config.yaml's `llm:` block.
+if [ -f litellm-master-key ]; then
+  cat > hermes-provider.env <<INNER
+OPENAI_API_KEY=$(cat litellm-master-key)
+OPENAI_BASE_URL=http://litellm-proxy:4000
+HERMES_DEFAULT_MODEL=vertex_ai/claude-opus-4-7
+HERMES_FALLBACK_MODEL=vertex_ai/claude-sonnet-4-6
+INNER
+  chmod 600 hermes-provider.env
+fi
+
 echo "Secrets decrypted. Plaintext files are gitignored."

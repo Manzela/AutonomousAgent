@@ -11,9 +11,7 @@ services:
       - phoenix-data:/mnt/data
     networks: [internal]
 
-  hermes-agent:
-    ports:
-      - "127.0.0.1:7878:7878"  # admin endpoint exposed for direct inspection
+  hermes:
     volumes:
       - ../config/hermes:/app/config:rw  # writable in dev for live config edits
 

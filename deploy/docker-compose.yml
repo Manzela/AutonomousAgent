@@ -139,29 +139,42 @@ services:
   # invocation is confirmed.
 
   # ---- Hermes core ----
+  #
+  # The original spec called for two services (hermes-agent serving an HTTP
+  # admin endpoint + hermes-gateway long-polling Telegram). Reality: hermes
+  # has no `serve` subcommand. The gateway IS the agent — it long-polls
+  # Telegram, dispatches each message through the agent loop, and persists
+  # state to the shared volume. So we collapse to one service running
+  # `hermes gateway run` (the foreground variant; `start` requires
+  # systemd/launchd which isn't present in our distroless container).
 
-  hermes-agent:
+  hermes:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.hermes
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
-    command: ["serve", "--port", "7878"]
+    command: ["gateway", "run"]
     environment:
       HERMES_CONFIG: /app/config/cli-config.yaml
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      OTEL_SERVICE_NAME: hermes-agent
+      OTEL_SERVICE_NAME: hermes
+      # Auto-approve hooks/commands without a TTY (we're in Docker).
+      HERMES_ACCEPT_HOOKS: "1"
     env_file:
-      - ../secrets/chroma-cloud.env  # decrypted at bootstrap; provides CHROMA_CLOUD_*
+      - ../secrets/telegram.env       # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USER_IDS
+      - ../secrets/chroma-cloud.env   # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
     secrets:
       - litellm_master_key
-    # Egress added so the agent can reach Chroma Cloud (api.trychroma.com).
+    # Egress: needs to reach Telegram (api.telegram.org), Chroma Cloud
+    # (api.trychroma.com), GitHub MCP, Context7. Tool calls that route
+    # to shell-sandbox stay on the internal network.
     networks: [internal, egress]
     volumes:
       - hermes-data:/data
       - ../config/hermes:/app/config:ro
-      # The three files below CANNOT be mounted into /app/config/* because
+      # The three files below cannot be mounted into /app/config/* because
       # docker forbids a bind-mount file inside a bind-mount directory when
       # the file's source is outside that directory's source. Mounted at
       # /app/runtime/* and resolved by the agent via env-var paths.
@@ -174,29 +187,6 @@ services:
       shell-sandbox: {condition: service_started}
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:7878/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-
-  hermes-gateway:
-    image: autonomousagent/hermes:0.1.0
-    <<: [*restart_policy, *json_logging]
-    command: ["gateway", "start"]
-    environment:
-      HERMES_CONFIG: /app/config/cli-config.yaml
-      HERMES_AGENT_URL: http://hermes-agent:7878
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-      OTEL_SERVICE_NAME: hermes-gateway
-    env_file:
-      - ../secrets/telegram.env  # decrypted at bootstrap
-    volumes:
-      - hermes-data:/data:ro
-      - ../config/hermes:/app/config:ro
-    networks: [internal, egress]
-    depends_on:
-      hermes-agent: {condition: service_healthy}
 
 secrets:
   # honcho_db_password: removed (Phase 1 — Honcho disabled)

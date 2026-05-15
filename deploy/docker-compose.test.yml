@@ -21,8 +21,8 @@ services:
 
   # honcho-db tmpfs override removed (Phase 1 — Honcho disabled)
 
-  hermes-gateway:
-    profiles: ["disabled"]  # no Telegram in tests
+  hermes:
+    profiles: ["disabled"]  # no Telegram in tests (the agent-as-gateway lives off)
 
   # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
   # named volume. CI tears it down with `docker compose down -v` between runs,

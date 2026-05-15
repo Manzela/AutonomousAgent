@@ -129,6 +129,34 @@ services:
     pids_limit: 200
     command: ["sleep", "infinity"]
 
+  # ---- GitHub MCP (sidecar HTTP mode) ----
+  #
+  # Official server image from github/github-mcp-server. Hermes connects
+  # via HTTP MCP protocol (matches Context7 pattern, simpler than stdio).
+  # Toolset = `all`: actions, code_security, copilot, dependabot, discussions,
+  # gists, git, issues, labels, notifications, orgs, projects, pull_requests,
+  # repos, secret_protection, security_advisories, stargazers, users.
+  # Required PAT scopes: repo, workflow, read:org, security_events.
+
+  github-mcp:
+    image: ghcr.io/github/github-mcp-server:latest
+    <<: [*restart_policy, *json_logging]
+    command: ["http", "--port", "8003", "--toolsets", "all"]
+    environment:
+      # PAT injected via env_file (decrypted at bootstrap from sops). The
+      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
+      # and uses it to authenticate every API call to api.github.com.
+      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_pat
+    secrets:
+      - github_pat
+    networks: [internal, egress]   # needs api.github.com egress
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
   # ---- Playwright MCP (deferred from Phase 1) ----
   #
   # The mcr.microsoft.com/playwright/mcp:latest image's default entrypoint
@@ -182,6 +210,9 @@ services:
       - ../config/hermes/MEMORY.md:/root/.hermes/MEMORY.md:ro
       - ../config/hermes/USER.md:/root/.hermes/USER.md:ro
       - ../config/hermes/SOUL.md:/root/.hermes/SOUL.md:ro
+      # Canonical SDLC + security playbook for any new-repo creation work.
+      # AGENTS.md instructs the agent to consult this BEFORE creating repos.
+      - ../docs/conventions/new-repo-template.md:/root/.hermes/new-repo-template.md:ro
       # Our project's own runtime configs (limits/scrubber/toolsets) live
       # at /app/runtime/ — separate from Hermes' config namespace.
       - ../config/limits.yaml:/app/runtime/limits.yaml:ro
@@ -191,6 +222,7 @@ services:
       litellm-proxy: {condition: service_healthy}
       otel-collector: {condition: service_started}
       shell-sandbox: {condition: service_started}
+      github-mcp: {condition: service_healthy}
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
 
@@ -199,3 +231,5 @@ secrets:
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
   litellm_master_key:
     file: ../secrets/litellm-master-key
+  github_pat:
+    file: ../secrets/github-pat

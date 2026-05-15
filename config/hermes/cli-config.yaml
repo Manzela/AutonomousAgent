@@ -69,8 +69,13 @@ vector_memory:
 
 mcp_servers:
   github:
-    type: stdio
-    command: gh-mcp-server
+    # Sidecar HTTP MCP service (deploy/docker-compose.yml `github-mcp`).
+    # Runs ghcr.io/github/github-mcp-server in HTTP mode on port 8003,
+    # authenticated via the GITHUB_PERSONAL_ACCESS_TOKEN sops-encrypted
+    # secret. All toolsets enabled (--toolsets all): repos, pull_requests,
+    # issues, actions, code_security, dependabot, secret_protection, etc.
+    type: http
+    url: http://github-mcp:8003
   context7:
     type: http
     url: https://mcp.context7.com/sse

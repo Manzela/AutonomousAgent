@@ -20,31 +20,21 @@ networks:
 volumes:
   hermes-data:
   chroma-data:
-  honcho-db-data:
+  # honcho-db-data: removed (Phase 1 — Honcho disabled)
   workspace:
 
 services:
 
   # ---- Storage layer ----
-
-  honcho-db:
-    image: postgres:16-alpine
-    <<: [*restart_policy, *json_logging]
-    environment:
-      POSTGRES_USER: honcho
-      POSTGRES_PASSWORD_FILE: /run/secrets/honcho_db_password
-      POSTGRES_DB: honcho
-    secrets:
-      - honcho_db_password
-    volumes:
-      - honcho-db-data:/var/lib/postgresql/data
-      - ./honcho/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    networks: [internal]
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U honcho -d honcho"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+  #
+  # NOTE: honcho-db service removed for Phase 1. Honcho integration is
+  # disabled in cli-config.yaml because upstream Honcho doesn't publish a
+  # public Docker image. To re-enable: build Honcho's Dockerfile from source,
+  # restore both this service and the `honcho` service below, and flip
+  # `honcho.enabled: true` in config/hermes/cli-config.yaml.
+  #
+  # The encrypted secret `secrets/honcho-db-password.sops` is preserved
+  # for the future re-enable; it's gitignored from runtime when not used.
 
   chroma:
     image: chromadb/chroma:latest
@@ -64,24 +54,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # ---- Honcho ----
-
-  honcho:
-    image: plasticlabs/honcho:latest
-    <<: [*restart_policy, *json_logging]
-    environment:
-      DATABASE_URL: postgresql://honcho:${HONCHO_DB_PASSWORD}@honcho-db:5432/honcho
-      OPENAI_API_KEY: sk-dummy-litellm-handles-auth  # pragma: allowlist secret
-      OPENAI_BASE_URL: http://litellm-proxy:4000
-    networks: [internal]
-    depends_on:
-      honcho-db: {condition: service_healthy}
-      litellm-proxy: {condition: service_healthy}
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
+  # ---- Honcho (disabled in Phase 1; see note at honcho-db removal above) ----
 
   # ---- LiteLLM proxy ----
 
@@ -175,9 +148,9 @@ services:
     depends_on:
       litellm-proxy: {condition: service_healthy}
       chroma: {condition: service_healthy}
-      honcho: {condition: service_healthy}
       otel-collector: {condition: service_started}
       shell-sandbox: {condition: service_started}
+      # honcho: removed (Phase 1 — see compose-level note above)
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/health"]
       interval: 30s
@@ -203,8 +176,7 @@ services:
       hermes-agent: {condition: service_healthy}
 
 secrets:
-  honcho_db_password:
-    file: ../secrets/honcho-db-password
+  # honcho_db_password: removed (Phase 1 — Honcho disabled, see note above)
   litellm_master_key:
     file: ../secrets/litellm-master-key
   chroma_token:

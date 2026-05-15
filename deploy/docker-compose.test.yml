@@ -15,25 +15,17 @@ services:
       timeout: 3s
       retries: 5
 
-  chroma:
-    tmpfs:
-      - /chroma/chroma:size=256M
-    volumes: []
+  # chroma in tests inherits the base `chroma-data:/chroma/chroma` volume
+  # (CI tears down with `docker compose down -v`). Same compose-v2 limitation
+  # noted below for hermes-agent applies here.
 
-  honcho-db:
-    tmpfs:
-      - /var/lib/postgresql/data:size=256M
-    volumes: []
+  # honcho-db tmpfs override removed (Phase 1 — Honcho disabled)
 
   hermes-gateway:
     profiles: ["disabled"]  # no Telegram in tests
 
-  hermes-agent:
-    volumes:
-      - ../config/hermes:/app/config:ro
-      - ../config/limits.yaml:/app/config/limits.yaml:ro
-      - ../config/scrubber-patterns.yaml:/app/config/scrubber-patterns.yaml:ro
-      - ../config/toolsets.yaml:/app/config/toolsets.yaml:ro
-      # No persistent hermes-data — ephemeral for tests
-    tmpfs:
-      - /data:size=256M
+  # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
+  # named volume. CI tears it down with `docker compose down -v` between runs,
+  # so it is effectively ephemeral. (We previously tried `tmpfs: /data` here
+  # but compose v2 cannot un-mount a base volume from an override — both
+  # stack and the union fails to render.)

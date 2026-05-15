@@ -25,9 +25,7 @@ services:
     ports:
       - "127.0.0.1:8001:8000"
 
-  honcho:
-    ports:
-      - "127.0.0.1:8002:8000"
+  # honcho dev port-mapping removed (Phase 1 — Honcho disabled)
 
 volumes:
   phoenix-data:

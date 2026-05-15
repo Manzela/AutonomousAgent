@@ -27,7 +27,11 @@ session:
   fts5_enabled: true
 
 honcho:
-  enabled: true
+  # Disabled in Phase 1: upstream Honcho doesn't publish a public Docker image
+  # and their current architecture requires redis + pgvector (not the simple
+  # postgres we scoped). Will be reintroduced once we build their Dockerfile
+  # from source.
+  enabled: false
   base_url: http://honcho:8001
 
 vector_memory:

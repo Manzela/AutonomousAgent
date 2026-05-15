@@ -19,7 +19,7 @@ networks:
 
 volumes:
   hermes-data:
-  chroma-data:
+  # chroma-data: removed (Phase 1 — using Chroma Cloud instead of self-hosted)
   # honcho-db-data: removed (Phase 1 — Honcho disabled)
   workspace:
 
@@ -36,44 +36,34 @@ services:
   # The encrypted secret `secrets/honcho-db-password.sops` is preserved
   # for the future re-enable; it's gitignored from runtime when not used.
 
-  chroma:
-    # Pinned (was :latest) — Chroma's slim image rotates quickly and
-    # `latest` shipped a build whose API surface and bundled tools we
-    # cannot fully predict.
-    image: chromadb/chroma:0.5.20
-    <<: [*restart_policy, *json_logging]
-    environment:
-      CHROMA_SERVER_AUTHN_PROVIDER: chromadb.auth.token_authn.TokenAuthenticationServerProvider
-      CHROMA_SERVER_AUTHN_CREDENTIALS_FILE: /run/secrets/chroma_token
-      CHROMA_SERVER_AUTHN_CREDENTIALS_PROVIDER: chromadb.auth.token_authn.TokenConfigServerAuthCredentialsProvider
-    secrets:
-      - chroma_token
-    volumes:
-      - chroma-data:/chroma/chroma
-    networks: [internal]
-    # The chroma image does NOT ship curl — use python's stdlib (always present).
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:8000/api/v2/heartbeat',timeout=3); sys.exit(0 if r.status==200 else 1)"
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+  # ---- Chroma (cloud-managed in Phase 1) ----
+  #
+  # The previous self-hosted `chroma` service was removed in favor of
+  # Chroma Cloud (api.trychroma.com). Reasons:
+  #   - One less service to operate / health-check
+  #   - Chroma's recent `latest` image churn was a constant source of
+  #     drift (auth API renames, dropped curl in slim base, etc.)
+  #   - Chroma Cloud provides snapshots + replication out of the box
+  #
+  # The connection details are passed to hermes-agent via
+  # `secrets/chroma-cloud.env.sops` (decrypted at bootstrap):
+  #   CHROMA_CLOUD_API_KEY  — bearer token
+  #   CHROMA_CLOUD_HOST     — api.trychroma.com
+  #   CHROMA_CLOUD_TENANT   — default_tenant
+  #   CHROMA_CLOUD_DATABASE — default_database
 
   # ---- Honcho (disabled in Phase 1; see note at honcho-db removal above) ----
 
   # ---- LiteLLM proxy ----
 
   litellm-proxy:
-    # Pinned (was main-latest) — recent main builds require a Postgres
-    # database for prisma-managed spend tracking and fail to start without
-    # DATABASE_URL. v1.50.0 is the last release before that requirement
-    # became mandatory; for our single-tenant use case we don't need
-    # spend persistence beyond OTel.
-    image: ghcr.io/berriai/litellm:v1.50.0-stable
+    # Pinned (was main-latest, then v1.50.0-stable which doesn't exist as
+    # a published tag). v1.84.0 is the most recent non-prerelease tag on
+    # the BerriAI/litellm GHCR registry as of 2026-05-15. Recent builds
+    # try to run prisma migrations at startup; we suppress that by setting
+    # DISABLE_SCHEMA_UPDATE + STORE_MODEL_IN_DB=False below — for our
+    # single-tenant use case we don't need spend persistence beyond OTel.
+    image: ghcr.io/berriai/litellm:v1.84.0
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
@@ -82,7 +72,9 @@ services:
       GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
       # Tell prisma to skip migrations entirely (no DB)
       DISABLE_SCHEMA_UPDATE: "True"
+      STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      LITELLM_NO_TELEMETRY: "True"
     secrets:
       - litellm_master_key
     volumes:
@@ -155,21 +147,24 @@ services:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
       OTEL_SERVICE_NAME: hermes-agent
+    env_file:
+      - ../secrets/chroma-cloud.env  # decrypted at bootstrap; provides CHROMA_CLOUD_*
     secrets:
       - litellm_master_key
+    # Egress added so the agent can reach Chroma Cloud (api.trychroma.com).
+    networks: [internal, egress]
     volumes:
       - hermes-data:/data
       - ../config/hermes:/app/config:ro
       - ../config/limits.yaml:/app/config/limits.yaml:ro
       - ../config/scrubber-patterns.yaml:/app/config/scrubber-patterns.yaml:ro
       - ../config/toolsets.yaml:/app/config/toolsets.yaml:ro
-    networks: [internal]
     depends_on:
       litellm-proxy: {condition: service_healthy}
-      chroma: {condition: service_healthy}
       otel-collector: {condition: service_started}
       shell-sandbox: {condition: service_started}
-      # honcho: removed (Phase 1 — see compose-level note above)
+      # chroma: removed (Phase 1 — Chroma Cloud, no local service)
+      # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:7878/health"]
       interval: 30s
@@ -195,8 +190,7 @@ services:
       hermes-agent: {condition: service_healthy}
 
 secrets:
-  # honcho_db_password: removed (Phase 1 — Honcho disabled, see note above)
+  # honcho_db_password: removed (Phase 1 — Honcho disabled)
+  # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
   litellm_master_key:
     file: ../secrets/litellm-master-key
-  chroma_token:
-    file: ../secrets/chroma-token

@@ -37,7 +37,17 @@ honcho:
 vector_memory:
   enabled: true
   provider: chroma
-  chroma_url: http://chroma:8000
+  # Cloud-hosted (was http://chroma:8000 self-hosted). Connection details
+  # come from secrets/chroma-cloud.env.sops:
+  #   CHROMA_CLOUD_API_KEY, CHROMA_CLOUD_HOST, CHROMA_CLOUD_TENANT, CHROMA_CLOUD_DATABASE
+  # The hermes-agent reads these env vars at startup.
+  chroma_host: ${CHROMA_CLOUD_HOST}
+  chroma_port: 443
+  chroma_ssl: true
+  chroma_headers:
+    x-chroma-token: ${CHROMA_CLOUD_API_KEY}
+  chroma_tenant: ${CHROMA_CLOUD_TENANT}
+  chroma_database: ${CHROMA_CLOUD_DATABASE}
   collection: hermes_memory
 
 mcp_servers:

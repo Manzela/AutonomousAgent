@@ -21,9 +21,7 @@ services:
     ports:
       - "127.0.0.1:4000:4000"  # exposed for direct probing
 
-  chroma:
-    ports:
-      - "127.0.0.1:8001:8000"
+  # chroma dev port-mapping removed (Phase 1 — using Chroma Cloud)
 
   # honcho dev port-mapping removed (Phase 1 — Honcho disabled)
 

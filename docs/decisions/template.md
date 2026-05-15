@@ -15,13 +15,13 @@
 ## Consequences
 
 ### Positive
-- 
+-
 
 ### Negative
-- 
+-
 
 ### Neutral
-- 
+-
 
 ## Alternatives considered
 
@@ -37,4 +37,4 @@
 
 ## References
 
-- 
+-

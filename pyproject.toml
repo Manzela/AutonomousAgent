@@ -1,0 +1,31 @@
+[project]
+name = "autonomous-agent-deploy"
+version = "0.1.0"
+description = "Deployment wrapper for Hermes Agent with self-RL pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "pyyaml>=6.0",
+  "jsonschema>=4.20",
+  "httpx>=0.27",
+  "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pytest-mock>=3.14",
+  "ruff>=0.6.9",
+]
+
+[tool.setuptools.packages.find]
+include = ["lib*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

@@ -150,12 +150,10 @@ services:
     secrets:
       - github_pat
     networks: [internal, egress]   # needs api.github.com egress
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8003/health"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+    # The official ghcr.io/github/github-mcp-server image is distroless —
+    # no wget, curl, sh, python. Nothing to exec for a healthcheck. The
+    # server logs "HTTP server listening addr=:8003" when ready; downstream
+    # services (hermes) verify connectivity via 401 probes during startup.
 
   # ---- Playwright MCP (deferred from Phase 1) ----
   #
@@ -222,7 +220,7 @@ services:
       litellm-proxy: {condition: service_healthy}
       otel-collector: {condition: service_started}
       shell-sandbox: {condition: service_started}
-      github-mcp: {condition: service_healthy}
+      github-mcp: {condition: service_started}    # distroless image has no probe binaries
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
 

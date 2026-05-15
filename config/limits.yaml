@@ -115,7 +115,7 @@ alerts:
   trajectory_shipper_lag_min: 30
 
 notify_channels:
-  telegram_chat_id: null
+  telegram_chat_id: 7217166969
   cloud_monitoring_email: null
   pagerduty_routing_key: null
 

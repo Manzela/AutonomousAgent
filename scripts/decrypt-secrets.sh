@@ -14,7 +14,23 @@ shopt -s nullglob
 for enc in *.sops; do
   out="${enc%.sops}"
   echo "Decrypting $enc -> $out"
-  sops -d "$enc" > "$out"
+  # sops cannot infer format from the .sops extension at decrypt time, so we
+  # pass an explicit type when the original suffix is a structured format.
+  case "$out" in
+    *.env)
+      sops -d --input-type dotenv --output-type dotenv "$enc" > "$out"
+      ;;
+    *.json)
+      sops -d --input-type json --output-type json "$enc" > "$out"
+      ;;
+    *.yaml | *.yml)
+      sops -d --input-type yaml --output-type yaml "$enc" > "$out"
+      ;;
+    *)
+      # Plain text / binary — sops auto-detects from content
+      sops -d "$enc" > "$out"
+      ;;
+  esac
   chmod 600 "$out"
 done
 

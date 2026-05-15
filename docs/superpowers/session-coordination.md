@@ -22,7 +22,7 @@ The model is borrowed from production engineering: *track-level ownership* with 
 
 Letters increment per active session (A, B, C, …). Reuse a letter when a session retires.
 
-> ⚠️ **Branch-name conformance.** The `branch-validation` check in [`.github/workflows/pr-validation.yml`](../../.github/workflows/pr-validation.yml) currently allows `phase/[1-4]|hotfix/...|dependabot/.+|docs/...|chore/...|feat/...|fix/...|test/...|refactor/...`. The `session-*/...` form is **not yet on the allowlist** — until the regex widens (see PR backlog), session PRs must be retitled and either renamed or have the regex extended before they merge. See [pull-requests.md](../conventions/pull-requests.md#session-branches).
+> ✅ **Branch-name conformance.** The `branch-validation` check in [`.github/workflows/pr-validation.yml`](../../.github/workflows/pr-validation.yml) accepts `session-<letter>/<path>` where `<path>` is one or more kebab-case segments separated by `/`. Both the canonical form (`session-b/p1-2-task-16-judge`) and the legacy form (`session-a/task-05-anchors-register`, no phase-tag) are allowed. PR titles still need to follow the Conventional Commits convention separately (`type(scope): lowercase subject`) — see [pull-requests.md](../conventions/pull-requests.md).
 
 ## The session-coordination ledger
 

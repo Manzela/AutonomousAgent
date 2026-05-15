@@ -57,16 +57,29 @@ jobs:
           BRANCH: ${{ github.head_ref }}
         run: |
           # Allowed patterns:
-          #   phase/[1-4]
-          #   hotfix/<short-desc>
-          #   dependabot/...
-          #   docs/<short-desc>
-          #   chore/<short-desc>
-          if [[ "$BRANCH" =~ ^(phase/[1-4]|hotfix/[a-z0-9-]+|dependabot/.+|docs/[a-z0-9-]+|chore/[a-z0-9-]+|feat/[a-z0-9-]+|fix/[a-z0-9-]+|test/[a-z0-9-]+|refactor/[a-z0-9-]+)$ ]]; then
+          #   phase/[1-4]                  — long-running phase branches
+          #   hotfix/<desc>                — branched from main, post-acceptance
+          #   dependabot/...               — Dependabot-generated bumps
+          #   docs/<desc>                  — docs-only changes
+          #   chore/<desc>                 — non-functional housekeeping
+          #   feat/<desc>                  — new functionality
+          #   fix/<desc>                   — bug fixes
+          #   test/<desc>                  — test-only changes
+          #   refactor/<desc>              — non-functional code restructure
+          #   session-<letter>/<path>      — parallel-session per-task branches
+          #     letter   : a-z (one per active session, e.g. `session-a`)
+          #     path     : one or more kebab-case segments separated by `/`
+          #     canonical: session-<letter>/p<N>-<M>-task-<NN>-<slug>
+          #                e.g. `session-b/p1-2-task-16-judge`
+          #     legacy   : session-<letter>/task-<NN>-<slug>
+          #                e.g. `session-a/task-05-anchors-register`
+          # See docs/superpowers/session-coordination.md for the parallel-session model.
+          # `<desc>` is `[a-z0-9-]+` for everything except dependabot and session-*.
+          if [[ "$BRANCH" =~ ^(phase/[1-4]|hotfix/[a-z0-9-]+|dependabot/.+|docs/[a-z0-9-]+|chore/[a-z0-9-]+|feat/[a-z0-9-]+|fix/[a-z0-9-]+|test/[a-z0-9-]+|refactor/[a-z0-9-]+|session-[a-z]/[a-z0-9-]+(/[a-z0-9-]+)*)$ ]]; then
             echo "✓ Branch name '$BRANCH' matches convention"
           else
             echo "::error::Branch name '$BRANCH' does not match convention."
-            echo "::error::Allowed: phase/{1-4}, hotfix/<desc>, feat/<desc>, fix/<desc>, docs/<desc>, chore/<desc>, refactor/<desc>, test/<desc>, dependabot/*"
-            echo "::error::See docs/conventions/branching.md"
+            echo "::error::Allowed: phase/{1-4}, hotfix/<desc>, feat/<desc>, fix/<desc>, docs/<desc>, chore/<desc>, refactor/<desc>, test/<desc>, dependabot/*, session-<letter>/<path>"
+            echo "::error::See docs/conventions/branching.md and docs/superpowers/session-coordination.md"
             exit 1
           fi

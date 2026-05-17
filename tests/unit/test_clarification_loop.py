@@ -80,7 +80,21 @@ def test_already_draft_locked_low_confidence_returns_noop():
 
 
 def test_clock_skew_negative_silence_does_not_break():
-    """If last_user_msg_at > now (mocked time / NTP drift), silence_h is clamped to 0."""
+    """Smoke: future last_user_msg_at must NOT raise or return an unexpected kind.
+
+    KNOWN LIMITATION (red-green verified 2026-05-15): this test is a
+    documentation-only smoke test, not a true regression test for the
+    `silence_h = max(0.0, ...)` clamp in decide_next_action. With future
+    timestamps, the underlying delta is negative; both silence comparisons
+    (`> 4` and `> 24`) return False either way, so removing the clamp does
+    NOT change the returned Action.kind — only the (cosmetic) `silence_h`
+    value interpolated into the reason string. To make this a true
+    red-green test, decide_next_action would need to expose silence_h via
+    a helper, OR the clamp would need a code path where its absence
+    actually changes Action.kind. Until then, this test asserts the smoke
+    path (no exception, sensible kind) and the clamp itself is defensive
+    (good practice; avoids negative numbers in log messages).
+    """
     future = datetime.now(timezone.utc) + timedelta(hours=2)
     state = ClarificationState(
         questions_asked=3,
@@ -88,7 +102,8 @@ def test_clock_skew_negative_silence_does_not_break():
         confidence=0.5,
     )
     action = decide_next_action(state, now=datetime.now(timezone.utc))
-    # silence_h clamps to 0 → not silent → no draft_lock → ask_next
+    # Either with or without the clamp, this returns ask_next (silence_h is
+    # negative, both silence checks fail, lock/escalate not triggered).
     assert action.kind == "ask_next"
 
 

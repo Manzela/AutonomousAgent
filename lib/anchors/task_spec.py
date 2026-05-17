@@ -11,11 +11,13 @@ from datetime import datetime
 from typing import Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Scope(BaseModel):
     """In-scope and out-of-scope items for the task."""
+
+    model_config = ConfigDict(extra="forbid")
 
     in_scope: list[str] = Field(min_length=1)
     out_of_scope: list[str] = Field(min_length=1)
@@ -30,7 +32,18 @@ class TaskSpec(BaseModel):
 
     The 6 mandatory fields are what every judge in P1-2 scores against.
     Operational fields (budget, deadline, etc.) are optional.
+
+    NOTE on immutability: This model deliberately does NOT use
+    ``frozen=True``. Status transitions (``draft`` → ``draft_locked`` →
+    ``locked`` → ``superseded``) are implemented via ``model_copy(update={...})``,
+    which ``frozen=True`` would break. The "immutable post-lock"
+    invariant is enforced at the persistence layer (``spec_store.SpecStore``
+    only writes once per ``spec_id``; spec edits create a new row with
+    ``parent_spec_sha`` linking back). Adding ``frozen=True`` here would
+    silently break P1-1 status transitions.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     # --- Mandatory (clarification loop must populate all 6) ---
     title: str = Field(min_length=1)

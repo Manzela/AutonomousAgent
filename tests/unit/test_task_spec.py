@@ -59,3 +59,22 @@ def test_serialization_roundtrip():
     parsed = TaskSpec.model_validate_json(json_str)
     assert parsed.title == spec.title
     assert parsed.spec_id == spec.spec_id
+
+
+def test_extra_field_forbidden():
+    """Typos in field names should raise ValidationError, not be silently dropped."""
+    kwargs = _minimal_kwargs()
+    kwargs["escalate_h"] = 24  # typo for "escalation_h"
+    with pytest.raises(ValidationError):
+        TaskSpec(**kwargs)
+
+
+def test_status_transition_via_model_copy_works():
+    """model_copy(update={...}) MUST work for status transitions; this would
+    break if anyone adds frozen=True to TaskSpec."""
+    spec = TaskSpec(**_minimal_kwargs())
+    locked = spec.model_copy(update={"status": "locked"})
+    superseded = locked.model_copy(update={"status": "superseded", "superseded_by": "x" * 64})
+    assert locked.status == "locked"
+    assert superseded.status == "superseded"
+    assert superseded.superseded_by == "x" * 64

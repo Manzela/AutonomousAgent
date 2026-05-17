@@ -1,5 +1,5 @@
 budget:
-  daily_usd_cap: 100
+  daily_usd_cap: 500
   per_task_input_tokens: null
   per_task_output_tokens: null
   per_conversation_context: null
@@ -21,6 +21,8 @@ sandboxes:
 agent:
   max_turns_per_task: 50
   max_concurrent_tasks: 3
+  dynamic_guardrails: true
+  telegram_escalation_timeout_h: 24
 
 nudges:
   memory_curator_interval: "0 */6 * * *"

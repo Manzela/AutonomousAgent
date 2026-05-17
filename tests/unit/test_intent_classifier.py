@@ -40,3 +40,18 @@ def test_classify_intent_strips_response():
     fake_llm.complete.return_value = "  audit  \n"
     result = classify_intent("...", llm=fake_llm)
     assert result == "audit"
+
+
+def test_classify_intent_empty_response_falls_back():
+    fake_llm = MagicMock()
+    fake_llm.complete.return_value = ""
+    result = classify_intent("...", llm=fake_llm)
+    assert result == "unknown"
+
+
+def test_classify_intent_exception_falls_back():
+    """Exceptions from llm.complete should fall back to 'unknown', not propagate."""
+    fake_llm = MagicMock()
+    fake_llm.complete.side_effect = RuntimeError("network down")
+    result = classify_intent("...", llm=fake_llm)
+    assert result == "unknown"

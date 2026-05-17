@@ -1,20 +1,25 @@
 """Atomic JSON persistence for TaskSpec + sha256 stamping.
 
-Writes are atomic via os.rename (POSIX guarantee on same filesystem).
-sha256 is computed over normalized JSON: spec_sha field nulled, sorted
-keys, no whitespace, ISO datetimes. This makes the sha stable across
-serialization round-trips.
+Writes are atomic via os.replace (POSIX rename that overwrites target;
+also works on Windows). sha256 is computed over normalized JSON: spec_sha
+field nulled, sorted keys, no whitespace, ISO datetimes. This makes the
+sha stable across serialization round-trips.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from uuid import UUID
 
+from pydantic import ValidationError
+
 from lib.anchors.task_spec import TaskSpec
+
+logger = logging.getLogger(__name__)
 
 _SHA_PLACEHOLDER = "placeholder"
 
@@ -36,7 +41,8 @@ def compute_spec_sha(spec: TaskSpec) -> str:
 class SpecStore:
     """Persistence layer for TaskSpec instances.
 
-    File layout: ``<root>/<spec_id>.json``. Atomic via tmp+rename.
+    File layout: ``<root>/<spec_id>.json``. Atomic via tmp + os.replace
+    (POSIX rename that overwrites target; works on Windows too).
     """
 
     def __init__(self, root: Path):
@@ -60,13 +66,19 @@ class SpecStore:
         return TaskSpec.model_validate_json(path.read_text())
 
     def list_active(self) -> list[TaskSpec]:
-        """Return all specs with status in {'draft', 'draft_locked', 'locked'}."""
+        """Return all specs with status in {'draft', 'draft_locked', 'locked'}.
+
+        Skips files that fail to parse as valid TaskSpec JSON (logged as warning),
+        so a single corrupted file doesn't take down the whole list. Catches
+        only json/validation/OS errors — programming bugs (e.g. KeyError) propagate.
+        """
         out = []
         for p in self.root.glob("*.json"):
             try:
                 spec = TaskSpec.model_validate_json(p.read_text())
-            except Exception:
-                continue  # corrupted file; skip
+            except (json.JSONDecodeError, ValidationError, OSError) as exc:
+                logger.warning("Skipping corrupted spec file %s: %s", p, exc)
+                continue
             if spec.status in ("draft", "draft_locked", "locked"):
                 out.append(spec)
         return out

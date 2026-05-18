@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import httpx
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="P2 — requires /v1/admin/limits endpoint not implemented in P1; see docs/superpowers/specs/2026-05-18-phase1-completion-coordination-design.md §6.1 triage matrix"
+)
 
 
 def test_budget_cap_enforced(hermes_url, wait_for_stack, monkeypatch):

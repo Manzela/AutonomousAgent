@@ -51,7 +51,7 @@ _(none yet — section grows as phases accept)_
 
 | Session | Track | Owner-since | Status | Branch | Notes |
 |---|---|---|---|---|---|
-| C | P1-3 (checkpointing) | _(set on claim)_ | not-yet-claimed | session-c/p1-3-* | Fills `_p1_3_resume_session` stub in `lib/durability/__init__.py` |
+| C | P1-3 (checkpointing) | 2026-05-18 | in-flight | session-c/p1-3-checkpoint-and-resume | Fills `_p1_3_resume_session` stub in `lib/durability/__init__.py` |
 | D | P1-4 (REJECTED.md) | _(set on claim)_ | not-yet-claimed | session-d/p1-4-* | Fills `_p1_4_inject_rejected` stub in `lib/durability/__init__.py` |
 | E | P1-5 (Kanban→Telegram) | _(set on claim)_ | not-yet-claimed | session-e/p1-5-* | Replaces `TODO(P1-5)` in `lib/anchors/__init__.py:55` |
 

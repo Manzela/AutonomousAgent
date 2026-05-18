@@ -11,6 +11,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 URL_FILE="$ROOT/secrets/healthchecks-url"
 URL_SOPS="$ROOT/secrets/healthchecks-url.sops"
 
+# Ensure logs directory exists for the cron output redirect
+mkdir -p "$ROOT/logs"
+
 if [ ! -f "$URL_FILE" ]; then
   if [ ! -f "$URL_SOPS" ]; then
     echo "ERROR: $URL_SOPS does not exist." >&2
@@ -25,8 +28,8 @@ fi
 
 URL="$(cat "$URL_FILE")"
 
-# Check that hermes-agent container is healthy
-if docker compose -f "$ROOT/deploy/docker-compose.yml" ps hermes-agent --format json | grep -q '"Health":"healthy"'; then
+# Check that hermes container is healthy
+if docker compose -f "$ROOT/deploy/docker-compose.yml" ps hermes --format json | grep -q '"Health":"healthy"'; then
   curl -fsS -m 10 "$URL" > /dev/null
   echo "Pinged healthy"
 else

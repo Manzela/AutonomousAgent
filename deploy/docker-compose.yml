@@ -237,6 +237,12 @@ services:
       - ../config/limits.yaml:/app/runtime/limits.yaml:ro
       - ../config/scrubber-patterns.yaml:/app/runtime/scrubber-patterns.yaml:ro
       - ../config/toolsets.yaml:/app/runtime/toolsets.yaml:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       litellm-proxy: {condition: service_healthy}
       otel-collector: {condition: service_started}

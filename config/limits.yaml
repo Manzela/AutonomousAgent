@@ -171,3 +171,10 @@ durability:
     autoresume_enabled: true
   escalation:
     watcher_interval_s: 300
+
+memory:
+  rejected_md_path: /data/MEMORY/REJECTED.md
+  rejected_default_ttl_days: 30
+  rejected_max_inject_per_session: 10
+  intent_categories: [coding, audit, research, writing, ops, data, unknown]
+  intent_classifier_model: vertex_ai/claude-sonnet-4-6

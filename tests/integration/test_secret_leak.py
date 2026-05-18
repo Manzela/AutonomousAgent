@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import httpx
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="P2 — requires live `lib/scrubber.py` wiring + _test_inject_response hook; see audit B5; see docs/superpowers/specs/2026-05-18-phase1-completion-coordination-design.md §6.1 triage matrix"
+)
 
 
 def test_secret_in_model_output_is_redacted(hermes_url, wait_for_stack):

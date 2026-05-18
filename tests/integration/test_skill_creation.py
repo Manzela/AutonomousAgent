@@ -7,6 +7,10 @@ import time
 import httpx
 import pytest
 
+pytestmark = pytest.mark.skip(
+    reason="P2 — requires /v1/nudges/skill_extractor/run endpoint; manual skill creation still exercised by acceptance step 2; see docs/superpowers/specs/2026-05-18-phase1-completion-coordination-design.md §6.1 triage matrix"
+)
+
 
 @pytest.mark.slow
 def test_complex_session_creates_skill(hermes_url, wait_for_stack, tmp_path):

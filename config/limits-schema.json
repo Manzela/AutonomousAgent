@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["budget", "retries", "sandboxes", "agent", "nudges", "health", "snapshots", "approval", "rl_rewards", "rl_training", "alerts", "notify_channels", "log_retention", "local_logs_dev", "anchors", "evaluators"],
+  "required": ["budget", "retries", "sandboxes", "agent", "nudges", "health", "snapshots", "approval", "rl_rewards", "rl_training", "alerts", "notify_channels", "log_retention", "local_logs_dev", "anchors", "evaluators", "durability"],
   "additionalProperties": false,
   "properties": {
     "budget": {
@@ -18,11 +18,24 @@
     "retries": {
       "type": "object",
       "required": ["litellm_max_attempts", "litellm_initial_backoff_s", "litellm_max_backoff_s", "litellm_jitter_pct"],
+      "additionalProperties": false,
       "properties": {
         "litellm_max_attempts": {"type": "integer", "minimum": 1, "maximum": 20},
         "litellm_initial_backoff_s": {"type": "number", "minimum": 0},
         "litellm_max_backoff_s": {"type": "number", "minimum": 1},
-        "litellm_jitter_pct": {"type": "integer", "minimum": 0, "maximum": 100}
+        "litellm_jitter_pct": {"type": "integer", "minimum": 0, "maximum": 100},
+        "self_heal": {
+          "type": "object",
+          "required": ["max_retries", "backoff_strategy", "base_delay_ms", "max_delay_ms", "jitter_range_pct"],
+          "additionalProperties": false,
+          "properties": {
+            "max_retries": {"type": "integer", "minimum": 1, "maximum": 20},
+            "backoff_strategy": {"type": "string", "enum": ["exponential_with_jitter", "linear", "constant"]},
+            "base_delay_ms": {"type": "integer", "minimum": 1},
+            "max_delay_ms": {"type": "integer", "minimum": 1},
+            "jitter_range_pct": {"type": "integer", "minimum": 0, "maximum": 100}
+          }
+        }
       }
     },
     "sandboxes": {
@@ -164,6 +177,32 @@
             "safety": {"type": "string"},
             "scope-fit": {"type": "string"},
             "completeness": {"type": "string"}
+          }
+        }
+      }
+    },
+    "durability": {
+      "type": "object",
+      "required": ["checkpoint", "escalation"],
+      "additionalProperties": false,
+      "properties": {
+        "checkpoint": {
+          "type": "object",
+          "required": ["interval_steps", "retention_count", "keep_every_nth", "autoresume_enabled"],
+          "additionalProperties": false,
+          "properties": {
+            "interval_steps": {"type": "integer", "minimum": 1},
+            "retention_count": {"type": "integer", "minimum": 1},
+            "keep_every_nth": {"type": "integer", "minimum": 1},
+            "autoresume_enabled": {"type": "boolean"}
+          }
+        },
+        "escalation": {
+          "type": "object",
+          "required": ["watcher_interval_s"],
+          "additionalProperties": false,
+          "properties": {
+            "watcher_interval_s": {"type": "integer", "minimum": 30}
           }
         }
       }

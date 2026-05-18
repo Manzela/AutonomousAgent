@@ -123,10 +123,11 @@ services:
     image: arizephoenix/phoenix:latest
     <<: [*restart_policy, *json_logging]
     ports:
-      - "4317:4317"   # OTLP gRPC receiver
-      - "6006:6006"   # Phoenix UI + OTLP HTTP receiver
+      - "127.0.0.1:4317:4317"   # OTLP gRPC receiver
+      - "127.0.0.1:6006:6006"   # Phoenix UI + OTLP HTTP receiver
     volumes:
       - phoenix-data:/mnt/data
+    # egress only to satisfy Docker port-publishing constraint (internal: true networks block published ports), not for Phoenix runtime traffic
     networks: [internal, egress]
 
   # ---- Sandboxes ----

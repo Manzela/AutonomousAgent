@@ -22,6 +22,7 @@ volumes:
   # chroma-data: removed (Phase 1 — using Chroma Cloud instead of self-hosted)
   # honcho-db-data: removed (Phase 1 — Honcho disabled)
   workspace:
+  phoenix-data:
 
 services:
 
@@ -108,6 +109,25 @@ services:
     # binaries (no wget, curl, sh, nc, python). With nothing to exec, the
     # only signal we have is the container's own restart-on-failure policy
     # and its OTLP receiver behavior visible to upstream services.
+
+  # ---- Phoenix observability UI ----
+  #
+  # Phoenix receives OTel traces from the collector and provides a web UI
+  # for browsing LLM calls, tool invocations, and latency. Port 6006 serves
+  # the UI and also acts as an OTLP HTTP receiver (/v1/traces). Port 4317
+  # is the OTLP gRPC receiver (currently unused; collector routes to 6006
+  # HTTP). Both ports are published for Phase 1 acceptance (step 4 requires
+  # the human to open localhost:6006 in a browser).
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    <<: [*restart_policy, *json_logging]
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "6006:6006"   # Phoenix UI + OTLP HTTP receiver
+    volumes:
+      - phoenix-data:/mnt/data
+    networks: [internal, egress]
 
   # ---- Sandboxes ----
 

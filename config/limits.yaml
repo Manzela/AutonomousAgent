@@ -10,6 +10,12 @@ retries:
   litellm_initial_backoff_s: 1
   litellm_max_backoff_s: 60
   litellm_jitter_pct: 25
+  self_heal:
+    max_retries: 3
+    backoff_strategy: exponential_with_jitter
+    base_delay_ms: 500
+    max_delay_ms: 30000
+    jitter_range_pct: 25
 
 sandboxes:
   shell_timeout_s: 120
@@ -156,3 +162,12 @@ evaluators:
     safety: vertex_ai/claude-opus-4-7
     scope-fit: vertex_ai/claude-sonnet-4-6
     completeness: vertex_ai/gemini-3.1-pro-preview
+
+durability:
+  checkpoint:
+    interval_steps: 5
+    retention_count: 50
+    keep_every_nth: 100
+    autoresume_enabled: true
+  escalation:
+    watcher_interval_s: 300

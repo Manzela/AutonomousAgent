@@ -251,6 +251,32 @@ services:
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
 
+  # ---- Escalation watcher (P1-6) ----
+  #
+  # Periodic 24h Telegram-silence watcher. Scans the Hermes Kanban DB for
+  # cards stuck in `blocked` longer than `agent.telegram_escalation_timeout_h`
+  # (default 24h) and emits F32 escalations. Reads limits.yaml on every
+  # iteration so threshold/interval changes are hot-reloaded without a
+  # sidecar restart. Sidecar by design — keeping it out of `hermes` proper
+  # means a watcher crash never takes down the agent loop.
+
+  escalation-watcher:
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    container_name: autonomous-agent-escalation-watcher-1
+    command: ["python", "/app/scripts/escalation_loop.py"]
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ../config/limits.yaml:/config/limits.yaml:ro
+      - hermes-data:/root/.hermes
+      - ../lib:/app/lib:ro
+      - ../scripts:/app/scripts:ro
+    networks: [internal, egress]   # egress for Telegram outbound
+    depends_on:
+      hermes: {condition: service_started}
+
 secrets:
   # honcho_db_password: removed (Phase 1 — Honcho disabled)
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)

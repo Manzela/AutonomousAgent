@@ -87,7 +87,7 @@ def decide_consensus(
             reject_count=r,
             unsure_count=u,
             escalated=True,
-            rationale=f"No-quorum (a={a},r={r},u={u}); F60 -> escalate to 5th judge",
+            rationale=f"No-quorum (a={a},r={r},u={u}); F24 -> escalate to 5th judge",
             judges=judges,
         )
 
@@ -120,7 +120,7 @@ def decide_consensus(
         reject_count=r,
         unsure_count=u + 1,
         escalated=True,
-        rationale="5th judge unsure; F60 -> Fail-Loud",
+        rationale="5th judge unsure; F24 -> Fail-Loud",
         judges=judges,
         fifth_judge=fifth_judge,
     )

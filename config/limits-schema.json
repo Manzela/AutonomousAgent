@@ -147,8 +147,8 @@
           "type": "object",
           "required": ["accept_threshold", "reject_threshold", "on_split", "fifth_judge_model"],
           "properties": {
-            "accept_threshold": {"type": "integer", "minimum": 1},
-            "reject_threshold": {"type": "integer", "minimum": 1},
+            "accept_threshold": {"type": "number", "minimum": 0, "maximum": 1, "exclusiveMinimum": 0},
+            "reject_threshold": {"type": "number", "minimum": 0, "maximum": 1, "exclusiveMinimum": 0},
             "on_split": {"type": "string", "enum": ["escalate_to_5th_judge"]},
             "fifth_judge_model": {"type": "string"}
           }

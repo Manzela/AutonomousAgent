@@ -266,6 +266,11 @@ services:
       - ../lib/durability:/root/.hermes/plugins/durability:ro
       - ../lib/memory:/root/.hermes/plugins/memory:ro
       - ../lib/kanban:/root/.hermes/plugins/kanban:ro
+      # Observability: initializes the OTel SDK (env vars alone aren't enough,
+      # Hermes ships an uninitialized ProxyTracerProvider by default) and emits
+      # the app-level spans the Phase 1 acceptance runbook step 4 expects:
+      # turn.start, tool.dispatch, model.call at service.name=hermes-agent.
+      - ../lib/observability:/root/.hermes/plugins/observability:ro
       # The plugins above declare `from lib.X import Y` for cross-module
       # imports inside their own __init__.py. Mount the full lib/ as a
       # PYTHONPATH-rooted package at /app/lib so those imports resolve.

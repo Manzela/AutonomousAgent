@@ -116,16 +116,41 @@ class Checkpoint:
                     payload[k] = v
 
         path = self.step_path(step)
-        # Atomic write: temp file then rename. Disk-full will surface as OSError
-        # at the write() call (which trichotomy maps to F28).
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(payload, f, separators=(",", ":"))
-            f.flush()
+        # Atomic write: write to <path>.tmp, fsync, os.replace into place, then
+        # fsync the parent dir to persist the rename. Guarantees that readers
+        # (incl. resume) never observe a half-written step-N.json — only a
+        # stale .tmp may appear, which the cleanup branch removes when possible.
+        # Disk-full surfaces as OSError at the .tmp open/write (trichotomy → F28).
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, separators=(",", ":"))
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except (OSError, AttributeError):
+                    # Best-effort fsync; on tmpfs/fakefs this may be unavailable.
+                    pass
+            os.replace(tmp_path, path)
+            # fsync the parent directory so the rename is durable across crashes.
             try:
-                os.fsync(f.fileno())
+                dirfd = os.open(str(path.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dirfd)
+                finally:
+                    os.close(dirfd)
             except (OSError, AttributeError):
-                # Best-effort fsync; on tmpfs/fakefs this may be unavailable.
+                # Best-effort: directory fsync is unsupported on tmpfs/Windows.
                 pass
+        except OSError:
+            # Clean up the stale temp file if it exists; re-raise so the
+            # trichotomy classifier (F28 for disk-full) sees the original error.
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
+            raise
 
         self._apply_retention()
         return path

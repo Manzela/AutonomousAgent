@@ -88,11 +88,16 @@ def test_checkpoint_rolling_retention_caps_at_50_plus_every_100th(chkpt, tmp_pat
 
 
 def test_checkpoint_disk_full_classifies_to_F28(chkpt, tmp_path):
-    """OSError 'No space left on device' on write → trichotomy.classify == F28."""
+    """OSError 'No space left on device' on write → trichotomy.classify == F28.
+
+    With the atomic-write fix the OSError now surfaces from the .tmp open
+    (write goes to step-N.json.tmp before os.replace into place), but the
+    classifier path is unchanged — disk-full still maps to F28.
+    """
     real_open = open
 
     def fake_open(*args, **kwargs):
-        # Only intercept writes to the checkpoint file; leave reads alone.
+        # Only intercept writes to the checkpoint .tmp file; leave reads alone.
         if len(args) >= 2 and "w" in str(args[1]):
             raise OSError("No space left on device")
         return real_open(*args, **kwargs)
@@ -102,3 +107,35 @@ def test_checkpoint_disk_full_classifies_to_F28(chkpt, tmp_path):
             chkpt.write(step=5, state=_state(5))
 
     assert trichotomy.classify(ei.value) == "F28"
+
+
+def test_atomic_write_no_partial_files_on_crash(chkpt, tmp_path, session_id):
+    """If json.dump raises mid-write, the destination .json file must NOT exist.
+
+    Guards the temp-file-then-rename atomicity contract documented in
+    checkpoint.write(): readers (incl. resume) must never observe a half-
+    written step-N.json. Only the .tmp sibling may briefly appear, and the
+    cleanup branch removes it when possible.
+    """
+    real_dump = json.dump
+
+    def fake_dump(obj, fp, *args, **kwargs):
+        # Simulate a crash mid-serialization: write a fragment, then raise.
+        fp.write('{"partial":')
+        raise OSError("simulated crash mid-write")
+
+    with patch("lib.durability.checkpoint.json.dump", side_effect=fake_dump):
+        with pytest.raises(OSError):
+            chkpt.write(step=5, state=_state(5))
+
+    # The destination JSON file must NOT exist — atomicity contract.
+    step_file = tmp_path / session_id / "step-5.json"
+    assert not step_file.exists(), (
+        "Atomic write contract violated — partial step-5.json exists after a "
+        "crash mid-json.dump (should only ever rename a fully-written file)."
+    )
+    # And the cleanup branch should have removed the stale .tmp sibling.
+    tmp_file = tmp_path / session_id / "step-5.json.tmp"
+    assert not tmp_file.exists(), "Stale .tmp file was not cleaned up after OSError mid-write."
+
+    _ = real_dump  # silence unused-binding lint; the real impl is patched away.

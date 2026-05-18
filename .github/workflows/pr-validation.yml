@@ -57,7 +57,7 @@ jobs:
           BRANCH: ${{ github.head_ref }}
         run: |
           # Allowed patterns:
-          #   phase/[1-4]                  — long-running phase branches
+          #   phase/[1-4](-<slug>)?         — long-running phase branches + per-phase integration sub-branches (e.g. phase/1-completion)
           #   hotfix/<desc>                — branched from main, post-acceptance
           #   dependabot/...               — Dependabot-generated bumps
           #   docs/<desc>                  — docs-only changes
@@ -75,7 +75,7 @@ jobs:
           #                e.g. `session-a/task-05-anchors-register`
           # See docs/superpowers/session-coordination.md for the parallel-session model.
           # `<desc>` is `[a-z0-9-]+` for everything except dependabot and session-*.
-          if [[ "$BRANCH" =~ ^(phase/[1-4]|hotfix/[a-z0-9-]+|dependabot/.+|docs/[a-z0-9-]+|chore/[a-z0-9-]+|feat/[a-z0-9-]+|fix/[a-z0-9-]+|test/[a-z0-9-]+|refactor/[a-z0-9-]+|session-[a-z]/[a-z0-9-]+(/[a-z0-9-]+)*)$ ]]; then
+          if [[ "$BRANCH" =~ ^(phase/[1-4](-[a-z0-9-]+)?|hotfix/[a-z0-9-]+|dependabot/.+|docs/[a-z0-9-]+|chore/[a-z0-9-]+|feat/[a-z0-9-]+|fix/[a-z0-9-]+|test/[a-z0-9-]+|refactor/[a-z0-9-]+|session-[a-z]/[a-z0-9-]+(/[a-z0-9-]+)*)$ ]]; then
             echo "✓ Branch name '$BRANCH' matches convention"
           else
             echo "::error::Branch name '$BRANCH' does not match convention."

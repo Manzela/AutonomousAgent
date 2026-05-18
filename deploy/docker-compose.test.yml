@@ -24,6 +24,12 @@ services:
   hermes:
     profiles: ["disabled"]  # no Telegram in tests (the agent-as-gateway lives off)
 
+  # escalation-watcher hard-depends on `hermes` (which is disabled above for tests).
+  # Disable it too so `docker compose -f ... -f docker-compose.test.yml config` doesn't
+  # fail with "depends on undefined service".
+  escalation-watcher:
+    profiles: ["disabled"]
+
   # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
   # named volume. CI tears it down with `docker compose down -v` between runs,
   # so it is effectively ephemeral. (We previously tried `tmpfs: /data` here

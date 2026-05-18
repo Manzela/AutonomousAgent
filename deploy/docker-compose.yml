@@ -221,6 +221,12 @@ services:
     networks: [internal, egress]
     volumes:
       - hermes-data:/data
+      # P1-5: Kanban SQLite DB persistence. Hermes writes the DB under
+      # /root/.hermes/kanban/kanban.db (see kanban_db.py default path).
+      # The escalation-watcher sidecar already mounts the same named
+      # volume at /root/.hermes; this mount makes the DB visible to
+      # the hermes service itself so the agent can read/write it.
+      - hermes-data:/root/.hermes
       # Hermes reads its config from /root/.hermes/config.yaml exclusively
       # (the HERMES_CONFIG env var is for `hermes config edit`, not for
       # runtime resolution). Mount our cli-config.yaml directly there.

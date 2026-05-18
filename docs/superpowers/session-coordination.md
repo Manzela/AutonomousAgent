@@ -47,6 +47,14 @@ Append-only during a phase; pruned when a phase is accepted into `main`.
 
 _(none yet — section grows as phases accept)_
 
+### Active sessions (Phase 1 completion)
+
+| Session | Track | Owner-since | Status | Branch | Notes |
+|---|---|---|---|---|---|
+| C | P1-3 (checkpointing) | _(set on claim)_ | not-yet-claimed | session-c/p1-3-* | Fills `_p1_3_resume_session` stub in `lib/durability/__init__.py` |
+| D | P1-4 (REJECTED.md) | _(set on claim)_ | not-yet-claimed | session-d/p1-4-* | Fills `_p1_4_inject_rejected` stub in `lib/durability/__init__.py` |
+| E | P1-5 (Kanban→Telegram) | _(set on claim)_ | not-yet-claimed | session-e/p1-5-* | Replaces `TODO(P1-5)` in `lib/anchors/__init__.py:55` |
+
 ## Conflict-prevention rules
 
 These are the conventions that make 5+ parallel sessions actually work without nightly rebase parties.

@@ -178,3 +178,8 @@ memory:
   rejected_max_inject_per_session: 10
   intent_categories: [coding, audit, research, writing, ops, data, unknown]
   intent_classifier_model: vertex_ai/claude-sonnet-4-6
+
+kanban:
+  db_path: /root/.hermes/kanban/kanban.db
+  notification_rate_limit_per_minute: 6
+  use_hermes_status_names: true   # accept Hermes' enum, don't fork

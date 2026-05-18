@@ -48,11 +48,20 @@ def _slash_skip(raw_args: str) -> str:
 def _slash_cancel(raw_args: str) -> str:
     """`/cancel` (no arg) — abandon the current draft spec.
 
-    With an argument it's the P1-5 card-cancel command; the kanban plugin
-    handles that case. Argument-presence dispatch happens at the bridge layer.
+    With an argument it dispatches to the P1-5 Kanban bridge to archive
+    the named card. Local import keeps the kanban module out of the
+    fast path when only the P1-1 draft flow is in play.
     """
-    if raw_args.strip():
-        return "TODO(P1-5): /cancel <id> handled by kanban plugin."
+    arg = raw_args.strip()
+    if arg:
+        # Local import: avoid forcing eager import of the kanban package
+        # (which lazy-loads Hermes' kanban_db) when only the draft flow is used.
+        from lib.kanban import telegram_bridge
+
+        ok = telegram_bridge.cancel_card(arg)
+        if ok:
+            return f"Cancelled card {arg}."
+        return f"Could not cancel card {arg} (not found, already archived, or unavailable)."
     return "TODO(P1-1 task 6): abandon the current draft TaskSpec."
 
 

@@ -46,7 +46,48 @@ Expected: Bot summarizes the prior 10-message conversation.
 
 ### Step 4 — Verify traces visible in Phoenix
 
-Open http://localhost:6006. Filter for service.name=hermes-agent. Inspect at least one trace from your conversation; verify spans for `turn.start`, `model.call`, `tool.dispatch`.
+Open http://localhost:6006. The default Phoenix project is named `default` —
+all spans land there (collector → Phoenix is single-tenant; per-service
+projects are a Phase 2 routing-exporter task).
+
+Inspect at least one recent trace from your conversation; verify the
+following span names appear with their expected attributes:
+
+- **`turn.start`** — emitted by the `observability` plugin (`lib/observability/__init__.py`)
+  on `on_session_start`. Attributes: `model`, `platform`, `session.id`.
+- **`model.call`** — emitted on `pre_llm_call` -> `post_llm_call`.
+  Attributes: `session.id`, `model`, `platform`, `is_first_turn`,
+  `response.length`.
+- **`tool.dispatch`** — emitted on `pre_tool_call` -> `post_tool_call`
+  (when the LLM invokes a tool). Attributes: `tool.name`, `session.id`,
+  `duration_ms`, and `error.type` if the tool raised.
+- LiteLLM-emitted spans: `Received Proxy Server Request`, `proxy_pre_call`,
+  `router`, `raw_gen_ai_request`, `self`. These come from the proxy
+  callback (`callbacks: ["otel"]` in `deploy/litellm/config.yaml`) and
+  cover the LLM API leg.
+
+The OTel resource attribute `service.name` is set to `hermes-agent` for
+spans emitted by the agent (configured in
+`lib/observability/otel_setup.py`); LiteLLM-emitted spans carry their own
+service name. Phoenix does not surface resource attrs directly in its
+default span listing — to confirm, click any span to open the detail
+panel and look under "Resource".
+
+Quick scriptable check (returns the unique span names in the most recent 200):
+
+```bash
+curl -sS -X POST http://localhost:6006/graphql \
+  -H "Content-Type: application/json" \
+  -d '{"query":"{ projects { edges { node { spans(first:200, sort:{col:startTime, dir:desc}) { edges { node { name } } } } } } }"}' \
+  | python3 -c "
+import json, sys
+spans = json.load(sys.stdin)['data']['projects']['edges'][0]['node']['spans']['edges']
+print('Unique span names:', sorted(set(s['node']['name'] for s in spans)))
+"
+```
+
+Expected output to include `turn.start`, `model.call`, and (if the
+conversation invoked tools) `tool.dispatch`.
 
 ### Step 5 — Verify no secret leaks
 

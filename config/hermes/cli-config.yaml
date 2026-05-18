@@ -107,8 +107,9 @@ logs:
 # module mounted into the container via deploy/docker-compose.yml.
 plugins:
   enabled:
-    - anchors      # P1-1 TaskSpec + clarification loop
-    - evaluators   # P1-2 multi-judge panel
-    - durability   # P1-3/4/6 checkpointing + REJECTED-inject + retry
-    - memory       # P1-4 /forget + /rejections slash commands
-    - kanban       # P1-5 Kanban -> Telegram bridge
+    - anchors        # P1-1 TaskSpec + clarification loop
+    - evaluators     # P1-2 multi-judge panel
+    - durability     # P1-3/4/6 checkpointing + REJECTED-inject + retry
+    - memory         # P1-4 /forget + /rejections slash commands
+    - kanban         # P1-5 Kanban -> Telegram bridge
+    - observability  # OTel SDK init + turn.start/tool.dispatch/model.call spans (Phase 1 acceptance step 4)

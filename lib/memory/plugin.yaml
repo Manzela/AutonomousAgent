@@ -1,0 +1,5 @@
+name: memory
+version: 0.1.0
+description: "P1-4 REJECTED.md institutional memory — /forget and /rejections slash commands"
+kind: standalone
+provides_hooks: []

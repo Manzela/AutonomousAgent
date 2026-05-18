@@ -98,3 +98,17 @@ logs:
   format: json
   level: INFO
   destination: stdout
+
+# Phase 1 plugin allow-list (audit final-sweep P0-α resolution).
+#
+# Hermes' PluginManager is opt-in by default — standalone plugins discovered
+# under ~/.hermes/plugins/<name>/ ONLY load when their name appears here
+# (see hermes_cli/plugins.py:826-905). Each entry corresponds to a lib/<name>
+# module mounted into the container via deploy/docker-compose.yml.
+plugins:
+  enabled:
+    - anchors      # P1-1 TaskSpec + clarification loop
+    - evaluators   # P1-2 multi-judge panel
+    - durability   # P1-3/4/6 checkpointing + REJECTED-inject + retry
+    - memory       # P1-4 /forget + /rejections slash commands
+    - kanban       # P1-5 Kanban -> Telegram bridge

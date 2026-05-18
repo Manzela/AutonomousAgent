@@ -133,3 +133,26 @@ log_retention:
 local_logs_dev:
   rotate_size_mb: 100
   keep_files: 5
+
+anchors:
+  max_clarification_questions: 6
+  lock_confidence_threshold: 0.85
+  draft_silence_lock_h: 12
+  draft_locked_silence_escalate_h: 24
+  spec_storage_dir: /data/specs
+
+evaluators:
+  axes: [code-correctness, safety, scope-fit, completeness]
+  consensus:
+    accept_threshold: 3   # of 4 judges
+    reject_threshold: 3
+    on_split: escalate_to_5th_judge
+    fifth_judge_model: vertex_ai/claude-opus-4-7
+  rejection_repeat_threshold: 3
+  judge_timeout_s: 120
+  parallel_judges_max: 4
+  per_axis_model:
+    code-correctness: vertex_ai/claude-sonnet-4-6
+    safety: vertex_ai/claude-opus-4-7
+    scope-fit: vertex_ai/claude-sonnet-4-6
+    completeness: vertex_ai/gemini-3.1-pro-preview

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 - `./scripts/bootstrap.sh` completes cleanly
-- `./scripts/smoke.sh` passes all 9 checks
+- `./scripts/smoke.sh` passes all checks
 - Phoenix at http://localhost:6006 is reachable
 - Telegram bot reachable (you can `/start` it)
 

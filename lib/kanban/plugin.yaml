@@ -1,0 +1,5 @@
+name: kanban
+version: 0.1.0
+description: "P1-5 Kanban -> Telegram bridge — pre/post tool hooks for card creation and status notifications"
+kind: standalone
+provides_hooks: [pre_tool_call, post_tool_call]

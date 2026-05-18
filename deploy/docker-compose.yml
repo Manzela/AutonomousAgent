@@ -209,6 +209,18 @@ services:
       OTEL_SERVICE_NAME: hermes
       # Auto-approve hooks/commands without a TTY (we're in Docker).
       HERMES_ACCEPT_HOOKS: "1"
+      # Per-plugin discovery trace logging — enabled for the audit final-sweep
+      # P0-α verification of our lib/* plugin loading. Can be turned off after
+      # acceptance once we're confident discovery is stable.
+      HERMES_PLUGINS_DEBUG: "1"
+      # Our lib/* plugins (mounted under /root/.hermes/plugins/<name>/) each
+      # declare top-line `from lib.X import Y` statements that reach into
+      # sibling modules within lib/. The plugin's own __init__.py runs inside
+      # Hermes' `hermes_plugins.<slug>` namespace, so the bare `lib.` import
+      # only resolves if a real `lib/` package is on sys.path. Mount the same
+      # ../lib that the escalation-watcher sidecar already mounts, and put
+      # /app on PYTHONPATH so `lib.<submodule>` is importable.
+      PYTHONPATH: /app
     env_file:
       - ../secrets/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
       - ../secrets/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
@@ -243,6 +255,22 @@ services:
       - ../config/limits.yaml:/app/runtime/limits.yaml:ro
       - ../config/scrubber-patterns.yaml:/app/runtime/scrubber-patterns.yaml:ro
       - ../config/toolsets.yaml:/app/runtime/toolsets.yaml:ro
+      # Phase 1 plugin mounts (per audit final-sweep P0-α resolution).
+      # Each lib/<module> is mounted into the user-plugins scan path so
+      # Hermes' PluginManager (hermes_cli/plugins.py:797-801) discovers
+      # them. Each module has a plugin.yaml manifest + register(ctx)
+      # entry point; activation is opt-in via plugins.enabled in
+      # config/hermes/cli-config.yaml.
+      - ../lib/anchors:/root/.hermes/plugins/anchors:ro
+      - ../lib/evaluators:/root/.hermes/plugins/evaluators:ro
+      - ../lib/durability:/root/.hermes/plugins/durability:ro
+      - ../lib/memory:/root/.hermes/plugins/memory:ro
+      - ../lib/kanban:/root/.hermes/plugins/kanban:ro
+      # The plugins above declare `from lib.X import Y` for cross-module
+      # imports inside their own __init__.py. Mount the full lib/ as a
+      # PYTHONPATH-rooted package at /app/lib so those imports resolve.
+      # (Mirrors the escalation-watcher sidecar's mount of the same path.)
+      - ../lib:/app/lib:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
       interval: 30s

@@ -1,0 +1,5 @@
+name: anchors
+version: 0.1.0
+description: "P1-1 TaskSpec anchors + clarification loop (lock/skip/cancel/confirm + hermes new CLI)"
+kind: standalone
+provides_hooks: [on_session_start, pre_tool_call]

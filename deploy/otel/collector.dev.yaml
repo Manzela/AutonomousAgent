@@ -18,10 +18,10 @@ processors:
 exporters:
   # otlphttp is the modern alias name (otelcol-contrib >= 0.150 deprecated otlphttp/)
   otlphttp/phoenix:
-    endpoint: http://phoenix:6006/v1/traces
+    endpoint: http://phoenix:6006
     tls:
       insecure: true
-    # Phoenix accepts OTLP HTTP on 6006/v1/traces in addition to its UI
+    # Phoenix accepts OTLP HTTP on 6006; SDK auto-appends /v1/traces
   debug:
     verbosity: basic
   # The `file` exporter was removed; otelcol-contrib's default user can't

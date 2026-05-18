@@ -22,6 +22,7 @@ volumes:
   # chroma-data: removed (Phase 1 — using Chroma Cloud instead of self-hosted)
   # honcho-db-data: removed (Phase 1 — Honcho disabled)
   workspace:
+  phoenix-data:
 
 services:
 
@@ -109,6 +110,26 @@ services:
     # only signal we have is the container's own restart-on-failure policy
     # and its OTLP receiver behavior visible to upstream services.
 
+  # ---- Phoenix observability UI ----
+  #
+  # Phoenix receives OTel traces from the collector and provides a web UI
+  # for browsing LLM calls, tool invocations, and latency. Port 6006 serves
+  # the UI and also acts as an OTLP HTTP receiver (/v1/traces). Port 4317
+  # is the OTLP gRPC receiver (currently unused; collector routes to 6006
+  # HTTP). Both ports are published for Phase 1 acceptance (step 4 requires
+  # the human to open localhost:6006 in a browser).
+
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    <<: [*restart_policy, *json_logging]
+    ports:
+      - "127.0.0.1:4317:4317"   # OTLP gRPC receiver
+      - "127.0.0.1:6006:6006"   # Phoenix UI + OTLP HTTP receiver
+    volumes:
+      - phoenix-data:/mnt/data
+    # egress only to satisfy Docker port-publishing constraint (internal: true networks block published ports), not for Phoenix runtime traffic
+    networks: [internal, egress]
+
   # ---- Sandboxes ----
 
   shell-sandbox:
@@ -188,6 +209,18 @@ services:
       OTEL_SERVICE_NAME: hermes
       # Auto-approve hooks/commands without a TTY (we're in Docker).
       HERMES_ACCEPT_HOOKS: "1"
+      # Per-plugin discovery trace logging — enabled for the audit final-sweep
+      # P0-α verification of our lib/* plugin loading. Can be turned off after
+      # acceptance once we're confident discovery is stable.
+      HERMES_PLUGINS_DEBUG: "1"
+      # Our lib/* plugins (mounted under /root/.hermes/plugins/<name>/) each
+      # declare top-line `from lib.X import Y` statements that reach into
+      # sibling modules within lib/. The plugin's own __init__.py runs inside
+      # Hermes' `hermes_plugins.<slug>` namespace, so the bare `lib.` import
+      # only resolves if a real `lib/` package is on sys.path. Mount the same
+      # ../lib that the escalation-watcher sidecar already mounts, and put
+      # /app on PYTHONPATH so `lib.<submodule>` is importable.
+      PYTHONPATH: /app
     env_file:
       - ../secrets/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
       - ../secrets/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
@@ -200,6 +233,12 @@ services:
     networks: [internal, egress]
     volumes:
       - hermes-data:/data
+      # P1-5: Kanban SQLite DB persistence. Hermes writes the DB under
+      # /root/.hermes/kanban/kanban.db (see kanban_db.py default path).
+      # The escalation-watcher sidecar already mounts the same named
+      # volume at /root/.hermes; this mount makes the DB visible to
+      # the hermes service itself so the agent can read/write it.
+      - hermes-data:/root/.hermes
       # Hermes reads its config from /root/.hermes/config.yaml exclusively
       # (the HERMES_CONFIG env var is for `hermes config edit`, not for
       # runtime resolution). Mount our cli-config.yaml directly there.
@@ -216,6 +255,28 @@ services:
       - ../config/limits.yaml:/app/runtime/limits.yaml:ro
       - ../config/scrubber-patterns.yaml:/app/runtime/scrubber-patterns.yaml:ro
       - ../config/toolsets.yaml:/app/runtime/toolsets.yaml:ro
+      # Phase 1 plugin mounts (per audit final-sweep P0-α resolution).
+      # Each lib/<module> is mounted into the user-plugins scan path so
+      # Hermes' PluginManager (hermes_cli/plugins.py:797-801) discovers
+      # them. Each module has a plugin.yaml manifest + register(ctx)
+      # entry point; activation is opt-in via plugins.enabled in
+      # config/hermes/cli-config.yaml.
+      - ../lib/anchors:/root/.hermes/plugins/anchors:ro
+      - ../lib/evaluators:/root/.hermes/plugins/evaluators:ro
+      - ../lib/durability:/root/.hermes/plugins/durability:ro
+      - ../lib/memory:/root/.hermes/plugins/memory:ro
+      - ../lib/kanban:/root/.hermes/plugins/kanban:ro
+      # The plugins above declare `from lib.X import Y` for cross-module
+      # imports inside their own __init__.py. Mount the full lib/ as a
+      # PYTHONPATH-rooted package at /app/lib so those imports resolve.
+      # (Mirrors the escalation-watcher sidecar's mount of the same path.)
+      - ../lib:/app/lib:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     depends_on:
       litellm-proxy: {condition: service_healthy}
       otel-collector: {condition: service_started}
@@ -223,6 +284,32 @@ services:
       github-mcp: {condition: service_started}    # distroless image has no probe binaries
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
+
+  # ---- Escalation watcher (P1-6) ----
+  #
+  # Periodic 24h Telegram-silence watcher. Scans the Hermes Kanban DB for
+  # cards stuck in `blocked` longer than `agent.telegram_escalation_timeout_h`
+  # (default 24h) and emits F32 escalations. Reads limits.yaml on every
+  # iteration so threshold/interval changes are hot-reloaded without a
+  # sidecar restart. Sidecar by design — keeping it out of `hermes` proper
+  # means a watcher crash never takes down the agent loop.
+
+  escalation-watcher:
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    container_name: autonomous-agent-escalation-watcher-1
+    command: ["python", "/app/scripts/escalation_loop.py"]
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - ../config/limits.yaml:/config/limits.yaml:ro
+      - hermes-data:/root/.hermes
+      - ../lib:/app/lib:ro
+      - ../scripts:/app/scripts:ro
+    networks: [internal, egress]   # egress for Telegram outbound
+    depends_on:
+      hermes: {condition: service_started}
 
 secrets:
   # honcho_db_password: removed (Phase 1 — Honcho disabled)

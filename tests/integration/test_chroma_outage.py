@@ -6,6 +6,11 @@ import subprocess
 import time
 
 import httpx
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="P2 — requires HTTP gateway (de-scoped in P1; original two-service architecture collapsed into single hermes service per commit 408459e); see docs/superpowers/specs/2026-05-18-phase1-completion-coordination-design.md §6.1 triage matrix"
+)
 
 
 def test_chroma_outage_degrades_gracefully(hermes_url, wait_for_stack):

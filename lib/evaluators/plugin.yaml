@@ -1,0 +1,5 @@
+name: evaluators
+version: 0.1.0
+description: "P1-2 multi-judge evaluator panel — post-tool dispatch, pre-LLM feedback drain, session-end flush"
+kind: standalone
+provides_hooks: [post_tool_call, pre_llm_call, on_session_end]

@@ -10,6 +10,12 @@ retries:
   litellm_initial_backoff_s: 1
   litellm_max_backoff_s: 60
   litellm_jitter_pct: 25
+  self_heal:
+    max_retries: 3
+    backoff_strategy: exponential_with_jitter
+    base_delay_ms: 500
+    max_delay_ms: 30000
+    jitter_range_pct: 25
 
 sandboxes:
   shell_timeout_s: 120
@@ -133,3 +139,47 @@ log_retention:
 local_logs_dev:
   rotate_size_mb: 100
   keep_files: 5
+
+anchors:
+  max_clarification_questions: 6
+  lock_confidence_threshold: 0.85
+  draft_silence_lock_h: 12
+  draft_locked_silence_escalate_h: 24
+  spec_storage_dir: /data/specs
+
+evaluators:
+  axes: [code-correctness, safety, scope-fit, completeness]
+  consensus:
+    accept_threshold: 0.75   # 75% (3 of 4 judges) — percentage per lib/evaluators/consensus.py
+    reject_threshold: 0.75   # 75% (3 of 4 judges)
+    on_split: escalate_to_5th_judge
+    fifth_judge_model: vertex_ai/claude-opus-4-7
+  rejection_repeat_threshold: 3
+  judge_timeout_s: 120
+  parallel_judges_max: 4
+  per_axis_model:
+    code-correctness: vertex_ai/claude-sonnet-4-6
+    safety: vertex_ai/claude-opus-4-7
+    scope-fit: vertex_ai/claude-sonnet-4-6
+    completeness: vertex_ai/gemini-3.1-pro-preview
+
+durability:
+  checkpoint:
+    interval_steps: 5
+    retention_count: 50
+    keep_every_nth: 100
+    autoresume_enabled: true
+  escalation:
+    watcher_interval_s: 300
+
+memory:
+  rejected_md_path: /data/MEMORY/REJECTED.md
+  rejected_default_ttl_days: 30
+  rejected_max_inject_per_session: 10
+  intent_categories: [coding, audit, research, writing, ops, data, unknown]
+  intent_classifier_model: vertex_ai/claude-sonnet-4-6
+
+kanban:
+  db_path: /root/.hermes/kanban/kanban.db
+  notification_rate_limit_per_minute: 6
+  use_hermes_status_names: true   # accept Hermes' enum, don't fork

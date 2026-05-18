@@ -45,7 +45,7 @@ After completing all Phase 1 plan tasks (see [Phase 1 plan](docs/superpowers/pla
 ```bash
 ./scripts/bootstrap.sh                 # idempotent end-to-end setup
 docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.dev.yml up -d
-./scripts/smoke.sh                     # 9 smoke checks
+./scripts/smoke.sh                     # 7 smoke checks
 ```
 
 Then send your bot a message on Telegram.

@@ -1,5 +1,22 @@
 # Phase 1 Completion Implementation Plan
 
+> ## ⚠ DRIFT NOTICE — 2026-05-19
+>
+> **This implementation plan is preserved as historical context.** It was used to drive Phase 1 + Phase 1.0.1 execution; line numbers + path references + threshold values in the plan have since drifted from the live code in 4 places that affect re-implementation. Where the plan disagrees with current code, **trust the code**.
+>
+> Surfaced by the HANDOFF-2026-05-19 forensic audit — see `audit/handoff-doc-2026-05-19-review/audit-plan.md` (P1-2) for full evidence.
+>
+> ### Confirmed drifts in this plan
+>
+> | Plan says | Live code says | Where to look |
+> |---|---|---|
+> | `lib/anchors/__init__.py:55` is `TODO(P1-5)` stub — lines 1903, 1944, 1963 | Line 55 is error-handling code; `/cancel` handler is at line ~259; `TODO(P1-5)` is fully implemented | `lib/anchors/__init__.py` `_slash_cancel` |
+> | `KANBAN_DB_PATH = "/root/.hermes/kanban/kanban.db"` — line 1267-1269 | `KANBAN_DB_PATH = "/home/hermes/.hermes/kanban.db"` (no `kanban/` subdir, post PR #60 HOME rebase) | `lib/durability/escalation.py:21`, `lib/kanban/telegram_bridge.py:57` |
+> | `accept_threshold` / `reject_threshold` as integer counts | Both are `float = 0.75` percentages | `config/limits.yaml:153-154`, `lib/evaluators/consensus.py:59-60` |
+> | Phase α-0 was 4 isolation PRs | 8 hotfix PRs #56-#63 | `git log` |
+>
+> ---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Execute the assistant-driven portion of Phase 1 completion — Phase α-0 (4 live-stack defect fixes), Phase α (pre-work + Tasks 6/20b + P1-6 Durability subsystem + 3 session briefs for parallel work), Phase γ-prep (acceptance preflight), and Phase γ promotion (`--no-ff`/squash PR to `main` + `phase1-accepted` tag). Phase β (sessions c/d/e) executes against per-session briefs and is OUT OF SCOPE for this plan.

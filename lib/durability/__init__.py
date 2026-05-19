@@ -1,6 +1,17 @@
 """Durability plugin: failure-matrix-driven retry policy, checkpoint-resume (P1-3),
 and REJECTED-inject (P1-4). P1-6 lands the real hook bodies here; P1-3 and P1-4
-fill the on_session_start stubs in subsequent PRs."""
+fill the on_session_start stubs in subsequent PRs.
+
+All hook callbacks use the ``**kwargs`` Hermes contract (see
+``hermes-agent/hermes_cli/plugins.py:1253`` — ``invoke_hook`` calls ``cb(**kwargs)``).
+Hermes passes ``on_session_start`` kwargs ``session_id``, ``model``, ``platform`` — NOT
+``ctx``. Previously these stubs declared a positional ``ctx`` arg and every invocation
+raised ``TypeError("got an unexpected keyword argument 'session_id'")`` which was
+silently swallowed at WARN level. This file now mirrors ``lib/observability/__init__.py``
+which got the kwargs contract right from day one (PR #52).
+"""
+
+from typing import Any
 
 from lib.durability import failure_matrix, trichotomy, escalation, checkpoint, resume
 
@@ -18,9 +29,13 @@ def register(ctx):
     ctx.register_hook("on_session_start", _p1_4_inject_rejected)  # session-d fills
 
 
-def _p1_3_resume_session(ctx):
+def _p1_3_resume_session(**kwargs: Any) -> None:
     """P1-3 (session-c): on container start, scan /data/checkpoints/ for incomplete
     sessions and rehydrate the latest checkpoint per session.
+
+    Hermes ``on_session_start`` kwargs: ``session_id``, ``model``, ``platform``
+    (see ``hermes-agent/run_agent.py`` ``_invoke_hook("on_session_start", ...)``).
+    Unknown future kwargs are absorbed by the ``**kwargs`` signature.
 
     Delegates to ``lib.durability.resume.rehydrate_latest_for_session`` which:
     - honours ``durability.checkpoint.autoresume_enabled`` in config/limits.yaml,
@@ -28,22 +43,45 @@ def _p1_3_resume_session(ctx):
     - walks back from the highest-step file on corruption (skip_and_warn),
     - returns ``None`` when there's nothing to resume (the common case on a
       fresh box, where ``/data/checkpoints/`` does not exist).
+
+    Hermes does NOT pass a ``ctx`` object through ``on_session_start``. The
+    underlying ``rehydrate_latest_for_session`` accepts ``ctx=None`` (it's currently
+    only used as a sentinel) so we pass ``None``. Session-c will swap this for a
+    real ctx source once Hermes exposes one — until then ``ctx`` is unused inside
+    ``resume.rehydrate_latest_for_session`` so no behavioural regression.
     """
-    return resume.rehydrate_latest_for_session(ctx)
+    return resume.rehydrate_latest_for_session(ctx=None)
 
 
-def _p1_4_inject_rejected(ctx):
+def _p1_4_inject_rejected(**kwargs: Any) -> None:
     """P1-4 (session-d): read active TaskSpec.intent_category, load matching unexpired
     REJECTED.md entries, inject as system message: 'Past failed approaches for this kind of
     task — DO NOT repeat:'. See ``lib.memory.rejected``.
+
+    Hermes ``on_session_start`` kwargs: ``session_id``, ``model``, ``platform``
+    (see ``hermes-agent/run_agent.py``). Unknown future kwargs are absorbed by ``**kwargs``.
 
     Local imports avoid a top-line import conflict with the P1-3 line that this
     session must not touch. The function never raises — any failure (no active
     spec, REJECTED.md missing, classifier down) silently no-ops so a memory
     fault can't block session start.
+
+    Hermes' ``on_session_start`` invocation does NOT include a ``ctx`` object today
+    (verified in ``hermes-agent/run_agent.py``); the TaskSpec/inject_message surface
+    referenced below comes from the not-yet-stable plugin context object. Until
+    Hermes exposes it on the hook surface, this stub no-ops gracefully — ``ctx``
+    is resolved from ``kwargs.get('ctx')`` to remain forward-compatible once
+    session-e (P1-5) firms up the contract.
     """
     # Local imports — see docstring re: avoiding top-line conflict.
     from lib.memory import intent_classifier as _ic, rejected as _rej
+
+    ctx = kwargs.get("ctx")
+    if ctx is None:
+        # No ctx yet on Hermes ``on_session_start`` surface — graceful no-op
+        # (the only way this stub can actually do something is once session-e
+        # adds ctx to the hook contract).
+        return None
 
     try:
         # Resolve the active TaskSpec from whatever ctx surface Hermes exposes.

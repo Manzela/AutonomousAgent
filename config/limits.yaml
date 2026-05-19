@@ -180,6 +180,11 @@ memory:
   intent_classifier_model: vertex_ai/claude-sonnet-4-6
 
 kanban:
-  db_path: /root/.hermes/kanban/kanban.db
+  # Hermes resolves the kanban DB via Path.home() / ".hermes" / "kanban.db".
+  # After the α-5 security-hardening PR the container runs as user `hermes`
+  # (uid 1000) with HOME=/home/hermes — so the DB lands at
+  # /home/hermes/.hermes/kanban.db (NOT a kanban/ subdir; verified live
+  # with `docker exec ... find /home/hermes -name kanban.db`).
+  db_path: /home/hermes/.hermes/kanban.db
   notification_rate_limit_per_minute: 6
   use_hermes_status_names: true   # accept Hermes' enum, don't fork

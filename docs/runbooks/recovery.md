@@ -15,7 +15,8 @@ Phase 1; neither has a local compose service or volume to restore. See
 `deploy/docker-compose.yml` for the canonical service list.
 
 The only stateful volume is `hermes-data` (mounted at both `/data` and
-`/root/.hermes` inside the `hermes` container).
+`/home/hermes/.hermes` inside the `hermes` container; the container runs
+as the non-root `hermes` user after the α-5 security-hardening PR).
 
 ---
 

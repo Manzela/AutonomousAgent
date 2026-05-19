@@ -45,6 +45,12 @@ RUN uv pip install --system --no-cache \
 # psycopg[binary] avoids the libpq build dependency.
 RUN uv pip install --system --no-cache "psycopg[binary]>=3.1"
 
+# GCS client for the snapshot-watchdog sidecar (P1-1b): uploads daily
+# /home/hermes/.hermes tarballs to gs://${GCS_SNAPSHOT_BUCKET}/. The loop
+# is a no-op when the env var is unset, so this dep is only exercised
+# when the operator provisions a bucket per docs/runbooks/snapshots.md.
+RUN uv pip install --system --no-cache "google-cloud-storage>=2.10"
+
 # Non-root user for sandbox safety (audit C3). Created BEFORE the mkdir so
 # /home/hermes/.hermes can be made hermes-owned in a single step.
 # /bin/false shell makes the account non-interactive even if a tool managed

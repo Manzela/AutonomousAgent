@@ -446,6 +446,46 @@ services:
       volume-init: {condition: service_completed_successfully}
       hermes: {condition: service_started}
 
+  # GCS snapshot watchdog (P1-1b). Polls every interval_s; once per UTC
+  # day after `snapshots.gcs_snapshot_cron` (hour-field only) tars
+  # /home/hermes/.hermes and uploads to ${GCS_SNAPSHOT_BUCKET}. Behind a
+  # feature flag — when GCS_SNAPSHOT_BUCKET is unset (the default until
+  # the operator provisions the bucket per docs/runbooks/snapshots.md),
+  # every tick is a no-op skip. Fail-soft: an upload failure emits a
+  # Telegram nag but does not halt the agent.
+  snapshot-watchdog:
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    container_name: autonomous-agent-snapshot-watchdog-1
+    entrypoint: []
+    command: ["python", "/app/scripts/snapshot_loop.py"]
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+      # Feature flag. Empty string evaluates falsy in Python so run_once
+      # short-circuits on the first line. Set in the operator's shell or
+      # in a top-level .env file at the compose root.
+      GCS_SNAPSHOT_BUCKET: ${GCS_SNAPSHOT_BUCKET:-}
+      # ADC chain. The mount below maps host gcloud config to a path the
+      # hermes uid (1000) can read. When the bucket env is empty, the
+      # SDK is never invoked so the path doesn't need to exist.
+      GOOGLE_APPLICATION_CREDENTIALS: /home/hermes/.config/gcloud/application_default_credentials.json
+    env_file:
+      - ../secrets/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
+    volumes:
+      - ../config/limits.yaml:/config/limits.yaml:ro
+      - hermes-data:/home/hermes/.hermes       # tar source
+      - ../lib:/app/lib:ro
+      - ../scripts:/app/scripts:ro
+      # Same gcloud ADC mount that litellm-proxy uses; gives the sidecar
+      # access to the operator's Application Default Credentials without
+      # baking a service-account key into the image.
+      - ${HOME}/.config/gcloud:/home/hermes/.config/gcloud:ro
+    networks: [internal, egress]   # egress for GCS API + Telegram
+    depends_on:
+      volume-init: {condition: service_completed_successfully}
+      hermes: {condition: service_started}
+
   # F21 daily budget watchdog (P1-1). Polls LiteLLM_SpendLogs every
   # interval_s, alerts Telegram at alert_at_pct, dispatches F21 at 100%.
   # Direct Postgres because LiteLLM's /spend/total returns 404 (audit R5).

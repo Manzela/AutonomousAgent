@@ -41,6 +41,7 @@ honcho-db-data/
 phoenix-data/
 workspace/
 snapshots/
+!lib/snapshots/
 
 # Local overrides
 docker-compose.override.yml

@@ -367,3 +367,63 @@ jobs:
           name: snapshot-integrity-junit
           path: snapshot-junit.xml
           retention-days: 14
+
+  # ------------------------------------------------------------------
+  # Phoenix span coverage — short Hermes turn through the observability
+  # plugin's register() hook surface, asserting both LLM (model.call)
+  # and TOOL (tool.dispatch) spans emit with the OpenInference attribute
+  # set Phoenix needs to render its panels. Closes audit P1-5.
+  # Pure-Python; OTel SDK installed explicitly because dev deps don't
+  # carry it (only the production container does).
+  # ------------------------------------------------------------------
+  phoenix-span-coverage:
+    name: Phoenix span coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v6
+        with:
+          submodules: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: latest
+
+      - name: Skip if no phoenix span coverage test
+        id: detect
+        run: |
+          if [ -f pyproject.toml ] && [ -f tests/integration/test_phoenix_span_coverage.py ]; then
+            echo "has_test=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_test=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::tests/integration/test_phoenix_span_coverage.py missing; skipping."
+          fi
+
+      - name: Set up Python
+        if: steps.detect.outputs.has_test == 'true'
+        run: uv venv .venv --python 3.11
+
+      - name: Install dev + OTel SDK
+        if: steps.detect.outputs.has_test == 'true'
+        run: |
+          source .venv/bin/activate
+          uv pip install -e ".[dev]"
+          uv pip install \
+            "opentelemetry-api>=1.27" \
+            "opentelemetry-sdk>=1.27"
+
+      - name: Run phoenix span coverage test
+        if: steps.detect.outputs.has_test == 'true'
+        run: |
+          source .venv/bin/activate
+          pytest tests/integration/test_phoenix_span_coverage.py -v --tb=short --junitxml=phoenix-spans-junit.xml
+
+      - name: Upload test results
+        if: always() && steps.detect.outputs.has_test == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: phoenix-span-coverage-junit
+          path: phoenix-spans-junit.xml
+          retention-days: 14

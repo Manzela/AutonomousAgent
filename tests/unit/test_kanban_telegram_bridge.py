@@ -179,3 +179,94 @@ def test_update_card_status_no_op_when_db_unavailable():
     with patch.object(telegram_bridge, "_kanban_db", return_value=None):
         # Should not raise; no return contract beyond not exploding.
         telegram_bridge.update_card_status("session-X", "running")
+
+
+def test_update_card_status_same_status_touches_heartbeat():
+    """If the new status matches the old status, we only touch last_heartbeat_at, without sending alert."""
+    fake_db = MagicMock()
+    fake_conn = MagicMock()
+    fake_db.connect.return_value = fake_conn
+
+    # Return old status as "running"
+    # SELECT query returns row: (id, status, title, last_failure_error, body, consecutive_failures, result)
+    fake_conn.execute.return_value.fetchone.side_effect = [
+        ("task-123", "running", "My Task", None, None, 0, None),  # first SELECT (retrieve current)
+    ]
+
+    with (
+        patch.object(telegram_bridge, "_kanban_db", return_value=fake_db),
+        patch.object(telegram_bridge, "send_alert") as mock_send_alert,
+    ):
+        telegram_bridge.update_card_status("session-123", "running")
+
+    mock_send_alert.assert_not_called()
+    # Check that it ran UPDATE tasks SET last_heartbeat_at = ...
+    updates = [args[0] for args, _ in fake_conn.execute.call_args_list if "UPDATE" in args[0]]
+    assert len(updates) == 1
+    assert "last_heartbeat_at" in updates[0]
+    assert "status = ?" not in updates[0]
+
+
+def test_update_card_status_transition_sends_alert():
+    """If the status changes and is not silent, we perform transition and send alert."""
+    fake_db = MagicMock()
+    fake_conn = MagicMock()
+    fake_db.connect.return_value = fake_conn
+
+    # Return old status as "running", and updated row as "blocked"
+    fake_conn.execute.return_value.fetchone.side_effect = [
+        ("task-123", "running", "My Task", "some error", None, 1, None),  # retrieve current
+        (
+            "task-123",
+            "blocked",
+            "My Task",
+            "some error",
+            None,
+            1,
+            None,
+        ),  # retrieve updated for alert
+    ]
+
+    # Let's say block_task does NOT exist on fake_db, so it falls back to the UPDATE path.
+    if hasattr(fake_db, "block_task"):
+        del fake_db.block_task
+
+    with (
+        patch.object(telegram_bridge, "_kanban_db", return_value=fake_db),
+        patch.object(telegram_bridge, "send_alert") as mock_send_alert,
+    ):
+        telegram_bridge.update_card_status("session-123", "blocked")
+
+    # Verify transition update SQL ran
+    updates = [args[0] for args, _ in fake_conn.execute.call_args_list if "UPDATE" in args[0]]
+    assert any("status = ?" in u for u in updates)
+
+    # Verify alert sent
+    mock_send_alert.assert_called_once()
+    args, _ = mock_send_alert.call_args
+    assert args[0] == "task-123"
+    assert "Blocked on: some error" in args[1]
+
+
+def test_update_card_status_uses_block_task_helper():
+    """If transitioning to blocked and block_task exists, use it instead of direct SQL."""
+    fake_db = MagicMock()
+    fake_conn = MagicMock()
+    fake_db.connect.return_value = fake_conn
+
+    # Return old status as "running", and updated row as "blocked"
+    fake_conn.execute.return_value.fetchone.side_effect = [
+        ("task-123", "running", "My Task", "some error", None, 1, None),
+        ("task-123", "blocked", "My Task", "some error", None, 1, None),
+    ]
+
+    with (
+        patch.object(telegram_bridge, "_kanban_db", return_value=fake_db),
+        patch.object(telegram_bridge, "send_alert") as mock_send_alert,
+    ):
+        telegram_bridge.update_card_status("session-123", "blocked")
+
+    fake_db.block_task.assert_called_once_with(
+        fake_conn, "task-123", reason="Tool execution failed"
+    )
+    mock_send_alert.assert_called_once()

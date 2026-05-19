@@ -173,6 +173,8 @@ durability:
     watcher_interval_s: 300
   budget_watchdog:
     interval_s: 300
+  snapshot_watchdog:
+    interval_s: 1800
 
 memory:
   rejected_md_path: /data/MEMORY/REJECTED.md

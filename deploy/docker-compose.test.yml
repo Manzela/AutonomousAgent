@@ -37,6 +37,13 @@ services:
   budget-watchdog:
     profiles: ["disabled"]
 
+  # snapshot-watchdog hard-depends on `hermes` (above) and a mounted GCS ADC
+  # credential that the CI runner does not provide. The loop is already a no-op
+  # when GCS_SNAPSHOT_BUCKET is unset, but disabling the service entirely keeps
+  # `docker compose ... config` from failing on the missing depends_on target.
+  snapshot-watchdog:
+    profiles: ["disabled"]
+
   # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
   # named volume. CI tears it down with `docker compose down -v` between runs,
   # so it is effectively ephemeral. (We previously tried `tmpfs: /data` here

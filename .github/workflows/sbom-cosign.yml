@@ -1,0 +1,83 @@
+# SBOM + cosign — SLSA Provenance L2/L3.
+#
+# On every release tag:
+#   1. Build the Hermes image locally.
+#   2. Generate an SPDX-JSON SBOM with anchore/sbom-action (NIST 800-218 PW.4).
+#   3. Sign the SBOM with cosign keyless OIDC (no key management — uses
+#      Sigstore's Fulcio CA + Rekor transparency log).
+#   4. Attach both as release assets via softprops/action-gh-release.
+#
+# Keyless flow rationale: managing a long-lived cosign key in
+# Actions secrets is the #1 supply-chain-compromise vector for signed
+# releases (see SolarWinds, Codecov). OIDC short-lived tokens are
+# strictly safer and need zero secret rotation.
+
+name: SBOM + Cosign
+
+on:
+  push:
+    tags: ['v*']
+  # Allow dry-runs from a release branch — skips the release-asset step.
+  workflow_dispatch:
+
+permissions:
+  contents: write          # attach SBOM to GitHub Release
+  id-token: write          # required for cosign keyless OIDC
+  packages: read
+
+concurrency:
+  group: sbom-cosign-${{ github.ref }}
+  cancel-in-progress: false   # tags are immutable; never cancel
+
+jobs:
+  sbom-and-sign:
+    name: Generate SBOM + cosign attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: recursive
+
+      - name: Build Hermes image (local, no push)
+        run: |
+          docker build \
+            --file deploy/Dockerfile.hermes \
+            --tag autonomousagent/hermes:${{ github.ref_name }} \
+            .
+
+      # Generate the SBOM in SPDX-JSON (NIST + CycloneDX-compatible).
+      - name: Generate SBOM (SPDX-JSON)
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0
+        with:
+          image: 'autonomousagent/hermes:${{ github.ref_name }}'
+          format: 'spdx-json'
+          output-file: 'sbom-hermes-${{ github.ref_name }}.spdx.json'
+
+      # Install cosign — keyless OIDC, no secret needed.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9  # v3
+
+      # Sign the SBOM itself (the image hash is embedded in the SBOM).
+      # This produces a `.sig` and `.pem` next to the SBOM and a Rekor
+      # transparency-log entry consumers can verify with
+      # `cosign verify-blob --certificate-identity ...`.
+      - name: Sign SBOM with cosign (keyless OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign-blob \
+            --yes \
+            --output-signature "sbom-hermes-${{ github.ref_name }}.spdx.json.sig" \
+            --output-certificate "sbom-hermes-${{ github.ref_name }}.spdx.json.pem" \
+            "sbom-hermes-${{ github.ref_name }}.spdx.json"
+
+      - name: Attach SBOM + signature to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3
+        with:
+          files: |
+            sbom-hermes-${{ github.ref_name }}.spdx.json
+            sbom-hermes-${{ github.ref_name }}.spdx.json.sig
+            sbom-hermes-${{ github.ref_name }}.spdx.json.pem

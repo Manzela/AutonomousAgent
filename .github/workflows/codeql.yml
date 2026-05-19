@@ -1,0 +1,67 @@
+# CodeQL — static analysis for Python (NIST SSDF PW.7).
+#
+# Runs on every PR to main plus a weekly schedule to catch new query packs
+# released since the last PR. Detection-only — findings land in the
+# repository's Security tab (Code Scanning > CodeQL) so the team can
+# triage on their own schedule rather than blocking merges on pre-existing
+# advisories.
+#
+# Languages: python only. JavaScript is intentionally omitted because the
+# repo contains zero JS at the time of writing; bring it back when a
+# frontend lands. Adding unused languages costs ~3min/run for no signal.
+
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - '.github/workflows/codeql.yml'
+  push:
+    branches: [main]
+    paths:
+      - '**/*.py'
+  schedule:
+    # Weekly Mondays 09:00 UTC — picks up new query pack releases.
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+# Cancel superseded PR runs.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # required to upload SARIF results
+  actions: read            # required by codeql-action
+
+jobs:
+  analyze:
+    name: Analyze (python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      # Initialize CodeQL — autobuild handles Python without manual hints.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
+        with:
+          languages: ${{ matrix.language }}
+          # security-extended adds CWE coverage beyond the default suite;
+          # quality adds maintainability queries. Both are still detection-only.
+          queries: security-extended,security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
+        with:
+          category: "/language:${{ matrix.language }}"

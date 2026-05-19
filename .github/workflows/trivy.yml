@@ -1,0 +1,64 @@
+# Trivy — container image vulnerability scan (CIS Docker 4.x / SLSA Build L2).
+#
+# Builds the Hermes image locally (no registry push) and scans it for
+# CRITICAL + HIGH OS-package and library CVEs. Exits non-zero on any
+# CRITICAL/HIGH finding so release tags can't ship known-vulnerable
+# images.
+#
+# Trigger model: release tags only (cheap, late-stage gate). Adding it to
+# every PR would 4x the CI duration of any Dockerfile-touching PR with
+# little extra signal — Dependabot + OSV-Scanner already catch
+# package-manager-level CVEs on the PR.
+
+name: Trivy
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+  # Allow manual scan from a release branch.
+
+permissions:
+  contents: read
+  security-events: write   # SARIF upload to Code Scanning
+
+concurrency:
+  group: trivy-${{ github.ref }}
+  cancel-in-progress: false   # tags are immutable; never cancel
+
+jobs:
+  scan:
+    name: Scan Hermes image
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: recursive  # hermes-agent submodule is needed for the build
+
+      - name: Build Hermes image (local, no push)
+        run: |
+          docker build \
+            --file deploy/Dockerfile.hermes \
+            --tag autonomousagent/hermes:scan-${{ github.sha }} \
+            .
+
+      # Use Aqua Security's official Trivy action, SHA-pinned.
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
+        with:
+          image-ref: 'autonomousagent/hermes:scan-${{ github.sha }}'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'             # fail the job on CRITICAL/HIGH
+          ignore-unfixed: true       # don't fail on CVEs with no patch yet
+          vuln-type: 'os,library'
+
+      - name: Upload Trivy scan results to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy'

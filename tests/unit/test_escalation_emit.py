@@ -41,6 +41,65 @@ def test_emit_escalation_does_not_raise_when_bridge_fails():
     def boom(*_args, **_kwargs):
         raise RuntimeError("simulated bridge fault")
 
-    with patch("lib.kanban.telegram_bridge.send_alert", side_effect=boom):
+    with (
+        patch("lib.kanban.telegram_bridge.send_alert", side_effect=boom),
+        patch("lib.durability.github_fallback.open_incident_issue") as mock_gh,
+    ):
         # Should not propagate.
         escalation.emit_escalation(card_id=1, title="x", age_h=25.0)
+    # When Telegram raises, the fallback should still fire so the alert is durable.
+    assert mock_gh.called, "Expected GitHub fallback to fire after Telegram raised"
+
+
+# ---------------------------------------------------------------------------
+# P1-4: GitHub fallback wiring
+# ---------------------------------------------------------------------------
+
+
+def test_emit_escalation_no_fallback_when_telegram_succeeds():
+    """Telegram OK → no GitHub fallback. Avoid double-paging the operator."""
+    with (
+        patch("lib.kanban.telegram_bridge.send_alert", return_value=True) as mock_send,
+        patch("lib.durability.github_fallback.open_incident_issue") as mock_gh,
+    ):
+        escalation.emit_escalation(card_id=42, title="Repro flaky test", age_h=26.4)
+
+    assert mock_send.called
+    mock_gh.assert_not_called()
+
+
+def test_emit_escalation_falls_back_to_github_when_telegram_returns_false():
+    """Telegram returned False (e.g. no token configured) → open GitHub issue."""
+    with (
+        patch("lib.kanban.telegram_bridge.send_alert", return_value=False) as mock_send,
+        patch(
+            "lib.durability.github_fallback.open_incident_issue",
+            return_value="https://github.com/Manzela/AutonomousAgent/issues/9999",
+        ) as mock_gh,
+    ):
+        escalation.emit_escalation(card_id=42, title="Repro flaky test", age_h=26.4)
+
+    assert mock_send.called, "Telegram must still be attempted first"
+    mock_gh.assert_called_once()
+    kwargs = mock_gh.call_args.kwargs
+    assert kwargs.get("card_id") == 42
+    # Title should encode the F-code and the card id so the issue is greppable.
+    assert "F32" in kwargs.get("title", "")
+    assert "42" in kwargs.get("title", "")
+    # Body should preserve the original alert message (with the operator instructions).
+    body = kwargs.get("body", "")
+    assert "/resume 42" in body
+    assert "Repro flaky test" in body
+
+
+def test_emit_escalation_swallows_github_fallback_exception():
+    """The fallback must also be fail-open — watcher must keep ticking."""
+    with (
+        patch("lib.kanban.telegram_bridge.send_alert", return_value=False),
+        patch(
+            "lib.durability.github_fallback.open_incident_issue",
+            side_effect=RuntimeError("gh exploded"),
+        ),
+    ):
+        # Must not propagate.
+        escalation.emit_escalation(card_id=42, title="x", age_h=25.0)

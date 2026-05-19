@@ -173,7 +173,7 @@ def _telegram_chat_id() -> Optional[str]:
     return None
 
 
-def send_alert(card_id: Any, msg: str) -> None:
+def send_alert(card_id: Any, msg: str) -> bool:
     """POST ``msg`` to the operator's Telegram chat for ``card_id``.
 
     Fail-open: any failure (missing token, network error, non-2xx) is
@@ -181,6 +181,14 @@ def send_alert(card_id: Any, msg: str) -> None:
     bridge can't reach Telegram. The bot token is read from
     ``TELEGRAM_BOT_TOKEN`` (already injected via
     ``deploy/docker-compose.yml`` from ``secrets/telegram.env``).
+
+    Returns ``True`` iff the Telegram API accepted the message (2xx). All
+    other paths (missing token, missing chat id, HTTP/transport failure,
+    unexpected exception) return ``False`` so callers can decide to fall
+    through to a secondary channel (see ``lib/durability/github_fallback``
+    for the F32 path that opens a GitHub issue when Telegram is silent).
+    Existing call sites that ignored the previous ``None`` return remain
+    correct — they continue to ignore the bool.
     """
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
@@ -189,7 +197,7 @@ def send_alert(card_id: Any, msg: str) -> None:
             card_id,
             msg,
         )
-        return
+        return False
 
     chat_id = _telegram_chat_id()
     if not chat_id:
@@ -198,7 +206,7 @@ def send_alert(card_id: Any, msg: str) -> None:
             card_id,
             msg,
         )
-        return
+        return False
 
     url = _TELEGRAM_API_URL.format(token=token)
     payload = {
@@ -212,10 +220,13 @@ def send_alert(card_id: Any, msg: str) -> None:
             resp = client.post(url, json=payload)
             resp.raise_for_status()
         logger.info("kanban: send_alert ok card=%s", card_id)
+        return True
     except httpx.HTTPError as exc:
         logger.warning("kanban: send_alert HTTP failed card=%s err=%s", card_id, exc)
+        return False
     except Exception as exc:  # noqa: BLE001 — bridge is fail-open
         logger.warning("kanban: send_alert unexpected failure card=%s err=%s", card_id, exc)
+        return False
 
 
 def _row_to_dict(row: Any) -> dict:

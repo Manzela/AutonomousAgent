@@ -218,6 +218,56 @@ def send_alert(card_id: Any, msg: str) -> None:
         logger.warning("kanban: send_alert unexpected failure card=%s err=%s", card_id, exc)
 
 
+def _row_to_dict(row: Any) -> dict:
+    if hasattr(row, "keys"):
+        return {k: row[k] for k in row.keys()}
+    return {
+        "id": row[0],
+        "status": row[1],
+        "title": row[2],
+        "last_failure_error": row[3],
+        "body": row[4],
+        "consecutive_failures": row[5],
+        "result": row[6] if len(row) > 6 else None,
+    }
+
+
+def _find_task_by_session_or_task_id(
+    conn: Any, session_id: Optional[str], task_id: Optional[str] = None
+) -> Optional[dict]:
+    # Try by ID first
+    for tid in (task_id, session_id):
+        if not tid:
+            continue
+        try:
+            row = conn.execute(
+                "SELECT id, status, title, last_failure_error, body, consecutive_failures, result "
+                "FROM tasks WHERE id = ?",
+                (tid,),
+            ).fetchone()
+            if row:
+                return _row_to_dict(row)
+        except Exception:
+            pass
+
+    # Try by created_by
+    for tid in (task_id, session_id):
+        if not tid:
+            continue
+        try:
+            row = conn.execute(
+                "SELECT id, status, title, last_failure_error, body, consecutive_failures, result "
+                "FROM tasks WHERE created_by = ? AND status != 'archived' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (tid,),
+            ).fetchone()
+            if row:
+                return _row_to_dict(row)
+        except Exception:
+            pass
+    return None
+
+
 def update_card_status(session_id: str, status: str) -> None:
     """Update the Kanban card for ``session_id`` to ``status``.
 
@@ -234,6 +284,9 @@ def update_card_status(session_id: str, status: str) -> None:
     The status string must be one of Hermes' canonical enum values
     (``triage, todo, ready, running, blocked, done, archived``).
     """
+    import time
+    from types import SimpleNamespace
+
     db = _kanban_db()
     if db is None:
         logger.debug(
@@ -243,27 +296,84 @@ def update_card_status(session_id: str, status: str) -> None:
         )
         return
 
-    # Hermes' ``kanban_db`` surfaces a number of update helpers; the
-    # exact name has drifted across pins. We try the most-likely names in
-    # order and fall back to a generic update. All failures degrade to a
-    # debug log — this hook fires on every tool call so we don't want
-    # noisy warnings if the DB has no card for an ad-hoc session.
     conn = None
     try:
         conn = _open_conn(db)
-        update_fn = (
-            getattr(db, "update_task_status", None)
-            or getattr(db, "set_task_status", None)
-            or getattr(db, "update_status", None)
-        )
-        if update_fn is not None:
-            update_fn(conn, session_id=session_id, status=status)
-        else:
-            logger.debug(
-                "kanban: no status-update entry on kanban_db (session=%s status=%s)",
-                session_id,
-                status,
+
+        # 1. Retrieve current card state
+        task_row = _find_task_by_session_or_task_id(conn, session_id)
+        if not task_row:
+            logger.debug("kanban: card not found for session=%s", session_id)
+            return
+
+        old_status = task_row["status"]
+        card_id = task_row["id"]
+
+        # 2. Touch heartbeat if status matches
+        if old_status == status:
+            conn.execute(
+                "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?", (int(time.time()), card_id)
             )
+            # Ensure the heartbeat update is committed
+            try:
+                conn.commit()
+            except AttributeError:
+                pass
+            return
+
+        # 3. Perform transition
+        if status == "blocked" and hasattr(db, "block_task"):
+            db.block_task(conn, card_id, reason="Tool execution failed")
+        elif status == "done" and hasattr(db, "complete_task"):
+            db.complete_task(conn, card_id, result="Task completed successfully")
+        else:
+            # Fallback path uses a transaction to update status & heartbeat atomically
+            if hasattr(db, "write_txn"):
+                txn_mgr = db.write_txn(conn)
+            else:
+                import contextlib
+
+                @contextlib.contextmanager
+                def _dummy_txn():
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        yield
+                    except Exception:
+                        conn.execute("ROLLBACK")
+                        raise
+                    else:
+                        conn.execute("COMMIT")
+
+                txn_mgr = _dummy_txn()
+
+            with txn_mgr:
+                conn.execute(
+                    "UPDATE tasks SET status = ?, last_heartbeat_at = ? WHERE id = ?",
+                    (status, int(time.time()), card_id),
+                )
+
+        # 4. Fetch updated card info and send alert
+        updated_row = conn.execute(
+            "SELECT id, status, title, last_failure_error, body, consecutive_failures, result "
+            "FROM tasks WHERE id = ?",
+            (card_id,),
+        ).fetchone()
+
+        if updated_row:
+            updated_dict = _row_to_dict(updated_row)
+            card = SimpleNamespace(
+                id=updated_dict["id"],
+                status=updated_dict["status"],
+                title=updated_dict["title"],
+                last_failure_error=updated_dict["last_failure_error"],
+                body=updated_dict["body"],
+                consecutive_failures=updated_dict["consecutive_failures"],
+                result=updated_dict["result"],
+            )
+            msg = status_transition_to_notification(old_status, status, card)
+            if msg:
+                send_alert(card_id, msg)
+
     except Exception as exc:  # noqa: BLE001 — bridge is fail-open
         logger.debug(
             "kanban: update_card_status failed session=%s status=%s err=%s",

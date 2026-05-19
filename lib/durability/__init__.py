@@ -11,22 +11,147 @@ silently swallowed at WARN level. This file now mirrors ``lib/observability/__in
 which got the kwargs contract right from day one (PR #52).
 """
 
-from typing import Any
+import logging
+import threading
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from lib.durability import failure_matrix, trichotomy, escalation, checkpoint, resume
 
 __all__ = ["register", "failure_matrix", "trichotomy", "escalation", "checkpoint", "resume"]
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# P1-3 per-session step accounting (used by _p1_3_checkpoint_on_tool_call)
+# ---------------------------------------------------------------------------
+# A simple in-memory step counter keyed by session_id. Hermes' tool dispatcher
+# does not expose a step number on the ``post_tool_call`` hook surface, so we
+# track our own monotonic counter per live session. Lock-protected so the
+# counter is safe under any future thread-pool-based hook dispatch (today
+# Hermes invokes hooks serially in the asyncio loop, but the contract is
+# kwargs-only — nothing prohibits parallel dispatch in a future build).
+_session_step_counter: Dict[str, int] = {}
+_session_step_lock = threading.Lock()
+
+# Capped rolling history of (tool_name, tool_call_id, duration_ms, timestamp)
+# per session. Persisted into each checkpoint so a post-restart resume can
+# reconstruct the last N tool calls without a database query. Capped to bound
+# memory growth on long-running sessions.
+_recent_tool_history: Dict[str, List[Dict[str, Any]]] = {}
+_RECENT_HISTORY_MAX = 20
+
+# Default root for checkpoint files. Lives on the bind-mounted ``/data`` volume
+# so checkpoints survive ``docker compose up --force-recreate``. The actual
+# ``Checkpoint`` writer enforces interval/retention via config/limits.yaml.
+_CHECKPOINT_ROOT = Path("/data/checkpoints")
 
 
 def register(ctx):
     # P1-6 hooks (real implementations from this PR)
     ctx.register_hook("pre_tool_call", trichotomy.before_tool_call)
     ctx.register_hook("post_tool_call", trichotomy.after_tool_call)
+    # P1-3 (PR α-2): wire Checkpoint.maybe_write into the live tool-call flow.
+    # MUST register AFTER trichotomy.after_tool_call so trichotomy classifies
+    # the error first (and emits its OTel span) before we durably checkpoint.
+    ctx.register_hook("post_tool_call", _p1_3_checkpoint_on_tool_call)
 
     # P1-3 + P1-4 hooks (stubs; sessions c + d fill in)
     # ORDER MATTERS: resume must run first so REJECTED-inject can read active TaskSpec
     ctx.register_hook("on_session_start", _p1_3_resume_session)  # session-c fills
     ctx.register_hook("on_session_start", _p1_4_inject_rejected)  # session-d fills
+
+
+def _p1_3_checkpoint_on_tool_call(
+    tool_name: Optional[str] = None,
+    args: Optional[Dict[str, Any]] = None,
+    result: Any = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    duration_ms: Optional[float] = None,
+    **_: Any,
+) -> None:
+    """P1-3 hook: write a per-session checkpoint every N tool calls.
+
+    Hermes ``post_tool_call`` invoke_hook kwargs (see ``hermes-agent/model_tools.py``):
+    ``tool_name``, ``args``, ``result``, ``task_id``, ``session_id``,
+    ``tool_call_id``, ``duration_ms``. Unknown future kwargs are absorbed by
+    ``**_`` for forward-compatibility.
+
+    Why a separate hook (not folded into ``trichotomy.after_tool_call``)?
+    Separation of concerns: trichotomy classifies errors and emits a
+    ``durability.classify`` span; checkpointing is orthogonal and runs on the
+    success path too. Hermes' ``invoke_hook`` runs registered callbacks
+    sequentially per hook name, so registering this *after* trichotomy
+    guarantees the error has been classified before we snapshot state.
+
+    Behaviour:
+    - Increment a per-session step counter (lock-protected).
+    - Append the current tool call to a capped rolling history.
+    - Instantiate ``Checkpoint`` and call ``maybe_write(step, state)`` — the
+      writer itself enforces the ``durability.checkpoint.interval_steps``
+      cadence (default 5) and rolling retention.
+
+    Fail-open: missing ``session_id`` → no-op (defensive — some internal tool
+    paths in Hermes synthesize tool calls without a session). Any exception
+    raised by the underlying ``Checkpoint.write`` is caught and logged at
+    DEBUG so a single bad write (e.g. transient ENOSPC) cannot crash the
+    agent loop — the trichotomy classifier handles F28 (disk-full) separately
+    via its own classify span on the next tool failure.
+    """
+    if not session_id:
+        return None
+
+    with _session_step_lock:
+        step = _session_step_counter.get(session_id, 0) + 1
+        _session_step_counter[session_id] = step
+
+        history = _recent_tool_history.setdefault(session_id, [])
+        history.append(
+            {
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+                "duration_ms": duration_ms,
+                "timestamp": time.time(),
+            }
+        )
+        # Cap the history in place so other readers see the bounded version.
+        if len(history) > _RECENT_HISTORY_MAX:
+            del history[: len(history) - _RECENT_HISTORY_MAX]
+        current_history = list(history)
+
+    try:
+        # Local import keeps the unit suite hermetic and matches the pattern
+        # established by the P1-4 _p1_4_inject_rejected stub above.
+        from lib.durability.checkpoint import Checkpoint
+
+        cp = Checkpoint(
+            session_id=session_id,
+            # task_id isn't always populated by Hermes (some tool calls
+            # synthesize an empty string); fall back to a session-derived
+            # value so Checkpoint always has a non-empty taskspec_id field.
+            taskspec_id=task_id or f"session-{session_id}",
+            root_dir=_CHECKPOINT_ROOT,
+        )
+        state: Dict[str, Any] = {
+            "session_id": session_id,
+            "task_id": task_id,
+            "last_tool_name": tool_name,
+            "last_tool_call_id": tool_call_id,
+            "recent_tool_history": current_history,
+        }
+        cp.maybe_write(step=step, state=state)
+    except Exception as exc:  # noqa: BLE001 — never block the agent loop
+        logger.debug(
+            "P1-3 checkpoint write failed for session %s step %d: %s",
+            session_id,
+            step,
+            exc,
+        )
+    return None
 
 
 def _p1_3_resume_session(**kwargs: Any) -> None:

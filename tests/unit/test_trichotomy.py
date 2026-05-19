@@ -1,5 +1,7 @@
 """Unit tests for the trichotomy classifier + retry policy."""
 
+from unittest import mock
+
 from lib.durability import trichotomy
 
 
@@ -93,6 +95,97 @@ def test_after_tool_call_classifies_exception_result():
         )
         is None
     )
+
+
+# ----------------------------------------------------------------------
+# MCP error classification (audit P0-7)
+# ----------------------------------------------------------------------
+
+
+def test_classify_github_mcp_unauthorized_to_F14():
+    err = RuntimeError("github-mcp call returned 401 unauthorized")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_mcp_session_terminated_to_F14():
+    err = RuntimeError("MCP session terminated by remote")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_mcp_session_expired_to_F14():
+    err = RuntimeError("MCP error: Invalid or expired session")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_mcp_transport_closed_to_F14():
+    err = RuntimeError("MCP transport is closed")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_mcp_connection_closed_to_F14():
+    err = ConnectionError("mcp client connection closed")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_closedresourceerror_to_F14():
+    """anyio.ClosedResourceError surfaces from the MCP transport layer."""
+    err = type("ClosedResourceError", (RuntimeError,), {})("resource closed")
+    assert trichotomy.classify(err) == "F14"
+
+
+# ----------------------------------------------------------------------
+# after_tool_call dispatch wiring (audit P0-7)
+# ----------------------------------------------------------------------
+
+
+def test_after_tool_call_dispatches_for_fail_soft():
+    """FAIL_SOFT errors (e.g. MCP unavailable) must invoke the handler so the
+    side-effects (JSONL fallback, skip-tool-class state) actually fire."""
+    err = RuntimeError("github-mcp session terminated")  # F14, FAIL_SOFT
+    with mock.patch("lib.durability.handlers.dispatch") as mock_dispatch:
+        trichotomy.after_tool_call(
+            tool_name="github_search",
+            result=err,
+            task_id="task-1",
+            session_id="sess-1",
+        )
+    mock_dispatch.assert_called_once()
+    assert mock_dispatch.call_args.args[0] == "F14"
+    assert mock_dispatch.call_args.kwargs["error"] is err
+    assert mock_dispatch.call_args.kwargs["tool_name"] == "github_search"
+
+
+def test_after_tool_call_dispatches_for_fail_loud():
+    """FAIL_LOUD errors must dispatch so the Telegram alert + card transition fire."""
+    err = RuntimeError("disk full: no space left on device")  # F28, FAIL_LOUD
+    with mock.patch("lib.durability.handlers.dispatch") as mock_dispatch:
+        trichotomy.after_tool_call(
+            tool_name="checkpoint_write",
+            result=err,
+            session_id="sess-1",
+        )
+    mock_dispatch.assert_called_once()
+    assert mock_dispatch.call_args.args[0] == "F28"
+
+
+def test_after_tool_call_skips_dispatch_for_self_heal():
+    """SELF_HEAL is owned by Hermes' own retry loop — dispatch from a
+    fire-and-forget hook would have no consumer for the returned delay."""
+    err = TimeoutError("upstream timed out after 60s")  # F2, SELF_HEAL
+    with mock.patch("lib.durability.handlers.dispatch") as mock_dispatch:
+        trichotomy.after_tool_call(tool_name="terminal", result=err)
+    mock_dispatch.assert_not_called()
+
+
+def test_after_tool_call_swallows_dispatch_exception():
+    """Hook is fire-and-forget; a handler raising must NOT bubble up to Hermes."""
+    err = RuntimeError("github-mcp connection closed")  # F14
+    with mock.patch(
+        "lib.durability.handlers.dispatch",
+        side_effect=RuntimeError("handler exploded"),
+    ):
+        # Must return None (not re-raise).
+        assert trichotomy.after_tool_call(tool_name="github_search", result=err) is None
 
 
 def test_hooks_absorb_unknown_kwargs():

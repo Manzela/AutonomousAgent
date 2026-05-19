@@ -1,9 +1,20 @@
-"""Failure classifier + retry policy. Consumes config/limits.yaml retries.self_heal.*."""
+"""Failure classifier + retry policy. Consumes config/limits.yaml retries.self_heal.*.
 
+Hook signatures match the kwargs Hermes' ``invoke_hook`` passes (see
+``hermes-agent/hermes_cli/plugins.py`` ``invoke_hook`` + ``get_pre_tool_call_block_message``
++ the ``post_tool_call`` call site in ``hermes-agent/model_tools.py``). All callbacks are
+defensive: unexpected kwargs are absorbed via ``**_``, and any internal failure returns
+``None`` so the per-hook try/except in ``invoke_hook`` is preserved as a true fail-open path.
+"""
+
+import logging
 import random
 import re
+from typing import Any, Dict, Optional
 
 from lib.durability.failure_matrix import lookup, TrichotomyClass
+
+logger = logging.getLogger(__name__)
 
 
 # Pattern-based classifier — order matters: more specific patterns first.
@@ -65,23 +76,73 @@ def backoff_delay(
     return max(0, min(int(delay), max_ms))
 
 
-def before_tool_call(ctx, tool_call):
-    """Hook registered as pre_tool_call. Currently no-op; reserved."""
+def before_tool_call(
+    tool_name: Optional[str] = None,
+    args: Optional[Dict[str, Any]] = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    **_: Any,
+) -> None:
+    """Hermes ``pre_tool_call`` hook. Currently no-op; reserved.
+
+    Signature matches Hermes' ``invoke_hook("pre_tool_call", tool_name=..., args=...,
+    task_id=..., session_id=..., tool_call_id=...)`` at ``hermes-agent/hermes_cli/plugins.py:1408``
+    inside ``get_pre_tool_call_block_message``. Unknown future kwargs are absorbed by ``**_``.
+    """
     return None
 
 
-def after_tool_call(ctx, tool_call, result_or_error):
-    """Hook registered as post_tool_call. Classifies errors + emits OTel span."""
-    if isinstance(result_or_error, Exception):
-        code = classify(result_or_error)
-        cls = lookup(code)["class"]
-        try:
-            from opentelemetry import trace
+def after_tool_call(
+    tool_name: Optional[str] = None,
+    args: Optional[Dict[str, Any]] = None,
+    result: Any = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+    **_: Any,
+) -> None:
+    """Hermes ``post_tool_call`` hook. Classifies errors + emits OTel span.
 
-            tracer = trace.get_tracer("hermes.durability")
-            with tracer.start_as_current_span("durability.classify") as span:
-                span.set_attribute("f_code", code)
-                span.set_attribute("trichotomy_class", cls.value)
-        except ImportError:
-            pass
+    Signature matches Hermes' ``invoke_hook("post_tool_call", tool_name=..., args=...,
+    result=..., task_id=..., session_id=..., tool_call_id=..., duration_ms=...)`` at
+    ``hermes-agent/model_tools.py`` (see the ``post_tool_call`` dispatch site).
+
+    Hermes passes the tool's return value (or the caught exception) as ``result``. We
+    only classify when ``result`` is an ``Exception`` instance — success paths are
+    no-ops here. Errors are mapped to an F-code via the failure-matrix and emitted as
+    a ``durability.classify`` OTel span so the trichotomy class shows up in Phoenix
+    alongside the ``tool.dispatch`` span emitted by ``lib.observability``.
+    """
+    if not isinstance(result, Exception):
+        return None
+
+    code = classify(result)
+    try:
+        cls = lookup(code)["class"]
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("trichotomy lookup failed for code=%s: %s", code, exc)
+        return None
+
+    try:
+        from opentelemetry import trace
+
+        tracer = trace.get_tracer("hermes.durability")
+        with tracer.start_as_current_span("durability.classify") as span:
+            span.set_attribute("f_code", code)
+            span.set_attribute("trichotomy_class", cls.value)
+            if tool_name:
+                span.set_attribute("tool.name", str(tool_name))
+            if session_id:
+                span.set_attribute("session.id", str(session_id))
+            if tool_call_id:
+                span.set_attribute("tool_call.id", str(tool_call_id))
+            span.set_attribute("error.type", type(result).__name__)
+    except ImportError:
+        # OTel SDK absent — F-code still classified above; downstream consumers
+        # that don't need a span (e.g. unit tests) just won't see one.
+        pass
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("durability.classify span emit failed: %s", exc)
     return None

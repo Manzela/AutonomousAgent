@@ -28,6 +28,13 @@ model:
 
 memory:
   enabled: true
+  # Activate hermes-agent's bundled Honcho provider (plugins/memory/honcho).
+  # HonchoClientConfig.from_env() reads HONCHO_API_KEY (+ optional
+  # HONCHO_BASE_URL / HONCHO_TIMEOUT / HONCHO_ENVIRONMENT) from the
+  # container env — injected via deploy/docker-compose.yml `env_file:
+  # ../secrets/honcho.env`. Hosted endpoint (api.honcho.dev) by default.
+  # See issue #54 for the wiring rationale.
+  provider: honcho
   data_dir: /data
   curator_cron: "0 */6 * * *"
 
@@ -43,13 +50,10 @@ session:
   sqlite_path: /data/sessions.db
   fts5_enabled: true
 
-honcho:
-  # Disabled in Phase 1: upstream Honcho doesn't publish a public Docker image
-  # and their current architecture requires redis + pgvector (not the simple
-  # postgres we scoped). Will be reintroduced once we build their Dockerfile
-  # from source.
-  enabled: false
-  base_url: http://honcho:8001
+# Note: the previous top-level `honcho:` block was vestigial. The bundled
+# hermes-agent plugin (plugins/memory/honcho) reads its config from env
+# vars via HonchoClientConfig.from_env(), NOT from this YAML file. See
+# `memory.provider: honcho` above and `../secrets/honcho.env` for activation.
 
 vector_memory:
   enabled: true

@@ -288,6 +288,7 @@ services:
       - ../secrets/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
       - ../secrets/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
       - ../secrets/hermes-provider.env  # OPENAI_API_KEY, OPENAI_BASE_URL, HERMES_*_MODEL
+      - ../secrets/honcho.env           # HONCHO_API_KEY — hosted persistent memory (#54)
     secrets:
       - litellm_master_key
     # Egress: needs to reach Telegram (api.telegram.org), Chroma Cloud

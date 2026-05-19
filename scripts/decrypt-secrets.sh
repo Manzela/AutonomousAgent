@@ -42,6 +42,17 @@ if [ -f telegram.env ]; then
   set +a
 fi
 
+# Honcho hosted SDK (issue #54). HONCHO_API_KEY is consumed by
+# hermes-agent/plugins/memory/honcho via HonchoClientConfig.from_env.
+# The hermes service also references this file via env_file in compose,
+# so this sourcing is for any host-side tooling that needs the key.
+if [ -f honcho.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./honcho.env
+  set +a
+fi
+
 if [ -f honcho-db-password ]; then
   HONCHO_DB_PASSWORD="$(cat honcho-db-password)"
   export HONCHO_DB_PASSWORD

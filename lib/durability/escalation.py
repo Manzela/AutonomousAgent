@@ -44,26 +44,66 @@ def find_stale_blocked_cards(
 
 
 def emit_escalation(card_id: int, title: str, age_h: float) -> None:
-    """Send a Telegram alert for a card stuck in ``blocked`` past the SLA.
+    """Send an alert for a card stuck in ``blocked`` past the SLA.
 
-    Goes through ``telegram_bridge.send_alert`` so escalations share the
-    same publish path (and the same fail-open guarantees) as Kanban
-    status-transition alerts. Local import avoids forcing the kanban
-    package on the import path when this module is loaded by callers
-    that don't care about Telegram (e.g. ``find_stale_blocked_cards``
-    used standalone).
+    Primary channel is ``telegram_bridge.send_alert``; escalations share
+    the same publish path (and the same fail-open guarantees) as Kanban
+    status-transition alerts. When the primary channel is unreachable
+    (no bot token, network failure, Telegram outage) the watcher falls
+    back to ``github_fallback.open_incident_issue`` so the alert is at
+    least durable in GitHub's issue tracker (with the ``incident/auto``
+    label).
+
+    Both channels are best-effort: any exception from either path is
+    swallowed so the sidecar loop keeps ticking — losing a single alert
+    cycle is preferable to crashing the watcher and missing every
+    subsequent card. Closes audit P1-4.
+
+    Local imports avoid forcing the kanban / github_fallback modules on
+    the import path when this module is loaded by callers that don't
+    care about side channels (e.g. ``find_stale_blocked_cards`` used
+    standalone).
     """
     msg = (
         f"⚠️ Card {card_id} '{title}' blocked >24h ({age_h:.1f}h). "
         f"Use `/resume {card_id}` or `/cancel {card_id}`."
     )
+
+    telegram_delivered = False
     try:
         from lib.kanban.telegram_bridge import send_alert
 
-        send_alert(card_id, msg)
+        telegram_delivered = bool(send_alert(card_id, msg))
     except Exception as exc:  # noqa: BLE001 — watcher must keep ticking
         logger.warning(
-            "escalation: send_alert failed card=%s err=%s — original msg=%s",
+            "escalation: send_alert raised card=%s err=%s — original msg=%s",
+            card_id,
+            exc,
+            msg,
+        )
+
+    if telegram_delivered:
+        return
+
+    # Telegram is silent. Open a GitHub issue so the operator still gets
+    # paged through GitHub notifications. Dedupe is enforced inside
+    # ``open_incident_issue`` so the every-10-min watcher cadence
+    # doesn't generate one issue per tick for a multi-day outage.
+    logger.warning(
+        "escalation: Telegram unreachable for card=%s — falling back to GitHub issue",
+        card_id,
+    )
+    try:
+        from lib.durability.github_fallback import open_incident_issue
+
+        open_incident_issue(
+            card_id=card_id,
+            title=f"[F32] Card {card_id} blocked >{int(age_h)}h ({title})",
+            body=msg,
+        )
+    except Exception as exc:  # noqa: BLE001 — fallback must also fail-open
+        logger.warning(
+            "escalation: GitHub fallback raised card=%s err=%s — original msg=%s",
             card_id,
             exc,
             msg,

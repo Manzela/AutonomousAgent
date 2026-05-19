@@ -381,6 +381,11 @@ services:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
     container_name: autonomous-agent-escalation-watcher-1
+    # Override hermes-image ENTRYPOINT=["hermes"] so `command:` runs as a
+    # plain python invocation. Without this, docker concatenates to
+    # `hermes python /app/scripts/escalation_loop.py` and Hermes CLI rejects
+    # "python" as a subcommand (CrashLoop pre-fix; introduced dde4533).
+    entrypoint: []
     command: ["python", "/app/scripts/escalation_loop.py"]
     working_dir: /app
     environment:

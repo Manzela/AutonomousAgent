@@ -117,3 +117,7 @@ plugins:
     - memory         # P1-4 /forget + /rejections slash commands
     - kanban         # P1-5 Kanban -> Telegram bridge
     - observability  # OTel SDK init + turn.start/tool.dispatch/model.call spans (Phase 1 acceptance step 4)
+
+# Overrides default 4 AM daily reset to preserve context for long-running autonomous goals.
+session_reset:
+  mode: none

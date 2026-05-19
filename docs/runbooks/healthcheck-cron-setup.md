@@ -1,7 +1,7 @@
 # Healthcheck Cron Setup
 
 Registers a host-level cron entry that pings Healthchecks.io every 5 minutes
-based on `hermes-agent` container health. The script is `scripts/healthcheck-ping.sh`
+based on `hermes` container health. The script is `scripts/healthcheck-ping.sh`
 (see Phase-1 plan T30 / T31).
 
 ## Prerequisites

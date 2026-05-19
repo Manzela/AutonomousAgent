@@ -47,5 +47,5 @@ echo "==> 6/6 Run smoke tests"
 
 echo
 echo "✓ Bootstrap complete. Talk to the agent:"
-echo "    ${COMPOSE[*]} exec hermes-agent hermes"
+echo "    ${COMPOSE[*]} exec hermes hermes"
 echo "Or send a Telegram message to @Manzelagent_bot."

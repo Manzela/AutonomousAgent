@@ -1,8 +1,12 @@
 # Minimal shell environment for the agent's shell tool.
 # No network at runtime (compose enforces --network=none).
 # Read-only host FS at runtime; only /workspace is writable.
+#
+# Base image pinned by SHA digest (audit C3). Digest resolved 2026-05-19
+# against debian:bookworm-slim on Docker Hub. Updating: re-pull and copy
+# `Digest:` from `docker pull debian:bookworm-slim` output.
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:67b30a61dc87758f0caf819646104f29ecbda97d920aaf5edc834128ac8493d3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       bash coreutils findutils \

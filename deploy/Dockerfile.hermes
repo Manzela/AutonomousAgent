@@ -1,8 +1,14 @@
 # Wraps the upstream NousResearch/hermes-agent build with our OTel SDK + config mount.
 # Built from the project root so the hermes-agent submodule is in build context.
+#
+# Base image pinned by SHA digest for reproducibility + supply-chain safety
+# (see audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C3).
+# Digest resolved 2026-05-19 against python:3.11-slim on Docker Hub.
+# Updating: re-pull, copy `Digest:` from `docker pull python:3.11-slim` output,
+# replace below. PYTHON_VERSION arg kept for documentation only.
 ARG PYTHON_VERSION=3.11
 
-FROM python:${PYTHON_VERSION}-slim AS base
+FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -34,8 +40,28 @@ RUN uv pip install --system --no-cache \
       "opentelemetry-instrumentation-httpx>=0.48" \
       "opentelemetry-instrumentation-sqlite3>=0.48"
 
-# Mount points (created here so volume mounts behave predictably)
-RUN mkdir -p /data /app/config /app/skills /app/secrets
+# Non-root user for sandbox safety (audit C3). Created BEFORE the mkdir so
+# /home/hermes/.hermes can be made hermes-owned in a single step.
+# /bin/false shell makes the account non-interactive even if a tool managed
+# to spawn one.
+RUN groupadd --gid 1000 hermes \
+ && useradd --uid 1000 --gid 1000 --create-home --shell /bin/false hermes
+
+# Mount points (created here so volume mounts behave predictably).
+# IMPORTANT: Hermes' runtime state dir is `Path.home() / ".hermes"`. With
+# USER hermes + HOME=/home/hermes that resolves to /home/hermes/.hermes.
+# We previously baked /root/.hermes here, which was unreachable to
+# non-root and caused the silent-write regression caught in PR #60 review.
+RUN mkdir -p /data /app/config /app/skills /app/secrets \
+              /home/hermes/.hermes /home/hermes/.hermes/plugins /home/hermes/.hermes/kanban \
+ && chown -R hermes:hermes /data /app /home/hermes
+# Note: the Dockerfile-baked /home/hermes/.hermes contents are overlaid at
+# runtime by the compose hermes-data named-volume mount. The chown here
+# covers the empty first-run case; the deploy/docker-compose.yml `volume-init`
+# sidecar re-asserts uid:gid 1000:1000 on the volume at every stack-up so a
+# fresh hermes-data volume created as 0700 root:root doesn't lock us out.
+USER hermes
+ENV HOME=/home/hermes
 
 # Default CLI entrypoint; gateway service overrides command in compose
 ENTRYPOINT ["hermes"]

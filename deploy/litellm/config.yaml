@@ -29,7 +29,15 @@ litellm_settings:
   budget_duration: 24h
   alert_to_webhook_url: ""  # set after Phase 2 cloud monitoring is up
 
-  callbacks: ["otel"]
+  # OTel for tracing; scrubber_callback.proxy_handler_instance redacts
+  # secrets in prompts/responses BEFORE they reach OTel/Phoenix/disk.
+  # Loader: litellm.proxy.types_utils.utils.get_instance_fn — splits on
+  # the final dot, imports `scrubber_callback` from the same directory
+  # as this config.yaml (/app/scrubber_callback.py), fetches
+  # `proxy_handler_instance`. See lib/scrubber_callback.py for impl,
+  # audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C1
+  # for context.
+  callbacks: ["otel", "scrubber_callback.proxy_handler_instance"]
 
 # OpenTelemetry export
 litellm_otel:

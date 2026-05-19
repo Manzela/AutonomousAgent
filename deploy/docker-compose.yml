@@ -446,6 +446,33 @@ services:
       volume-init: {condition: service_completed_successfully}
       hermes: {condition: service_started}
 
+  # F21 daily budget watchdog (P1-1). Polls LiteLLM_SpendLogs every
+  # interval_s, alerts Telegram at alert_at_pct, dispatches F21 at 100%.
+  # Direct Postgres because LiteLLM's /spend/total returns 404 (audit R5).
+  # Needs `internal` for litellm-db reachability and `egress` for Telegram.
+  budget-watchdog:
+    image: autonomousagent/hermes:0.1.0
+    <<: [*restart_policy, *json_logging]
+    container_name: autonomous-agent-budget-watchdog-1
+    entrypoint: []
+    command: ["python", "/app/scripts/budget_watchdog_loop.py"]
+    working_dir: /app
+    environment:
+      PYTHONPATH: /app
+    env_file:
+      - ../secrets/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
+      - ../secrets/litellm-db.env     # LITELLM_DB_URL / DATABASE_URL
+    volumes:
+      - ../config/limits.yaml:/config/limits.yaml:ro
+      - hermes-data:/home/hermes/.hermes
+      - ../lib:/app/lib:ro
+      - ../scripts:/app/scripts:ro
+    networks: [internal, egress]
+    depends_on:
+      volume-init: {condition: service_completed_successfully}
+      litellm-db: {condition: service_healthy}
+      hermes: {condition: service_started}
+
 secrets:
   # honcho_db_password: removed (Phase 1 — Honcho disabled)
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)

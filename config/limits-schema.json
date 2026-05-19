@@ -204,6 +204,14 @@
           "properties": {
             "watcher_interval_s": {"type": "integer", "minimum": 30}
           }
+        },
+        "budget_watchdog": {
+          "type": "object",
+          "required": ["interval_s"],
+          "additionalProperties": false,
+          "properties": {
+            "interval_s": {"type": "integer", "minimum": 30}
+          }
         }
       }
     },

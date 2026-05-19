@@ -134,6 +134,45 @@ def test_classify_closedresourceerror_to_F14():
 
 
 # ----------------------------------------------------------------------
+# P1-2: real production MCP error patterns (audit pass-2 source)
+# ----------------------------------------------------------------------
+
+
+def test_classify_taskgroup_unhandled_to_F14():
+    """asyncio.ExceptionGroup wrapper from anyio TaskGroup (MCP SDK
+    internals). Observed verbatim in hermes container logs."""
+    err = RuntimeError("unhandled errors in a TaskGroup (1 sub-exception)")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_httpx_401_with_url_to_F14():
+    """httpx-style status error where '401 Unauthorized' precedes the URL
+    that identifies the github-mcp endpoint. The base P0-7 pattern
+    requires 'github mcp' before the keyword and so misses this shape."""
+    err = RuntimeError("Client error '401 Unauthorized' for url 'http://github-mcp:8003'")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_classify_bare_session_terminated_to_F14():
+    """context7 MCP transport reset surfaces as a bare 'Session terminated'
+    string with no 'mcp' prefix — observed verbatim in container logs."""
+    err = RuntimeError("Session terminated")
+    assert trichotomy.classify(err) == "F14"
+
+
+def test_mcp_errors_classify_to_f14():
+    """Acceptance test from audit-plan.md P1-2 — all three observed
+    production error strings classify as F14 (FAIL_SOFT, skip_tool_class)."""
+    observations = [
+        "unhandled errors in a TaskGroup (1 sub-exception)",
+        "Client error '401 Unauthorized' for url 'http://github-mcp:8003'",
+        "Session terminated",
+    ]
+    for msg in observations:
+        assert trichotomy.classify(RuntimeError(msg)) == "F14", f"expected F14 for: {msg!r}"
+
+
+# ----------------------------------------------------------------------
 # after_tool_call dispatch wiring (audit P0-7)
 # ----------------------------------------------------------------------
 

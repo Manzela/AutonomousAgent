@@ -46,8 +46,14 @@ litellm_otel:
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  # Note: `enforced_params` removed (presence triggers a Pro-only check
-  # in LiteLLM v1.84+ even when the value is an empty list). Also
-  # removed `database_url: ""` and `proxy_batch_write_at` — both relate
-  # to the prisma DB integration we are explicitly disabling via env
-  # vars in docker-compose.yml (DISABLE_SCHEMA_UPDATE, STORE_MODEL_IN_DB).
+  # Phase 1.1 (issue #55): Postgres backend attached so spend-tracking
+  # endpoints (`/global/spend/report`, `/spend/logs`) accumulate cost +
+  # usage history. Connection string is injected from the sops-encrypted
+  # `secrets/litellm-db.env` file (env_file in docker-compose.yml).
+  # The `litellm-db` sidecar service is what `litellm-db:5432` resolves to.
+  database_url: os.environ/DATABASE_URL
+  # Note: `enforced_params` left out (presence triggers a Pro-only check
+  # in LiteLLM v1.84+ even when the value is an empty list). STORE_MODEL_IN_DB
+  # is still False — model_list above is the source of truth, not the
+  # DB-backed admin UI. Prisma migrations DO run at startup (we removed
+  # DISABLE_SCHEMA_UPDATE so the spend_logs/user_table get created).

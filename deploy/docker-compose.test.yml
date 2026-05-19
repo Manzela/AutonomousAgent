@@ -2,7 +2,9 @@
 
 services:
   litellm-proxy:
-    image: stoplight/prism:5
+    # Pinned by digest (audit C3 follow-up — the floating `:5` tag was missed
+    # in PR #60's original "all images pinned" claim). Resolved 2026-05-19.
+    image: stoplight/prism:5@sha256:3f6d29e31bfe0b99587f0f6f79c423858dd6a2ea7e1e4658273ed930a78a9acf
     command: ["mock", "-h", "0.0.0.0", "-p", "4000", "/specs/openai-mock.yaml"]
     volumes:
       - ../tests/fixtures/openai-mock.yaml:/specs/openai-mock.yaml:ro

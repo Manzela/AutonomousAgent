@@ -203,6 +203,51 @@ services:
   # commented out. Will re-enable in a follow-up commit once the right
   # invocation is confirmed.
 
+  # ---- Volume init (chown sidecar) ----
+  #
+  # Two intertwined problems landed in PR #60 (chore/security-hardening-v2):
+  #
+  #   1. Dockerfile.hermes added `USER hermes` (uid 1000) AND
+  #      `useradd --create-home hermes` which puts HOME=/home/hermes. So
+  #      `Path.home()` inside the container is /home/hermes — and Hermes
+  #      hard-codes its state dir as `Path.home() / ".hermes"` (see
+  #      hermes-agent/hermes_constants.py:hermes_home_dir). The compose
+  #      file, however, still mounts the hermes-data volume + all config
+  #      bind-mounts at the legacy `/root/.hermes` — that path is on a
+  #      `/root` directory which is `0700 root:root` and unreachable to
+  #      a non-root user. So Hermes silently writes Kanban/cron state to
+  #      the ephemeral container fs at /home/hermes/.hermes and loses it
+  #      on every restart.
+  #
+  #   2. Even if the mount path were correct, the hermes-data named
+  #      volume is created on first stack-up by the Docker daemon as
+  #      `0700 root:root` — that ownership PRE-DATES the Dockerfile's
+  #      chown because named-volume mounts overlay the container fs
+  #      AFTER the image's baked perms are laid down.
+  #
+  # Fix (this commit):
+  #   - Move all `/root/.hermes` mounts to `/home/hermes/.hermes` so the
+  #     compose mounts line up with where Hermes actually reads/writes.
+  #   - Run this one-shot busybox container before hermes to chown the
+  #     named volume + the host-mounted /data to uid:gid 1000:1000.
+  #   - Replace the degenerate healthcheck (`python -c 'sys.exit(0)'`)
+  #     with a filesystem-touching probe so any future regression of
+  #     this class surfaces loudly instead of silently.
+  #
+  # Idempotent — runs at every stack-up, cheap. The escalation-watcher
+  # sidecar also mounts hermes-data and depends on volume-init too.
+  volume-init:
+    # busybox 1.36 pinned by digest (audit C3 follow-up). Resolved 2026-05-19.
+    image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
+    command: ["sh", "-c", "chown -R 1000:1000 /data /hermes-home && echo 'volume-init: chowned /data + /hermes-home to 1000:1000'"]
+    user: "0:0"           # explicit: must be root to chown
+    restart: "no"         # one-shot
+    volumes:
+      - hermes-data:/data
+      - hermes-data:/hermes-home
+    # No network needed — purely a filesystem op.
+    networks: []
+
   # ---- Hermes core ----
   #
   # The original spec called for two services (hermes-agent serving an HTTP
@@ -231,7 +276,7 @@ services:
       # P0-α verification of our lib/* plugin loading. Can be turned off after
       # acceptance once we're confident discovery is stable.
       HERMES_PLUGINS_DEBUG: "1"
-      # Our lib/* plugins (mounted under /root/.hermes/plugins/<name>/) each
+      # Our lib/* plugins (mounted under /home/hermes/.hermes/plugins/<name>/) each
       # declare top-line `from lib.X import Y` statements that reach into
       # sibling modules within lib/. The plugin's own __init__.py runs inside
       # Hermes' `hermes_plugins.<slug>` namespace, so the bare `lib.` import
@@ -252,22 +297,25 @@ services:
     volumes:
       - hermes-data:/data
       # P1-5: Kanban SQLite DB persistence. Hermes writes the DB under
-      # /root/.hermes/kanban/kanban.db (see kanban_db.py default path).
-      # The escalation-watcher sidecar already mounts the same named
-      # volume at /root/.hermes; this mount makes the DB visible to
-      # the hermes service itself so the agent can read/write it.
-      - hermes-data:/root/.hermes
-      # Hermes reads its config from /root/.hermes/config.yaml exclusively
+      # `Path.home() / ".hermes" / "kanban" / "kanban.db"` — which inside
+      # this container resolves to /home/hermes/.hermes/kanban/kanban.db
+      # because the security-hardening PR set HOME=/home/hermes (uid 1000
+      # `hermes` user, not root). The escalation-watcher sidecar mounts
+      # the same named volume at the same path; this mount makes the DB
+      # visible to the hermes service itself so the agent can read/write it.
+      # (The legacy /root/.hermes path is unreachable to non-root.)
+      - hermes-data:/home/hermes/.hermes
+      # Hermes reads its config from $HOME/.hermes/config.yaml exclusively
       # (the HERMES_CONFIG env var is for `hermes config edit`, not for
       # runtime resolution). Mount our cli-config.yaml directly there.
-      - ../config/hermes/cli-config.yaml:/root/.hermes/config.yaml:ro
-      - ../config/hermes/AGENTS.md:/root/.hermes/AGENTS.md:ro
-      - ../config/hermes/MEMORY.md:/root/.hermes/MEMORY.md:ro
-      - ../config/hermes/USER.md:/root/.hermes/USER.md:ro
-      - ../config/hermes/SOUL.md:/root/.hermes/SOUL.md:ro
+      - ../config/hermes/cli-config.yaml:/home/hermes/.hermes/config.yaml:ro
+      - ../config/hermes/AGENTS.md:/home/hermes/.hermes/AGENTS.md:ro
+      - ../config/hermes/MEMORY.md:/home/hermes/.hermes/MEMORY.md:ro
+      - ../config/hermes/USER.md:/home/hermes/.hermes/USER.md:ro
+      - ../config/hermes/SOUL.md:/home/hermes/.hermes/SOUL.md:ro
       # Canonical SDLC + security playbook for any new-repo creation work.
       # AGENTS.md instructs the agent to consult this BEFORE creating repos.
-      - ../docs/conventions/new-repo-template.md:/root/.hermes/new-repo-template.md:ro
+      - ../docs/conventions/new-repo-template.md:/home/hermes/.hermes/new-repo-template.md:ro
       # Our project's own runtime configs (limits/scrubber/toolsets) live
       # at /app/runtime/ — separate from Hermes' config namespace.
       - ../config/limits.yaml:/app/runtime/limits.yaml:ro
@@ -279,28 +327,40 @@ services:
       # them. Each module has a plugin.yaml manifest + register(ctx)
       # entry point; activation is opt-in via plugins.enabled in
       # config/hermes/cli-config.yaml.
-      - ../lib/anchors:/root/.hermes/plugins/anchors:ro
-      - ../lib/evaluators:/root/.hermes/plugins/evaluators:ro
-      - ../lib/durability:/root/.hermes/plugins/durability:ro
-      - ../lib/memory:/root/.hermes/plugins/memory:ro
-      - ../lib/kanban:/root/.hermes/plugins/kanban:ro
+      - ../lib/anchors:/home/hermes/.hermes/plugins/anchors:ro
+      - ../lib/evaluators:/home/hermes/.hermes/plugins/evaluators:ro
+      - ../lib/durability:/home/hermes/.hermes/plugins/durability:ro
+      - ../lib/memory:/home/hermes/.hermes/plugins/memory:ro
+      - ../lib/kanban:/home/hermes/.hermes/plugins/kanban:ro
       # Observability: initializes the OTel SDK (env vars alone aren't enough,
       # Hermes ships an uninitialized ProxyTracerProvider by default) and emits
       # the app-level spans the Phase 1 acceptance runbook step 4 expects:
       # turn.start, tool.dispatch, model.call at service.name=hermes-agent.
-      - ../lib/observability:/root/.hermes/plugins/observability:ro
+      - ../lib/observability:/home/hermes/.hermes/plugins/observability:ro
       # The plugins above declare `from lib.X import Y` for cross-module
       # imports inside their own __init__.py. Mount the full lib/ as a
       # PYTHONPATH-rooted package at /app/lib so those imports resolve.
       # (Mirrors the escalation-watcher sidecar's mount of the same path.)
       - ../lib:/app/lib:ro
+    # Filesystem-touching probe: writes + unlinks a marker under
+    # /home/hermes/.hermes (the same volume that owned the regression
+    # caught in PR #60 review). The previous probe `python -c 'sys.exit(0)'`
+    # was degenerate — it would have reported healthy even when hermes
+    # (uid 1000) could not write to its own state directories. This probe
+    # fails loudly the moment volume-overlay ownership drifts again.
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      test:
+        - CMD-SHELL
+        - 'python -c "import os; p=''/home/hermes/.hermes/.healthprobe''; open(p, ''w'').close(); os.unlink(p)"'
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 30s
     depends_on:
+      # Block on volume-init so /data + /home/hermes/.hermes are owned by
+      # uid 1000 before hermes (uid 1000) tries to touch them. Compose v2.x
+      # supports `service_completed_successfully` (we're on Compose v5).
+      volume-init: {condition: service_completed_successfully}
       litellm-proxy: {condition: service_healthy}
       otel-collector: {condition: service_started}
       shell-sandbox: {condition: service_started}
@@ -327,11 +387,14 @@ services:
       PYTHONPATH: /app
     volumes:
       - ../config/limits.yaml:/config/limits.yaml:ro
-      - hermes-data:/root/.hermes
+      - hermes-data:/home/hermes/.hermes
       - ../lib:/app/lib:ro
       - ../scripts:/app/scripts:ro
     networks: [internal, egress]   # egress for Telegram outbound
     depends_on:
+      # Inherit volume-init via hermes; explicit too for clarity since this
+      # service mounts hermes-data:/home/hermes/.hermes directly.
+      volume-init: {condition: service_completed_successfully}
       hermes: {condition: service_started}
 
 secrets:

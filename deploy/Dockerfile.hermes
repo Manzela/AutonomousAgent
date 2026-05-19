@@ -40,6 +40,11 @@ RUN uv pip install --system --no-cache \
       "opentelemetry-instrumentation-httpx>=0.48" \
       "opentelemetry-instrumentation-sqlite3>=0.48"
 
+# Postgres client for the budget-watchdog sidecar (P1-1): queries
+# LiteLLM_SpendLogs directly because the /spend/total endpoint returns 404.
+# psycopg[binary] avoids the libpq build dependency.
+RUN uv pip install --system --no-cache "psycopg[binary]>=3.1"
+
 # Non-root user for sandbox safety (audit C3). Created BEFORE the mkdir so
 # /home/hermes/.hermes can be made hermes-owned in a single step.
 # /bin/false shell makes the account non-interactive even if a tool managed

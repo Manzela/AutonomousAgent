@@ -32,6 +32,11 @@ services:
   escalation-watcher:
     profiles: ["disabled"]
 
+  # budget-watchdog hard-depends on `hermes` + `litellm-db` (which is mocked above
+  # via prism). Disable for tests for the same reason as escalation-watcher.
+  budget-watchdog:
+    profiles: ["disabled"]
+
   # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
   # named volume. CI tears it down with `docker compose down -v` between runs,
   # so it is effectively ephemeral. (We previously tried `tmpfs: /data` here

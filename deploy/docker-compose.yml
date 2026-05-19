@@ -21,6 +21,7 @@ volumes:
   hermes-data:
   # chroma-data: removed (Phase 1 — using Chroma Cloud instead of self-hosted)
   # honcho-db-data: removed (Phase 1 — Honcho disabled)
+  litellm-db-data:   # Phase 1.1 — spend-tracking DB for LiteLLM proxy (issue #55)
   workspace:
   phoenix-data:
 
@@ -55,18 +56,54 @@ services:
 
   # ---- Honcho (disabled in Phase 1; see note at honcho-db removal above) ----
 
+  # ---- LiteLLM spend-tracking DB ----
+  #
+  # Phase 1.1 (issue #55): LiteLLM proxy needs a Postgres backend for its
+  # spend-tracking endpoints (`/global/spend/report`, `/spend/logs`) and
+  # the prisma-managed user/key tables to function. Without a DB, the
+  # proxy returns 405/500 on those endpoints and the daily-cap historical
+  # reporting is broken (per-request cap still works in-memory).
+  #
+  # Topology: postgres 16-alpine, internal network only (no egress; the
+  # proxy is the sole client). Named volume `litellm-db-data` survives
+  # restarts. Credentials sourced from sops-encrypted
+  # `secrets/litellm-db.env` (POSTGRES_USER/PASSWORD/DB +
+  # LITELLM_SALT_KEY + DATABASE_URL — same env file is consumed by
+  # litellm-proxy below for DATABASE_URL/LITELLM_SALT_KEY).
+  litellm-db:
+    # Pinned by digest (audit C3 pattern). Resolved 2026-05-19 via
+    # `docker pull postgres:16-alpine`. 16-alpine is the smallest current
+    # postgres LTS image and matches what LiteLLM's docs reference for
+    # the proxy.
+    image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+    <<: [*restart_policy, *json_logging]
+    env_file:
+      - ../secrets/litellm-db.env   # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    volumes:
+      - litellm-db-data:/var/lib/postgresql/data
+    networks: [internal]            # proxy reaches it via service-name DNS, no egress
+    healthcheck:
+      # pg_isready ships in the postgres image; checks the socket is accepting
+      # connections AND that the named DB exists.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   # ---- LiteLLM proxy ----
 
   litellm-proxy:
-    # Pinned (was main-latest, then v1.50.0-stable which doesn't exist as
-    # a published tag). v1.84.0 is the most recent non-prerelease tag on
-    # the BerriAI/litellm GHCR registry as of 2026-05-15. Recent builds
-    # try to run prisma migrations at startup; we suppress that by setting
-    # DISABLE_SCHEMA_UPDATE + STORE_MODEL_IN_DB=False below — for our
-    # single-tenant use case we don't need spend persistence beyond OTel.
     # Tag + digest pin (audit C3). v1.84.0 is the most recent non-prerelease
     # tag on the BerriAI/litellm GHCR registry as of 2026-05-15; digest
     # captured 2026-05-19 for reproducibility.
+    #
+    # Phase 1.1 (issue #55): DB now attached for spend tracking. Prisma
+    # runs schema migrations on first startup (DISABLE_SCHEMA_UPDATE was
+    # previously set to True to skip them; removed so the spend_logs +
+    # user/key tables actually get created). STORE_MODEL_IN_DB stays
+    # False — our model_list is the source of truth in config.yaml, not
+    # the DB-backed admin UI.
     image: ghcr.io/berriai/litellm:v1.84.0@sha256:29252f25ed1b538d44f6b76ec97412c5537a180b39ede744b9f3e86ffdd278f5
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
@@ -74,11 +111,16 @@ services:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
-      # Tell prisma to skip migrations entirely (no DB)
-      DISABLE_SCHEMA_UPDATE: "True"
+      # Models live in config.yaml; don't shadow them with a DB-managed list.
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
       LITELLM_NO_TELEMETRY: "True"
+    env_file:
+      # DATABASE_URL (consumed by general_settings.database_url via
+      # os.environ/DATABASE_URL) and LITELLM_SALT_KEY (required when DB
+      # is on; encrypts any model credentials prisma would write). The
+      # same file is mounted on litellm-db above as the Postgres-init source.
+      - ../secrets/litellm-db.env
     secrets:
       - litellm_master_key
     volumes:
@@ -98,6 +140,7 @@ services:
     networks: [internal, egress]
     depends_on:
       otel-collector: {condition: service_started}
+      litellm-db: {condition: service_healthy}
     # litellm v1.84 image does NOT ship curl; use the bundled venv python.
     healthcheck:
       test:

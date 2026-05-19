@@ -291,6 +291,7 @@ jobs:
           touch secrets/chroma-cloud.env
           touch secrets/hermes-provider.env
           touch secrets/honcho.env
+          touch secrets/litellm-db.env
           # secrets: blocks are lazy, but the files must exist for `config` to validate paths
           touch secrets/honcho-db-password
           touch secrets/litellm-master-key

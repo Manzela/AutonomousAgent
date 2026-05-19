@@ -50,6 +50,22 @@ _CLASSIFIERS = [
     ),
     (re.compile(r"mcp.*(connection (closed|lost|refused)|broken pipe)", re.I), "F14"),
     (re.compile(r"closedresourceerror", re.I), "F14"),
+    # P1-2: supplementary F14 patterns extracted from real hermes container
+    # logs (audit pass-2). The patterns above require "mcp" or "github mcp"
+    # to precede the keyword, but production transport errors are emitted
+    # in several other shapes:
+    # - asyncio TaskGroup unwrap (MCP SDK uses anyio task groups internally)
+    # - httpx 401 with the URL trailing the verb
+    # - bare "Session terminated" from context7 transport reset
+    (re.compile(r"unhandled errors in a taskgroup", re.I), "F14"),
+    (
+        re.compile(
+            r"401 unauthorized.*github.?mcp|github.?mcp.*401 unauthorized",
+            re.I,
+        ),
+        "F14",
+    ),
+    (re.compile(r"session terminated", re.I), "F14"),
     (re.compile(r"skill.?extractor.*fail", re.I), "F15"),
     (re.compile(r"judge.*timeout", re.I), "F16"),
     (re.compile(r"daily.*budget.*exceeded", re.I), "F21"),

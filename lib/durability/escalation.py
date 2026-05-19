@@ -4,13 +4,21 @@ blocked cards with stale last_heartbeat_at and emits escalation alerts.
 Consumes config/limits.yaml agent.telegram_escalation_timeout_h.
 """
 
+import logging
 import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import List, Tuple
 
-KANBAN_DB_PATH = os.environ.get("HERMES_KANBAN_DB", "/root/.hermes/kanban/kanban.db")
+logger = logging.getLogger(__name__)
+
+# Default Kanban DB path. The container runs as user `hermes` (uid 1000)
+# with HOME=/home/hermes after the α-5 security-hardening PR. Hermes
+# resolves its DB via ``Path.home() / ".hermes" / "kanban.db"`` —
+# verified live at ``/home/hermes/.hermes/kanban.db`` (no ``kanban/``
+# subdir; see also ``lib/kanban/telegram_bridge._DEFAULT_DB_PATH``).
+KANBAN_DB_PATH = os.environ.get("HERMES_KANBAN_DB", "/home/hermes/.hermes/kanban.db")
 
 
 def find_stale_blocked_cards(
@@ -36,9 +44,30 @@ def find_stale_blocked_cards(
 
 
 def emit_escalation(card_id: int, title: str, age_h: float) -> None:
-    """Send a Telegram alert. Stubbed for now; P1-5 (session-e) will wire telegram_bridge."""
-    # TODO(P1-5): replace with telegram_bridge.send_alert(...)
-    print(f"[ESCALATION F32] card={card_id} title={title!r} blocked_age_h={age_h:.1f}")
+    """Send a Telegram alert for a card stuck in ``blocked`` past the SLA.
+
+    Goes through ``telegram_bridge.send_alert`` so escalations share the
+    same publish path (and the same fail-open guarantees) as Kanban
+    status-transition alerts. Local import avoids forcing the kanban
+    package on the import path when this module is loaded by callers
+    that don't care about Telegram (e.g. ``find_stale_blocked_cards``
+    used standalone).
+    """
+    msg = (
+        f"⚠️ Card {card_id} '{title}' blocked >24h ({age_h:.1f}h). "
+        f"Use `/resume {card_id}` or `/cancel {card_id}`."
+    )
+    try:
+        from lib.kanban.telegram_bridge import send_alert
+
+        send_alert(card_id, msg)
+    except Exception as exc:  # noqa: BLE001 — watcher must keep ticking
+        logger.warning(
+            "escalation: send_alert failed card=%s err=%s — original msg=%s",
+            card_id,
+            exc,
+            msg,
+        )
 
 
 def run_once(threshold_h: int = 24, db_path: str = None) -> int:

@@ -29,7 +29,7 @@ You MUST consult `~/.hermes/new-repo-template.md` BEFORE taking any action. It i
 - ADR (Architecture Decision Records) practice
 - Self-test checklist before declaring "ready"
 
-This file is mounted at `/root/.hermes/new-repo-template.md` inside this container; you can also reference it as `docs/conventions/new-repo-template.md` in the AutonomousAgent project root if you have host-FS access.
+This file is mounted at `/home/hermes/.hermes/new-repo-template.md` inside this container; you can also reference it as `docs/conventions/new-repo-template.md` in the AutonomousAgent project root if you have host-FS access.
 
 DO NOT skip steps. DO NOT use placeholder content. The template specifies real, production-grade conventions because the user is operating at production scale (500M+ tokens / 3 days, multi-week unattended autonomous runs).
 

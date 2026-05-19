@@ -99,3 +99,83 @@ def test_send_alert_is_callable_with_string():
     """
     # Should not raise.
     telegram_bridge.send_alert("card-1", "hello")
+
+
+# ---------------------------------------------------------------------------
+# Real send_alert HTTP behaviour (Phase 1.0.1 α-4)
+# ---------------------------------------------------------------------------
+
+
+def test_send_alert_posts_to_telegram_api(monkeypatch):
+    """When a bot token + chat id are present, send_alert POSTs to Telegram's API."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TESTTOKEN123")
+    monkeypatch.setenv("TELEGRAM_HOME_CHAT_ID", "7217166969")
+
+    fake_response = MagicMock()
+    fake_response.status_code = 200
+    fake_response.raise_for_status = MagicMock()
+
+    fake_client = MagicMock()
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__ = MagicMock(return_value=None)
+    fake_client.post = MagicMock(return_value=fake_response)
+
+    with patch("httpx.Client", return_value=fake_client):
+        telegram_bridge.send_alert("card-42", "blocked >24h")
+
+    assert fake_client.post.called, "Expected httpx.Client.post to be invoked"
+    args, kwargs = fake_client.post.call_args
+    url = args[0] if args else kwargs.get("url")
+    assert (
+        url is not None and "api.telegram.org" in url
+    ), f"Expected URL to contain api.telegram.org, got {url!r}"
+    assert "TESTTOKEN123" in url, f"Expected token in URL path, got {url!r}"
+    assert "sendMessage" in url, f"Expected sendMessage endpoint, got {url!r}"
+    body = kwargs.get("json") or kwargs.get("data") or {}
+    assert (
+        str(body.get("chat_id")) == "7217166969"
+    ), f"Expected chat_id=7217166969 in body, got {body!r}"
+    assert "blocked" in str(body.get("text", "")), f"Expected message text in body, got {body!r}"
+
+
+def test_send_alert_fail_open_on_network_error(monkeypatch):
+    """Network failure must NOT raise — alerts are best-effort."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "TESTTOKEN123")
+    monkeypatch.setenv("TELEGRAM_HOME_CHAT_ID", "7217166969")
+
+    fake_client = MagicMock()
+    fake_client.__enter__ = MagicMock(return_value=fake_client)
+    fake_client.__exit__ = MagicMock(return_value=None)
+    # Mimic a transport-layer failure.
+    import httpx
+
+    fake_client.post = MagicMock(side_effect=httpx.ConnectError("dns failure"))
+
+    with patch("httpx.Client", return_value=fake_client):
+        # Must not raise.
+        telegram_bridge.send_alert("card-42", "blocked >24h")
+
+
+def test_send_alert_no_op_without_token(monkeypatch):
+    """Missing TELEGRAM_BOT_TOKEN: degrade gracefully — no HTTP, no exception.
+
+    Strong contract: ``httpx.Client`` must not even be *instantiated* when
+    the bot token is missing, since constructing a client allocates
+    transport resources that an inert send shouldn't touch.
+    """
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+
+    client_constructor = MagicMock()
+    with patch("httpx.Client", client_constructor):
+        telegram_bridge.send_alert("card-42", "blocked >24h")
+    assert (
+        not client_constructor.called
+    ), "Expected httpx.Client to never be constructed when TELEGRAM_BOT_TOKEN unset"
+
+
+def test_update_card_status_no_op_when_db_unavailable():
+    """update_card_status is the bridge entry the kanban plugin uses for
+    success/blocked transitions. It must tolerate the Hermes DB being absent."""
+    with patch.object(telegram_bridge, "_kanban_db", return_value=None):
+        # Should not raise; no return contract beyond not exploding.
+        telegram_bridge.update_card_status("session-X", "running")

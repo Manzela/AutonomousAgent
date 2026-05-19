@@ -9,10 +9,12 @@
 #       * /data/MEMORY/REJECTED.md           (P1-4 institutional memory)
 #       * /data/secret-leak-attempts.log     (scrubber audit log)
 #       * any other runtime state Hermes writes to /data
-#   - The Kanban SQLite DB from /root/.hermes/kanban/kanban.db
+#   - The Kanban SQLite DB from /home/hermes/.hermes/kanban.db
 #     (the same hermes-data volume, mounted twice — once at /data,
-#     once at /root/.hermes — so we capture it explicitly to keep
-#     a separate, easy-to-restore artifact).
+#     once at /home/hermes/.hermes — so we capture it explicitly to keep
+#     a separate, easy-to-restore artifact. Path changed from
+#     /root/.hermes/... in the α-5 security-hardening PR when the
+#     container switched to a non-root `hermes` user.)
 #   - The on-host logs/ directory.
 #
 # What we removed and why:
@@ -40,12 +42,12 @@ if hermes_running; then
   echo "==> Snapshotting hermes-data volume (/data) → $OUT/hermes-data.tar.gz"
   $COMPOSE exec -T hermes tar czf - -C /data . > "$OUT/hermes-data.tar.gz"
 
-  # The Kanban DB lives in the same volume, but mounted at /root/.hermes
-  # (see kanban.db_path = /root/.hermes/kanban/kanban.db). Pull it out as
+  # The Kanban DB lives in the same volume, but mounted at /home/hermes/.hermes
+  # (see kanban.db_path = /home/hermes/.hermes/kanban.db). Pull it out as
   # a discrete artifact so restoring just the board state is one command.
   echo "==> Snapshotting Kanban DB → $OUT/kanban.db"
-  if $COMPOSE exec -T hermes test -f /root/.hermes/kanban/kanban.db; then
-    $COMPOSE exec -T hermes cat /root/.hermes/kanban/kanban.db > "$OUT/kanban.db"
+  if $COMPOSE exec -T hermes test -f /home/hermes/.hermes/kanban.db; then
+    $COMPOSE exec -T hermes cat /home/hermes/.hermes/kanban.db > "$OUT/kanban.db"
   else
     echo "    (no Kanban DB yet — fresh stack)"
   fi

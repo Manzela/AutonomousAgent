@@ -64,7 +64,10 @@ services:
     # try to run prisma migrations at startup; we suppress that by setting
     # DISABLE_SCHEMA_UPDATE + STORE_MODEL_IN_DB=False below — for our
     # single-tenant use case we don't need spend persistence beyond OTel.
-    image: ghcr.io/berriai/litellm:v1.84.0
+    # Tag + digest pin (audit C3). v1.84.0 is the most recent non-prerelease
+    # tag on the BerriAI/litellm GHCR registry as of 2026-05-15; digest
+    # captured 2026-05-19 for reproducibility.
+    image: ghcr.io/berriai/litellm:v1.84.0@sha256:29252f25ed1b538d44f6b76ec97412c5537a180b39ede744b9f3e86ffdd278f5
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
@@ -81,6 +84,17 @@ services:
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
       - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      # Audit C1: wire lib/scrubber.py as a LiteLLM CustomLogger so prompts
+      # and responses are scanned for secrets before they reach OTel/Phoenix.
+      # `scrubber_callback.py` must sit next to config.yaml (same directory
+      # is what `get_instance_fn` resolves), and the wrapper imports
+      # `lib.scrubber`, so we mount both:
+      - ../lib/scrubber_callback.py:/app/scrubber_callback.py:ro
+      - ../lib:/app/lib:ro
+      - ../config/scrubber-patterns.yaml:/app/scrubber-patterns.yaml:ro
+      # Redaction events land here so they survive container restarts +
+      # are visible alongside Hermes' own /data writes.
+      - hermes-data:/data
     networks: [internal, egress]
     depends_on:
       otel-collector: {condition: service_started}
@@ -99,7 +113,9 @@ services:
   # ---- OTel collector ----
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    # Pinned by digest (audit C3). Resolved 2026-05-19. Re-pin via:
+    # `docker pull otel/opentelemetry-collector-contrib:latest | grep Digest`
+    image: otel/opentelemetry-collector-contrib:latest@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/etc/otelcol-contrib/config.yaml"]
     volumes:
@@ -120,7 +136,8 @@ services:
   # the human to open localhost:6006 in a browser).
 
   phoenix:
-    image: arizephoenix/phoenix:latest
+    # Pinned by digest (audit C3). Resolved 2026-05-19.
+    image: arizephoenix/phoenix:latest@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489
     <<: [*restart_policy, *json_logging]
     ports:
       - "127.0.0.1:4317:4317"   # OTLP gRPC receiver
@@ -160,7 +177,8 @@ services:
   # Required PAT scopes: repo, workflow, read:org, security_events.
 
   github-mcp:
-    image: ghcr.io/github/github-mcp-server:latest
+    # Pinned by digest (audit C3). Resolved 2026-05-19.
+    image: ghcr.io/github/github-mcp-server:latest@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
     command: ["http", "--port", "8003", "--toolsets", "all"]
     environment:

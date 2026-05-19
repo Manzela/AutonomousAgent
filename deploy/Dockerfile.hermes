@@ -1,8 +1,14 @@
 # Wraps the upstream NousResearch/hermes-agent build with our OTel SDK + config mount.
 # Built from the project root so the hermes-agent submodule is in build context.
+#
+# Base image pinned by SHA digest for reproducibility + supply-chain safety
+# (see audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C3).
+# Digest resolved 2026-05-19 against python:3.11-slim on Docker Hub.
+# Updating: re-pull, copy `Digest:` from `docker pull python:3.11-slim` output,
+# replace below. PYTHON_VERSION arg kept for documentation only.
 ARG PYTHON_VERSION=3.11
 
-FROM python:${PYTHON_VERSION}-slim AS base
+FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -35,7 +41,19 @@ RUN uv pip install --system --no-cache \
       "opentelemetry-instrumentation-sqlite3>=0.48"
 
 # Mount points (created here so volume mounts behave predictably)
-RUN mkdir -p /data /app/config /app/skills /app/secrets
+RUN mkdir -p /data /app/config /app/skills /app/secrets /root/.hermes /root/.hermes/plugins /root/.hermes/kanban
+
+# Non-root user for sandbox safety (audit C3).
+# Hermes writes runtime state to /root/.hermes/ (kanban DB, config) and /data
+# (durability ledger). We chown both, plus /app (for the lib/ mount tree).
+# The Dockerfile-baked /root/.hermes contents are overlaid at runtime by the
+# compose hermes-data named-volume mount; the chown here covers the empty
+# first-run case. After the volume is initialised the named volume owns the
+# filesystem perms — re-init by removing the named volume on a stale stack.
+RUN groupadd --gid 1000 hermes \
+ && useradd --uid 1000 --gid 1000 --no-create-home --shell /bin/false hermes \
+ && chown -R hermes:hermes /data /app /root/.hermes
+USER hermes
 
 # Default CLI entrypoint; gateway service overrides command in compose
 ENTRYPOINT ["hermes"]

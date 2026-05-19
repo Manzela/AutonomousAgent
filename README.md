@@ -52,7 +52,21 @@ Then send your bot a message on Telegram.
 
 ## Architecture (one paragraph)
 
-A docker-compose stack with twelve services that runs identically on Mac (Phase 1) and on a GCP VM (Phase 2). The agent core (`hermes-agent`) talks to a LiteLLM proxy (`litellm-proxy`) which translates OpenAI-format requests to Vertex AI. State lives in SQLite + Chroma + Honcho (with Postgres). Tools route through tiered sandboxes (in-process, Docker `shell-sandbox`, Modal/Daytona cloud sandbox). Telemetry flows OTLP → `otel-collector` → Phoenix (dev) or Cloud Trace (prod). All secrets are sops-encrypted at rest. All numeric caps, intervals, and thresholds live in `config/limits.yaml`, runtime-tunable.
+A docker-compose stack with **nine services (8 long-running + 1 init sidecar)** that runs identically on Mac (Phase 1) and on a GCP VM (Phase 2). The agent core (`hermes`) talks to a LiteLLM proxy (`litellm-proxy`, backed by Postgres `litellm-db` for spend tracking) which translates OpenAI-format requests to Vertex AI. State lives in SQLite + Chroma (cloud) + Honcho (hosted). Tools route through tiered sandboxes (in-process, Docker `shell-sandbox`, Modal/Daytona cloud sandbox). Telemetry flows OTLP → `otel-collector` → `phoenix` (dev) or Cloud Trace (prod). GitHub tools route through the `github-mcp` sidecar; an `escalation-watcher` watches for Kanban blocked-card alerts. All secrets are sops-encrypted at rest. All numeric caps, intervals, and thresholds live in `config/limits.yaml`, runtime-tunable.
+
+### Service inventory
+
+| # | Service | Role | Long-running? |
+|---|---|---|---|
+| 1 | `hermes` | Agent core (Hermes runtime) | yes |
+| 2 | `litellm-proxy` | OpenAI → Vertex AI translation | yes |
+| 3 | `litellm-db` | Postgres for spend tracking | yes |
+| 4 | `otel-collector` | OTLP receiver + Phoenix exporter | yes |
+| 5 | `phoenix` | Trace UI + storage (dev) | yes |
+| 6 | `shell-sandbox` | Tiered tool sandbox (Docker) | yes |
+| 7 | `github-mcp` | GitHub MCP server sidecar | yes |
+| 8 | `escalation-watcher` | Telegram alert watcher | yes |
+| 9 | `volume-init` | One-shot volume-permissions init (`restart: no`) | no |
 
 For the full design: [docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md)
 

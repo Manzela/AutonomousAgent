@@ -32,7 +32,24 @@ _CLASSIFIERS = [
     (re.compile(r"max_tokens too low|thinking tokens truncated", re.I), "F11"),
     (re.compile(r"chroma.*down", re.I), "F12"),
     (re.compile(r"otel.*unreachable", re.I), "F13"),
-    (re.compile(r"github.?mcp.*unavailable", re.I), "F14"),
+    # F14 — Github MCP server unavailable. The MCP SDK surfaces many
+    # different transport-failure shapes (session GC'd, transport closed,
+    # OAuth 401, connection torn down). Mapped to F14 (FAIL_SOFT,
+    # skip_tool_class) so the agent gracefully drops github-tagged tools
+    # for the rest of the session instead of halting.
+    #
+    # Source for these substrings: hermes-agent/tools/mcp_tool.py
+    # _SESSION_EXPIRED_SUBSTRINGS (line 1838) + _is_auth_error path.
+    (re.compile(r"github.?mcp.*(unavailable|unauthorized|forbidden)", re.I), "F14"),
+    (
+        re.compile(
+            r"mcp.*(session (terminated|expired|not found)|expired session|transport is closed)",
+            re.I,
+        ),
+        "F14",
+    ),
+    (re.compile(r"mcp.*(connection (closed|lost|refused)|broken pipe)", re.I), "F14"),
+    (re.compile(r"closedresourceerror", re.I), "F14"),
     (re.compile(r"skill.?extractor.*fail", re.I), "F15"),
     (re.compile(r"judge.*timeout", re.I), "F16"),
     (re.compile(r"daily.*budget.*exceeded", re.I), "F21"),
@@ -103,17 +120,25 @@ def after_tool_call(
     duration_ms: Optional[int] = None,
     **_: Any,
 ) -> None:
-    """Hermes ``post_tool_call`` hook. Classifies errors + emits OTel span.
+    """Hermes ``post_tool_call`` hook. Classifies errors, emits span, dispatches handler.
 
     Signature matches Hermes' ``invoke_hook("post_tool_call", tool_name=..., args=...,
     result=..., task_id=..., session_id=..., tool_call_id=..., duration_ms=...)`` at
     ``hermes-agent/model_tools.py`` (see the ``post_tool_call`` dispatch site).
 
     Hermes passes the tool's return value (or the caught exception) as ``result``. We
-    only classify when ``result`` is an ``Exception`` instance — success paths are
-    no-ops here. Errors are mapped to an F-code via the failure-matrix and emitted as
-    a ``durability.classify`` OTel span so the trichotomy class shows up in Phoenix
-    alongside the ``tool.dispatch`` span emitted by ``lib.observability``.
+    only act when ``result`` is an ``Exception`` instance — success paths are no-ops.
+
+    Behavior on error:
+
+    1. Classify via :func:`classify` → F-code.
+    2. Emit a ``durability.classify`` OTel span (so Phoenix shows the F-code next to
+       ``tool.dispatch``).
+    3. **Dispatch the matrix handler** for ``FAIL_SOFT`` / ``FAIL_LOUD`` classes
+       (visible side-effects: alerts, JSONL fallback, card→BLOCKED). ``SELF_HEAL``
+       is intentionally skipped here — Hermes' own per-tool retry loop owns that
+       path, and dispatching ``retry_with_backoff`` from a fire-and-forget hook
+       has no consumer for the returned delay. Closes audit P0-7.
     """
     if not isinstance(result, Exception):
         return None
@@ -145,4 +170,24 @@ def after_tool_call(
         pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("durability.classify span emit failed: %s", exc)
+
+    if cls in (TrichotomyClass.FAIL_SOFT, TrichotomyClass.FAIL_LOUD):
+        try:
+            from lib.durability.handlers import dispatch
+
+            dispatch(
+                code,
+                error=result,
+                tool_name=tool_name,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                payload={"tool_name": tool_name, "error_type": type(result).__name__},
+            )
+        except Exception as exc:  # noqa: BLE001 — hook must never throw upstream
+            logger.warning(
+                "trichotomy.after_tool_call dispatch failed f_code=%s err=%s",
+                code,
+                exc,
+            )
     return None

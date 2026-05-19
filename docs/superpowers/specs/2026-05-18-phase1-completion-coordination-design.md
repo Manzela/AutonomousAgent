@@ -17,6 +17,27 @@ references:
 
 # Phase 1 completion — coordination design
 
+> ## ⚠ DRIFT NOTICE — 2026-05-19
+>
+> **This document is preserved for design intent reference only. Live code has diverged from this spec in 6 confirmed places** (4 value/path drifts + 2 process drifts). Where the spec disagrees with current code, **trust the code**.
+>
+> Surfaced by the HANDOFF-2026-05-19 forensic audit — see `audit/handoff-doc-2026-05-19-review/audit-plan.md` (P1-2) for full evidence with file:line citations.
+>
+> ### Confirmed drifts (do NOT implement from this spec without checking)
+>
+> | Spec says | Live code says | Authoritative source |
+> |---|---|---|
+> | `accept_threshold: 3` (int, count of judges) — line 187 | `accept_threshold: 0.75` (float, percentage) | `config/limits.yaml:153`, `lib/evaluators/consensus.py:59,79` |
+> | `reject_threshold: 3` (int) — line 188 | `reject_threshold: 0.75` (float) | `config/limits.yaml:154`, `lib/evaluators/consensus.py:60,89` |
+> | `/cancel <id>` TODO at `lib/anchors/__init__.py:55` — lines 304, 401 | Handler is at `~lib/anchors/__init__.py:259` and `TODO(P1-5)` is fully implemented (dispatches to `telegram_bridge.cancel_card`) | `lib/anchors/__init__.py` `_slash_cancel` function |
+> | Kanban DB at `/root/.hermes/kanban/kanban.db` — line 304 | Kanban DB at `/home/hermes/.hermes/kanban.db` (NO `kanban/` subdir) — post PR #60 non-root rebase | `lib/durability/escalation.py:21`, `lib/kanban/telegram_bridge.py:57`, `config/limits.yaml:188`, `scripts/snapshot.sh:49-50` |
+> | Phase β = 3 parallel sessions (c/d/e) converging on `phase/1-completion` | Single consolidated PR #49 | `git log --oneline` |
+> | Phase α-0 = 4 isolation PRs (α-0.1 to α-0.4) | 8 hotfix PRs #56-#63 bundled differently — all spec-identified defects fixed | `git log main --oneline \| head -8` |
+>
+> **Not a drift:** `lib/durability/escalation.py` location (line 214) is correct — file exists at that path with that purpose.
+>
+> ---
+
 ## 0. TL;DR
 
 Drive AutonomousAgent Phase 1 to **Task 39 acceptance PASS** by combining (a) three live-stack defect fixes that block acceptance today, (b) the two short `config/limits.yaml` appends already documented as pending, (c) the four missing subsystems (P1-3 / P1-4 / P1-5 / P1-6) implemented across three parallel sessions, and (d) a split closeout where the assistant runs preflight checks then hands off to the human for the manual acceptance walk-through.

@@ -22,8 +22,10 @@ import threading
 import pytest
 
 from lib.durability.runtime_detectors import (
+    DEFAULT_CONTEXT_WARN_THRESHOLD,
     DEFAULT_LOOP_THRESHOLD,
     DEFAULT_STALL_IDLE_TIMEOUT_S,
+    ContextUsageDetector,
     LoopDetector,
     StallDetector,
     _fingerprint,
@@ -256,3 +258,90 @@ def test_stall_detector_reset_clears_state():
     det.reset(session_id="s")
     # After reset, no state -> no fire
     assert det.check(session_id="s") is None
+
+
+# ---------- ContextUsageDetector (F36 / J9) -------------------------------
+
+
+def test_context_detector_default_threshold():
+    assert ContextUsageDetector().warn_threshold == DEFAULT_CONTEXT_WARN_THRESHOLD
+
+
+def test_context_detector_rejects_threshold_out_of_range():
+    with pytest.raises(ValueError):
+        ContextUsageDetector(warn_threshold=0.0)
+    with pytest.raises(ValueError):
+        ContextUsageDetector(warn_threshold=1.5)
+    with pytest.raises(ValueError):
+        ContextUsageDetector(warn_threshold=-0.1)
+
+
+def test_context_detector_does_not_fire_below_threshold():
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="s", prompt_tokens=100, context_length=200) is None
+    assert det.record_usage(session_id="s", prompt_tokens=890, context_length=1000) is None
+
+
+def test_context_detector_fires_on_crossing():
+    det = ContextUsageDetector(warn_threshold=0.9)
+    # 0.95 ratio -> over threshold
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"
+
+
+def test_context_detector_fires_at_exact_threshold():
+    """ratio == warn_threshold should count as crossing (>= not >)."""
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="s", prompt_tokens=900, context_length=1000) == "F36"
+
+
+def test_context_detector_does_not_re_fire_within_episode():
+    """Once F36 fires for a session, subsequent over-threshold readings stay silent."""
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="s", prompt_tokens=920, context_length=1000) == "F36"
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) is None
+    assert det.record_usage(session_id="s", prompt_tokens=980, context_length=1000) is None
+
+
+def test_context_detector_rearms_when_ratio_drops():
+    """A drop below threshold re-arms; the next crossing fires again."""
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"
+    # Compaction frees space -> ratio drops below threshold
+    assert det.record_usage(session_id="s", prompt_tokens=400, context_length=1000) is None
+    # Climbs back -> fires again
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"
+
+
+def test_context_detector_per_session_isolation():
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="A", prompt_tokens=950, context_length=1000) == "F36"
+    # Session B is independent — first crossing also fires
+    assert det.record_usage(session_id="B", prompt_tokens=950, context_length=1000) == "F36"
+    # Each session is one-fire-per-episode in isolation
+    assert det.record_usage(session_id="A", prompt_tokens=970, context_length=1000) is None
+    assert det.record_usage(session_id="B", prompt_tokens=970, context_length=1000) is None
+
+
+def test_context_detector_handles_zero_context_length():
+    """Defensive: div-by-zero must not propagate; treat as no-data, no-fire."""
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=0) is None
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=-100) is None
+
+
+def test_context_detector_snapshot_reports_state():
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.snapshot("unknown") == (0.0, False)
+    det.record_usage(session_id="s", prompt_tokens=950, context_length=1000)
+    ratio, fired = det.snapshot("s")
+    assert ratio == pytest.approx(0.95)
+    assert fired is True
+
+
+def test_context_detector_reset_clears_state():
+    det = ContextUsageDetector(warn_threshold=0.9)
+    det.record_usage(session_id="s", prompt_tokens=950, context_length=1000)
+    det.reset(session_id="s")
+    assert det.snapshot("s") == (0.0, False)
+    # After reset, first crossing fires fresh
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"

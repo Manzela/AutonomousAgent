@@ -24,6 +24,14 @@ def test_loop_and_stall_codes_present():
     assert "F-STALL" in FAILURE_MATRIX["F35"]["description"]
 
 
+def test_context_code_present():
+    """J9 (Framing #2) added F36 = F-CONTEXT."""
+    assert "F36" in FAILURE_MATRIX
+    assert FAILURE_MATRIX["F36"]["class"] == TrichotomyClass.FAIL_SOFT
+    assert "F-CONTEXT" in FAILURE_MATRIX["F36"]["description"]
+    assert FAILURE_MATRIX["F36"]["handler"] == "escalate_context_pressure"
+
+
 def test_every_code_maps_to_valid_class():
     valid_classes = {
         TrichotomyClass.FAIL_LOUD,

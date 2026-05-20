@@ -155,15 +155,23 @@ Items are tagged **P0** (do first) → **P2** (nice-to-have).
 - **Where:** `hermes-agent/acp_adapter/` (read), new `docs/decisions/0007-a2a-adoption.md` (write — optional, only if outcome is "yes").
 - **Effort:** **2 days max** (hard timebox). **Actual:** ~3 hours including disambiguation evidence-gathering.
 
-#### J9 — Context-usage gauge → soft escalation
+#### J9 — Context-usage gauge → soft escalation — **CLOSED 2026-05-20 (detector shipped; OTel gauge deferred)**
 
-- **What:** Surface upstream Hermes' context window usage as a `agent.memory.context_usage_pct` OTel gauge (likely from `context_compressor.py`), and add an F-CONTEXT code that fires at 0.9 — handler triggers a compaction earlier than the default trigger.
-- **Why:** Research doc Component 7 lists "context exhaustion (>0.9 usage)" as a monitored signal. Upstream already has compaction; what's missing is the **observable + the early-warning escalation**. Cheap follow-on to J2 (semantic conventions) and J4 (failure matrix extensions).
-- **Where:**
-  - `hermes-agent/agent/context_compressor.py` (read to find gauge source).
-  - `lib/observability/otel_setup.py` — add gauge instrumentation.
-  - `lib/durability/failure_matrix.py` — add F-CONTEXT.
-- **Effort:** **3–5 days** (most of it figuring out upstream Hermes' context-usage internals).
+- **What was planned:** Surface upstream Hermes' context-window usage as a `agent.memory.context_usage_pct` OTel gauge + an F-CONTEXT code at 0.9 that triggers an earlier compaction.
+- **Reality on inspection of `hermes-agent/agent/context_compressor.py`:**
+  - Upstream already compacts at **0.5** (`threshold_percent` default), so a 0.9 detector firing means compaction either failed or was suppressed by the anti-thrashing guard (≥ 2 ineffective compactions in a row). 0.9 is therefore a **"compaction already failed"** warning surface, NOT a second compaction trigger as the original plan implied.
+  - The signal source is `last_prompt_tokens / context_length` — both already on the `ContextCompressor` instance.
+- **What shipped (this PR):**
+  - `lib/durability/failure_matrix.py` — `F36` / **F-CONTEXT** (Fail-Soft, handler `escalate_context_pressure` — stub for now, dispatches to `halt_alert_snapshot` via the matrix's stub mechanism).
+  - `lib/durability/runtime_detectors.py` — `ContextUsageDetector` class with `record_usage(session_id, prompt_tokens, context_length)`. Mirrors `StallDetector`'s one-fire-per-episode + re-arm semantics; thread-safe via single mutex.
+  - `config/limits.yaml` — `durability.context_detector.warn_threshold: 0.9`.
+  - `tests/unit/test_runtime_detectors.py` — 10 new tests for `ContextUsageDetector`.
+  - `tests/unit/test_failure_matrix.py` — F36 presence + handler-name check.
+  - `docs/architecture/failure-matrix.md` — new "Runtime detectors (F34-F36)" subsection (also backfills F34/F35 which were code-only).
+- **What's explicitly DEFERRED:**
+  - The OTel `agent.memory.context_usage_pct` **gauge**. Adding it requires wiring a `MeterProvider` + periodic OTLP metrics exporter into `lib/observability/otel_setup.py`, which is currently **trace-only**. The detector exposes the ratio via `snapshot(session_id)` and via warn-level logs, but cannot publish a metric until the SDK is expanded. Tracked as a follow-up.
+  - The runtime wiring of `ContextUsageDetector.record_usage(...)` into Hermes' actual post-model-call lifecycle. Hermes upstream does not expose `post_llm_call` hooks (see audit-plan J13). Today the detector is an importable component; full wiring depends on either J13 (upstream PR) or our wrapper-side `_post_llm_call` (see `lib/observability/__init__.py`).
+- **Effort actual:** ~3 hours (vs planned 3-5 days — most of the savings came from realizing the OTel gauge needed MeterProvider work that's outside this slice, and from the upstream-hook gap making "full wiring" out-of-scope anyway).
 
 #### J10 — Document the judge panel as RLAIF
 

@@ -63,6 +63,27 @@ The system enforces a **Fail-Loud / Fail-Soft / Self-Heal** trichotomy. Every to
 | F32 | 24h Telegram silence on blocked card → escalate to triage | **Fail-Loud** | `alert_user_escalate_kanban` |
 | F33 | F-code lookup failed (unclassified exception) | **Fail-Loud** | `halt_alert_snapshot` |
 
+### Runtime detectors (F34-F36)
+
+Added by Framing #2 audit. Unlike F1-F33 (which are *classifications of
+raised exceptions*), these fire from active detectors running in the
+orchestrator's hooks/watchdog. See `lib/durability/runtime_detectors.py`.
+
+| Code | Description | Class | Handler |
+|---|---|---|---|
+| F34 | **F-LOOP** — agent repeated same tool-call fingerprint N times without progress | **Fail-Soft** | `interrupt_with_loop_feedback` |
+| F35 | **F-STALL** — no tool-call activity for `idle_timeout_s` while task in_progress | **Fail-Loud** | `halt_alert_snapshot` |
+| F36 | **F-CONTEXT** — prompt-token usage exceeded warn threshold (compaction may be ineffective) | **Fail-Soft** | `escalate_context_pressure` |
+
+**F36 / F-CONTEXT semantics.** Upstream Hermes' `context_compressor` already
+triggers compaction at 0.5 of the model's context window
+(`threshold_percent`). A reading at 0.9 (`config/limits.yaml →
+durability.context_detector.warn_threshold`) means compaction either failed,
+got suppressed by the anti-thrashing guard, or never ran — the detector
+surfaces that pathological state to the orchestrator/operator. Re-arms
+when the next observed ratio drops below threshold, so a single session
+can fire F36 multiple times if it keeps bouncing across the warn line.
+
 ## 3. Classifier behavior
 
 Exceptions raised inside the hot path are passed to

@@ -201,6 +201,18 @@ FAILURE_MATRIX: Dict[str, Dict[str, Any]] = {
         "description": "F-STALL: no tool-call activity for idle_timeout_s while task in_progress",
         "handler": "halt_alert_snapshot",
     },
+    # F-CONTEXT (J9 — Framing #2): prompt-tokens / context_length exceeded
+    # warning threshold (default 0.9). Fail-soft because upstream Hermes already
+    # compacts at 0.5 (`context_compressor.threshold_percent`); a 0.9 reading
+    # means compaction either failed or was suppressed by anti-thrashing. The
+    # handler escalates (forced compaction / Telegram / `/new` request) rather
+    # than halting — the model can keep running, but every subsequent turn is
+    # at risk of provider-side hard truncation.
+    "F36": {
+        "class": TrichotomyClass.FAIL_SOFT,
+        "description": "F-CONTEXT: prompt-token usage exceeded warning threshold (compaction may be ineffective)",
+        "handler": "escalate_context_pressure",
+    },
 }
 
 

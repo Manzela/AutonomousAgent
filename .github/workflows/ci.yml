@@ -463,6 +463,73 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------
+  # SOUL.md integrity — config/hermes/SOUL.md is mounted read-only into
+  # the hermes container and defines the agent's honesty/calibration
+  # persona. A silent edit changes production behavior. This job recomputes
+  # the file's sha256 and compares it to the pin in config/limits.yaml
+  # (integrity.soul_md_sha256). Drift = hard fail. Dedicated job so the
+  # `soul-md-integrity` name is grep-able from branch-protection rules.
+  # Closes audit P2 #36.
+  # Pure POSIX shell — no Python deps, no actions beyond checkout.
+  # ------------------------------------------------------------------
+  soul-md-integrity:
+    name: SOUL.md integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false  # SOUL.md lives in this repo, not the submodule
+
+      - name: Skip if SOUL.md or limits.yaml missing
+        id: detect
+        run: |
+          if [ -f config/hermes/SOUL.md ] && [ -f config/limits.yaml ]; then
+            echo "has_files=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_files=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::config/hermes/SOUL.md or config/limits.yaml missing; skipping."
+          fi
+
+      - name: Verify SOUL.md sha256 matches pin
+        if: steps.detect.outputs.has_files == 'true'
+        run: |
+          set -euo pipefail
+          # ubuntu-latest runners ship python3 + pyyaml; no install needed.
+          pinned="$(python3 -c '
+          import sys, yaml
+          with open("config/limits.yaml") as f:
+              cfg = yaml.safe_load(f)
+          try:
+              print(cfg["integrity"]["soul_md_sha256"])
+          except KeyError:
+              sys.stderr.write(
+                  "config/limits.yaml is missing integrity.soul_md_sha256 — "
+                  "the SOUL.md pin was removed or never installed (see audit P2 #36).\n"
+              )
+              sys.exit(2)
+          ')"
+          # `shasum -a 256` works on macOS and Linux; `sha256sum` is
+          # Linux-only. Keep the same tool everywhere (YAML comment,
+          # update script, CI) so contributors don't get conflicting
+          # remediation snippets — see CONTRIBUTING.md "Updating pinned
+          # hashes (SOUL.md)".
+          actual="$(shasum -a 256 config/hermes/SOUL.md | awk '{print $1}')"
+          echo "pinned: ${pinned}"
+          echo "actual: ${actual}"
+          if [ "${pinned}" != "${actual}" ]; then
+            msg="SOUL.md sha256 drift detected. pinned=${pinned} actual=${actual}."
+            msg="${msg} If you intentionally changed SOUL.md, run"
+            msg="${msg} ./scripts/update_soul_pin.sh and commit the resulting"
+            msg="${msg} config/limits.yaml diff in the SAME commit as your"
+            msg="${msg} SOUL.md edit (see CONTRIBUTING.md)."
+            echo "::error file=config/hermes/SOUL.md::${msg}"
+            exit 1
+          fi
+          echo "::notice::SOUL.md sha256 matches pin (${actual})."
+
+  # ------------------------------------------------------------------
   # Hermes plugin-loader docker-compose smoke test (P2 #23 closure).
   # Spins up the real hermes container via docker compose and asserts
   # disk-cleanup loads via the production PluginManager — not via the

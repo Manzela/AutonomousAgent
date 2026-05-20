@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from typing import Any, Dict, Optional, Tuple
 
@@ -81,6 +82,44 @@ _MAX_MSG_CONTENT_LEN = 2_000
 _MAX_INPUT_MESSAGES = 20
 
 _OI_KIND = "openinference.span.kind"
+
+# ---------------------------------------------------------------------------
+# J11 — dual-emit GenAI semantic-convention attributes
+# ---------------------------------------------------------------------------
+# Phoenix consumes OpenInference (``llm.*``) attrs natively; Cloud Trace and
+# GCP "Generative AI" dashboards consume OTel GenAI semantic conventions
+# (``gen_ai.*``). Rather than pick one dialect and break the other, we
+# *additionally* emit ``gen_ai.*`` attrs on the same spans when the
+# ``HERMES_DUAL_EMIT_GEN_AI`` env var is truthy. Off by default to preserve
+# the current Phoenix-only contract; flipped on in prod once Cloud Trace
+# wiring lands. See audit/2026-05-20-architecture-research-gap-analysis/
+# audit-plan.md item J11. Spec: opentelemetry.io/docs/specs/semconv/gen-ai/
+_DUAL_EMIT_ENV = "HERMES_DUAL_EMIT_GEN_AI"
+_DUAL_EMIT_TRUTHY = {"1", "true", "yes", "on"}
+_DUAL_EMIT_ENABLED = os.getenv(_DUAL_EMIT_ENV, "").strip().lower() in _DUAL_EMIT_TRUTHY
+
+
+def _is_dual_emit_enabled() -> bool:
+    """Module-level toggle. Tests monkeypatch ``_DUAL_EMIT_ENABLED`` directly."""
+    return _DUAL_EMIT_ENABLED
+
+
+def _set_gen_ai_attrs(span: Any, attrs: Dict[str, Any]) -> None:
+    """Set every (key, value) in ``attrs`` on ``span``. No-op when dual-emit off.
+
+    Centralised so the production hot path is one branch instead of one
+    per attribute, and so tests can patch a single helper if they want to
+    assert call counts.
+    """
+    if not _is_dual_emit_enabled():
+        return
+    for k, v in attrs.items():
+        if v is None:
+            continue
+        try:
+            span.set_attribute(k, v)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gen_ai attr %s set failed: %s", k, exc)
 
 
 def register(ctx: Any) -> None:
@@ -345,6 +384,19 @@ def _pre_llm_call(
         if is_first_turn is not None:
             span.set_attribute("is_first_turn", bool(is_first_turn))
 
+        # J11 dual-emit — additionally tag this span with OTel GenAI
+        # semantic-convention attrs for Cloud Trace / GCP GenAI dashboards.
+        # operation.name=chat is the spec's coarse-grained classifier; we
+        # don't currently distinguish chat vs. completion at the hook layer.
+        _set_gen_ai_attrs(
+            span,
+            {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": str(model) if model else None,
+                "gen_ai.system": str(platform) if platform else None,
+            },
+        )
+
         # Input messages — full conversation_history if available, else
         # fall back to the single user_message string.
         if isinstance(conversation_history, (list, tuple)) and conversation_history:
@@ -487,9 +539,22 @@ def _post_api_request(
                 span.set_attribute("llm.token_count.prompt", new_in)
                 span.set_attribute("llm.token_count.completion", new_out)
                 span.set_attribute("llm.token_count.total", new_in + new_out)
+                # J11 dual-emit — running totals mirror what the OpenInference
+                # attrs above show, so accumulator semantics are identical.
+                _set_gen_ai_attrs(
+                    span,
+                    {
+                        "gen_ai.usage.input_tokens": new_in,
+                        "gen_ai.usage.output_tokens": new_out,
+                    },
+                )
 
         if finish_reason:
             span.set_attribute("llm.finish_reason", str(finish_reason))
+            # GenAI spec uses an array of finish reasons (one per choice/
+            # candidate). We only see a single reason at the wrapper layer,
+            # so emit a length-1 tuple — tuples are OTel-attribute-safe.
+            _set_gen_ai_attrs(span, {"gen_ai.response.finish_reasons": (str(finish_reason),)})
         if api_duration is not None:
             try:
                 span.set_attribute("llm.api_duration_ms", int(float(api_duration) * 1000))
@@ -497,6 +562,7 @@ def _post_api_request(
                 pass
         if response_model:
             span.set_attribute("llm.response_model", str(response_model))
+            _set_gen_ai_attrs(span, {"gen_ai.response.model": str(response_model)})
     except Exception as exc:  # noqa: BLE001
         logger.debug("post_api_request enrich failed: %s", exc)
     return None

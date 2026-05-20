@@ -505,3 +505,144 @@ def test_token_accumulator_clears_between_turns():
     # Module-level dict should also be cleaned up post-turn
     assert sid not in _LLM_SPANS
     assert sid not in _LLM_TOKEN_ACCUM
+
+
+# ---------------------------------------------------------------------------
+# J11 — dual-emit GenAI semantic-convention attributes
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _dual_emit_on(monkeypatch):
+    """Turn on the J11 dual-emit shim for the duration of one test."""
+    import lib.observability as obs
+
+    monkeypatch.setattr(obs, "_DUAL_EMIT_ENABLED", True)
+    yield
+
+
+@pytest.fixture
+def _dual_emit_off(monkeypatch):
+    """Pin the J11 dual-emit shim OFF (default), even if the host env exports it."""
+    import lib.observability as obs
+
+    monkeypatch.setattr(obs, "_DUAL_EMIT_ENABLED", False)
+    yield
+
+
+def test_dual_emit_default_off_emits_no_gen_ai_attrs(_dual_emit_off):
+    """Default behavior — Phoenix-compatible OpenInference-only attrs.
+
+    With the flag OFF, model.call spans must contain ZERO ``gen_ai.*``
+    attributes; only the existing ``llm.*`` set. This is the contract that
+    preserves Phoenix UI compatibility.
+    """
+    sid = "sess-dual-off"
+
+    def emit():
+        _pre_llm_call(session_id=sid, user_message="hi", model="claude-opus-4-7", platform="cli")
+        _post_api_request(
+            session_id=sid,
+            usage={"input_tokens": 10, "output_tokens": 5},
+            finish_reason="stop",
+            response_model="claude-opus-4-7",
+        )
+        _post_llm_call(session_id=sid, assistant_response="ack")
+
+    spans = _capture_span(emit)
+    attrs = _attrs([s for s in spans if s.name == "model.call"][0])
+    gen_ai_keys = [k for k in attrs if k.startswith("gen_ai.")]
+    assert gen_ai_keys == [], f"expected no gen_ai.* attrs when flag off, got {gen_ai_keys}"
+
+
+def test_dual_emit_on_pre_llm_call_sets_request_attrs(_dual_emit_on):
+    """``_pre_llm_call`` emits the three pre-call GenAI attrs."""
+    sid = "sess-dual-pre"
+
+    def emit():
+        _pre_llm_call(session_id=sid, user_message="hi", model="claude-opus-4-7", platform="cli")
+        _post_llm_call(session_id=sid, assistant_response="ack")
+
+    spans = _capture_span(emit)
+    attrs = _attrs([s for s in spans if s.name == "model.call"][0])
+    assert attrs.get("gen_ai.operation.name") == "chat"
+    assert attrs.get("gen_ai.request.model") == "claude-opus-4-7"
+    assert attrs.get("gen_ai.system") == "cli"
+
+
+def test_dual_emit_on_post_api_request_sets_usage_attrs(_dual_emit_on):
+    """``_post_api_request`` adds usage + response attrs that mirror the
+    accumulated OpenInference totals."""
+    sid = "sess-dual-post"
+
+    def emit():
+        _pre_llm_call(session_id=sid, user_message="x", model="claude-opus-4-7", platform="cli")
+        _post_api_request(
+            session_id=sid,
+            usage={"input_tokens": 100, "output_tokens": 20},
+            finish_reason="tool_use",
+            response_model="claude-opus-4-7",
+        )
+        _post_api_request(
+            session_id=sid,
+            usage={"input_tokens": 150, "output_tokens": 35},
+            finish_reason="stop",
+            response_model="claude-opus-4-7",
+        )
+        _post_llm_call(session_id=sid, assistant_response="done")
+
+    spans = _capture_span(emit)
+    attrs = _attrs([s for s in spans if s.name == "model.call"][0])
+    # Running totals match the OpenInference accumulator.
+    assert attrs.get("gen_ai.usage.input_tokens") == 250
+    assert attrs.get("gen_ai.usage.output_tokens") == 55
+    # GenAI spec defines finish_reasons as an array — emit as length-1 tuple.
+    fr = attrs.get("gen_ai.response.finish_reasons")
+    assert fr is not None
+    assert list(fr) == ["stop"]
+    assert attrs.get("gen_ai.response.model") == "claude-opus-4-7"
+
+
+def test_dual_emit_on_preserves_openinference_attrs(_dual_emit_on):
+    """Dual-emit MUST be additive — every existing ``llm.*`` attribute is
+    still present when the GenAI shim is on."""
+    sid = "sess-dual-both"
+
+    def emit():
+        _pre_llm_call(session_id=sid, user_message="x", model="claude-opus-4-7", platform="cli")
+        _post_api_request(
+            session_id=sid,
+            usage={"input_tokens": 7, "output_tokens": 3},
+            finish_reason="stop",
+            response_model="claude-opus-4-7",
+        )
+        _post_llm_call(session_id=sid, assistant_response="ok")
+
+    spans = _capture_span(emit)
+    attrs = _attrs([s for s in spans if s.name == "model.call"][0])
+    # OpenInference path still works.
+    assert attrs.get("llm.model_name") == "claude-opus-4-7"
+    assert attrs.get("llm.system") == "cli"
+    assert attrs.get("llm.token_count.prompt") == 7
+    assert attrs.get("llm.token_count.completion") == 3
+    assert attrs.get("llm.finish_reason") == "stop"
+    assert attrs.get("llm.response_model") == "claude-opus-4-7"
+    # GenAI side present in addition.
+    assert attrs.get("gen_ai.request.model") == "claude-opus-4-7"
+    assert attrs.get("gen_ai.usage.input_tokens") == 7
+
+
+def test_dual_emit_env_var_parsing():
+    """Truthy strings flip the flag on; everything else stays off. We test
+    the helper logic by simulating the env-var parse the module performs
+    at import time, since reload semantics make a direct importlib test
+    fragile in pytest's module-cache."""
+    import lib.observability as obs
+
+    truthy = {"1", "true", "yes", "on", "TRUE", "  yes  ", "On"}
+    falsy = {"", "0", "false", "no", "off", "random"}
+
+    for v in truthy:
+        assert v.strip().lower() in obs._DUAL_EMIT_TRUTHY, f"{v!r} should be truthy"
+    for v in falsy:
+        assert v.strip().lower() not in obs._DUAL_EMIT_TRUTHY, f"{v!r} should be falsy"

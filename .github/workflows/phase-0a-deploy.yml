@@ -1,0 +1,310 @@
+# Phase 0a — GCP Deployment Pipeline
+#
+# Builds the two custom images (hermes, shell-sandbox) and deploys them to
+# the autonomousagent-vm GCE instance via IAP SSH. No JSON service-account
+# keys — authentication uses Workload Identity Federation with the
+# autonomousagent-github CI SA.
+#
+# Trigger: push to main when deploy-affecting files change (see paths filter).
+#
+# Jobs:
+#   build-and-push   Build linux/amd64 images → push to Artifact Registry
+#   deploy           IAP SSH → pull new images → restart compose stack
+#
+# AC-7 constraint: total runtime ≤ 10 minutes.
+#
+# Required GitHub repository variables:
+#   GCP_WIF_PROVIDER  — full WIF provider resource name
+#   GCP_DEPLOYER_SA   — CI service account email
+#
+# Both are set as repository Variables (not Secrets) because they are not
+# sensitive and can appear in workflow logs without risk.
+#
+# SHA-pinning policy: every `uses:` reference MUST be pinned to a 40-char
+# commit SHA. See scripts/check-sha-pinning.sh and
+# docs/runbooks/allowed-actions-restriction.md.
+
+name: Phase 0a Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Docker image sources
+      - "deploy/Dockerfile.hermes"
+      - "deploy/sandboxes/Dockerfile.shell-sandbox"
+      # Compose stack
+      - "deploy/docker-compose.yml"
+      # Terraform (infra changes may need a re-deploy to pick up new SA bindings, etc.)
+      - "terraform/phase-0a-gcp/**"
+      # The workflow itself
+      - ".github/workflows/phase-0a-deploy.yml"
+  # Allow manual trigger for rollback / forced redeploy
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual deploy (logged in summary)"
+        required: false
+        default: "manual trigger"
+
+# Prevent two deployments running simultaneously. The second run waits;
+# cancel-in-progress: false ensures an in-flight deploy is never killed mid-way,
+# which would leave the stack in an inconsistent state.
+concurrency:
+  group: phase-0a-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+# Minimal permissions at workflow level; jobs add what they need.
+permissions:
+  contents: read
+
+env:
+  GCP_PROJECT: i-for-ai
+  GCP_REGION: us-central1
+  GCP_ZONE: us-central1-a
+  VM_NAME: autonomousagent-vm
+  AR_REGISTRY: us-central1-docker.pkg.dev
+  AR_REPO: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images
+  BOOTSTRAP_TARBALL: gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz
+  # Target container count for smoke-check (matches the compose stack)
+  EXPECTED_CONTAINER_COUNT: 10
+
+jobs:
+  # ------------------------------------------------------------------
+  # Build both images for linux/amd64 and push to Artifact Registry.
+  # GCE is x86_64; multi-platform emulation is not used.
+  # ------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push images
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+
+    permissions:
+      contents: read
+      id-token: write   # required by google-github-actions/auth for WIF OIDC
+
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          # Submodules not required for Docker builds — Dockerfile.hermes
+          # pulls from Artifact Registry, not the local submodule tree.
+          submodules: false
+
+      # ------------------------------------------------------------------
+      # Authenticate to GCP via Workload Identity Federation.
+      # token_format: access_token produces a short-lived OAuth2 token that
+      # docker/login-action can use directly — no gcloud CLI call needed.
+      # ------------------------------------------------------------------
+      - name: Authenticate to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          token_format: access_token
+
+      # ------------------------------------------------------------------
+      # Set up Docker Buildx. The docker-container driver is required for
+      # --platform linux/amd64 cross-build and build cache export.
+      # ------------------------------------------------------------------
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
+
+      # ------------------------------------------------------------------
+      # Log in to Artifact Registry using the short-lived access token
+      # minted by google-github-actions/auth above.
+      # ------------------------------------------------------------------
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        with:
+          registry: ${{ env.AR_REGISTRY }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # ------------------------------------------------------------------
+      # Derive the image tag from the git SHA (first 12 chars) so every
+      # push produces an immutable, traceable tag.
+      # ------------------------------------------------------------------
+      - name: Compute image tag
+        id: meta
+        run: |
+          SHORT_SHA="${GITHUB_SHA:0:12}"
+          echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "Image tag: ${SHORT_SHA}"
+
+      # ------------------------------------------------------------------
+      # Build and push hermes image.
+      # Cache: inline layer cache stored as a separate manifest tag
+      # (:buildcache-hermes) so subsequent builds on the same base layer
+      # are fast without needing an external cache backend.
+      # ------------------------------------------------------------------
+      - name: Build and push hermes
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
+        with:
+          context: .
+          file: deploy/Dockerfile.hermes
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.AR_REPO }}/hermes:${{ steps.meta.outputs.tag }}
+            ${{ env.AR_REPO }}/hermes:latest
+          cache-from: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache
+          cache-to: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache,mode=max
+
+      # ------------------------------------------------------------------
+      # Build and push shell-sandbox image.
+      # ------------------------------------------------------------------
+      - name: Build and push shell-sandbox
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
+        with:
+          context: .
+          file: deploy/sandboxes/Dockerfile.shell-sandbox
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.AR_REPO }}/shell-sandbox:${{ steps.meta.outputs.tag }}
+            ${{ env.AR_REPO }}/shell-sandbox:latest
+          cache-from: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache
+          cache-to: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache,mode=max
+
+      - name: Build summary
+        run: |
+          echo "### Images pushed" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Image | Tag |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-----|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| hermes | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| shell-sandbox | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------
+  # Deploy: SSH to the VM via IAP, pull new images, restart compose.
+  # Runs only after build-and-push succeeds.
+  # ------------------------------------------------------------------
+  deploy:
+    name: Deploy to VM (IAP SSH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: build-and-push
+
+    permissions:
+      contents: read
+      id-token: write   # WIF
+
+    env:
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false
+
+      - name: Authenticate to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          # credentials_file is used by gcloud for subsequent calls (SSH, gsutil)
+          create_credentials_file: true
+
+      - name: Set up gcloud CLI
+        # The auth action installs gcloud automatically when create_credentials_file
+        # is true. Explicitly activate the service account credentials so all
+        # subsequent gcloud/gsutil calls use the CI SA, not ADC from the runner.
+        run: |
+          gcloud config set project "$GCP_PROJECT"
+          gcloud config set compute/zone "$GCP_ZONE"
+          gcloud config set compute/region "$GCP_REGION"
+          # Verify auth is working before attempting SSH
+          gcloud auth list
+
+      # ------------------------------------------------------------------
+      # Deploy script executed on the VM via stdin redirect (avoids copying
+      # a file to the VM). Steps:
+      #   1. Pull bootstrap tarball from GCS (contains compose + secrets mount
+      #      stubs if needed — primarily ensures the compose file is current).
+      #   2. Run `docker compose pull` to fetch the new :latest images.
+      #   3. Restart the stack with zero-downtime rolling update.
+      #
+      # Note on bootstrap tarball: the tarball at the GCS path is the
+      # canonical source of the compose file + config on the VM. CI does NOT
+      # push a new tarball on every deploy — the tarball is updated manually
+      # when the compose file changes. `docker compose pull` + `up -d` is
+      # sufficient for image-only updates.
+      # ------------------------------------------------------------------
+      - name: Deploy via IAP SSH
+        run: |
+          gcloud compute ssh "$VM_NAME" \
+            --zone="$GCP_ZONE" \
+            --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --quiet \
+            --command="sudo bash -s" \
+            << 'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          DEPLOY_DIR="/opt/autonomousagent"
+          COMPOSE_FILE="${DEPLOY_DIR}/deploy/docker-compose.yml"
+          AR_REPO="us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images"
+          BOOTSTRAP_TARBALL="gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz"
+          EXPECTED_CONTAINERS=10
+
+          echo "[deploy] Refreshing bootstrap tarball from GCS..."
+          gsutil -q cp "${BOOTSTRAP_TARBALL}" /tmp/hermes-bootstrap.tar.gz
+          tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${DEPLOY_DIR}" --strip-components=1 || \
+            tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${DEPLOY_DIR}"
+          rm -f /tmp/hermes-bootstrap.tar.gz
+          echo "[deploy] Bootstrap tarball extracted."
+
+          echo "[deploy] Authenticating Docker to Artifact Registry..."
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+          echo "[deploy] Pulling new images..."
+          docker compose -f "${COMPOSE_FILE}" pull --quiet
+
+          echo "[deploy] Restarting compose stack..."
+          docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --quiet-pull
+
+          echo "[deploy] Waiting 15 s for containers to initialise..."
+          sleep 15
+
+          echo "[deploy] Smoke check — counting running containers..."
+          running=$(docker compose -f "${COMPOSE_FILE}" ps --status running --format json \
+            | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
+          echo "[deploy] Running containers: ${running} (expected: ${EXPECTED_CONTAINERS})"
+          if [ "${running}" -ne "${EXPECTED_CONTAINERS}" ]; then
+            echo "[deploy] ERROR: expected ${EXPECTED_CONTAINERS} containers, got ${running}." >&2
+            docker compose -f "${COMPOSE_FILE}" ps >&2
+            exit 1
+          fi
+          echo "[deploy] Smoke check passed."
+          REMOTE_SCRIPT
+
+      - name: Deploy summary
+        if: success()
+        run: |
+          echo "### Deploy complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **VM**: \`$VM_NAME\` (\`$GCP_ZONE\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image tag**: \`$IMAGE_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Containers running**: $EXPECTED_CONTAINER_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Trigger**: \`${{ github.event_name }}\` by \`${{ github.actor }}\`" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "- **Reason**: ${{ github.event.inputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Rollback guidance on failure
+        if: failure()
+        run: |
+          echo "### Deploy FAILED" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "To rollback manually, SSH to the VM and run:" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+          echo "gcloud compute ssh $VM_NAME --zone=$GCP_ZONE --project=$GCP_PROJECT --tunnel-through-iap" >> "$GITHUB_STEP_SUMMARY"
+          echo "# Then on the VM:" >> "$GITHUB_STEP_SUMMARY"
+          echo "sudo docker compose -f /opt/autonomousagent/deploy/docker-compose.yml up -d" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"

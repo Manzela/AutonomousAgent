@@ -47,11 +47,9 @@ services:
     image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/shell-sandbox:0.1.0
     logging: *gcplogs
 
-  # otel-collector: use dev config (prod uses googlecloudmonitoring exporter name
-  # not present in otelcol-contrib image; fix prod config exporter name separately).
   otel-collector:
     volumes:
-      - ./otel/collector.dev.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - ./otel/collector.prod.yaml:/etc/otelcol-contrib/config.yaml:ro
     logging: *gcplogs
 
   litellm-db:

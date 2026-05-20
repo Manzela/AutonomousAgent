@@ -52,7 +52,7 @@ Then send your bot a message on Telegram.
 
 ## Architecture (one paragraph)
 
-A docker-compose stack with **nine services (8 long-running + 1 init sidecar)** that runs identically on Mac (Phase 1) and on a GCP VM (Phase 2). The agent core (`hermes`) talks to a LiteLLM proxy (`litellm-proxy`, backed by Postgres `litellm-db` for spend tracking) which translates OpenAI-format requests to Vertex AI. State lives in SQLite + Chroma (cloud) + Honcho (hosted). Tools route through tiered sandboxes (in-process, Docker `shell-sandbox`, Modal/Daytona cloud sandbox). Telemetry flows OTLP → `otel-collector` → `phoenix` (dev) or Cloud Trace (prod). GitHub tools route through the `github-mcp` sidecar; an `escalation-watcher` watches for Kanban blocked-card alerts. All secrets are sops-encrypted at rest. All numeric caps, intervals, and thresholds live in `config/limits.yaml`, runtime-tunable.
+A docker-compose stack with **eleven services (10 long-running + 1 init sidecar)** that runs identically on Mac (Phase 1) and on a GCP VM (Phase 2). The agent core (`hermes`) talks to a LiteLLM proxy (`litellm-proxy`, backed by Postgres `litellm-db` for spend tracking) which translates OpenAI-format requests to Vertex AI. State lives in SQLite + Chroma (cloud) + Honcho (hosted). Tools route through tiered sandboxes (in-process, Docker `shell-sandbox`, Modal/Daytona cloud sandbox). Telemetry flows OTLP → `otel-collector` → `phoenix` (dev) or Cloud Trace (prod). GitHub tools route through the `github-mcp` sidecar; an `escalation-watcher` watches for Kanban blocked-card alerts, with a `budget-watchdog` polling LiteLLM spend for daily-cap enforcement and a `snapshot-watchdog` taking daily off-host backups (no-op until `GCS_SNAPSHOT_BUCKET` is set — see `docs/runbooks/snapshots.md`). All secrets are sops-encrypted at rest. All numeric caps, intervals, and thresholds live in `config/limits.yaml`, runtime-tunable.
 
 ### Service inventory
 
@@ -65,8 +65,10 @@ A docker-compose stack with **nine services (8 long-running + 1 init sidecar)** 
 | 5 | `phoenix` | Trace UI + storage (dev) | yes |
 | 6 | `shell-sandbox` | Tiered tool sandbox (Docker) | yes |
 | 7 | `github-mcp` | GitHub MCP server sidecar | yes |
-| 8 | `escalation-watcher` | Telegram alert watcher | yes |
-| 9 | `volume-init` | One-shot volume-permissions init (`restart: no`) | no |
+| 8 | `escalation-watcher` | Telegram alert watcher (24h-silence escalation, F32) | yes |
+| 9 | `budget-watchdog` | Polls LiteLLM `LiteLLM_SpendLogs` for daily-cap enforcement (F21) | yes |
+| 10 | `snapshot-watchdog` | Daily GCS upload of `/home/hermes/.hermes` for off-host DR (no-op until `GCS_SNAPSHOT_BUCKET` is set) | yes |
+| 11 | `volume-init` | One-shot volume-permissions init (`restart: no`) | no |
 
 For the full design: [docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md)
 

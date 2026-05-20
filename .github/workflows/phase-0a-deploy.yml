@@ -271,10 +271,13 @@ jobs:
           echo "[deploy] Pulling new images..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
 
+          echo "[deploy] Pruning stopped containers (clears stale references)..."
+          # Stopped/killed containers from prior chaos tests or failed deploys
+          # leave stale IDs that docker compose tries to reference during
+          # --force-recreate. Prune removes them without touching running ones.
+          docker container prune -f
+
           echo "[deploy] Recreating compose stack..."
-          # --force-recreate replaces all containers regardless of image/config
-          # changes, bypassing stale container-reference issues without a
-          # separate stop phase. Networks and volumes are preserved.
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
             up -d --force-recreate --quiet-pull
 

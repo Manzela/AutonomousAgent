@@ -113,9 +113,13 @@ listed below, categorized by how it's allowed:
 | `softprops/action-gh-release` | `b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3` | **Unverified — pattern** | release, sbom-cosign |
 | `amannn/action-semantic-pull-request` | `48f256284bd46cdaab1048c3721360e808335d50  # v6` | **Unverified — pattern** | pr-validation |
 | `hadolint/hadolint-action` | `2332a7b74a6de0dda2e2221d575162eba76ba5e5  # v3.3.0` | **Unverified — pattern** | ci |
+| `google-github-actions/auth` | `71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8` | **Unverified — pattern** | phase-0a-deploy |
+| `docker/setup-buildx-action` | `b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0` | **Unverified — pattern** | phase-0a-deploy |
+| `docker/login-action` | `74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0` | **Unverified — pattern** | phase-0a-deploy |
+| `docker/build-push-action` | `471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0` | **Unverified — pattern** | phase-0a-deploy |
 
-Counts: **6 GitHub-owned**, **4 verified publisher**, **3 unverified
-(SHA-pinned)**. All 13 distinct `uses:` references covered. All
+Counts: **6 GitHub-owned**, **4 verified publisher**, **7 unverified
+(SHA-pinned)**. All 17 distinct `uses:` references covered. All
 third-party actions (verified or not) are SHA-pinned at the call site —
 the patterns_allowed entries below are deliberately written as `@*`
 because GitHub Actions Permissions evaluates the pattern against the
@@ -130,7 +134,15 @@ what enforces immutability of the version actually executed.
   "patterns_allowed": [
     "softprops/action-gh-release@*",
     "amannn/action-semantic-pull-request@*",
-    "hadolint/hadolint-action@*"
+    "hadolint/hadolint-action@*",
+    "anchore/sbom-action@*",
+    "aquasecurity/trivy-action@*",
+    "astral-sh/setup-uv@*",
+    "sigstore/cosign-installer@*",
+    "google-github-actions/auth@*",
+    "docker/setup-buildx-action@*",
+    "docker/login-action@*",
+    "docker/build-push-action@*"
   ]
 }
 ```

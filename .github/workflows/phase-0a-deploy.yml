@@ -90,9 +90,9 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
-          # Submodules not required for Docker builds — Dockerfile.hermes
-          # pulls from Artifact Registry, not the local submodule tree.
-          submodules: false
+          # hermes-agent submodule required: Dockerfile.hermes COPYs
+          # hermes-agent/pyproject.toml and hermes-agent/uv.lock at build time.
+          submodules: true
 
       # ------------------------------------------------------------------
       # Authenticate to GCP via Workload Identity Federation.

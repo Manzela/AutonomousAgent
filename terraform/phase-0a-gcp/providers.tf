@@ -6,7 +6,7 @@ terraform {
   }
   # Backend bucket name is literal: Terraform forbids variable interpolation in backend blocks.
   backend "gcs" {
-    bucket = "rx-research-autonomousagent-tfstate"
+    bucket = "i-for-ai-autonomousagent-tfstate"
     prefix = "phase-0a"
   }
 }

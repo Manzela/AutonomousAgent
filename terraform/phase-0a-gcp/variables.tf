@@ -1,7 +1,7 @@
 variable "project_id" {
   type        = string
-  description = "GCP project ID (default: rx-research-autonomousagent)"
-  default     = "rx-research-autonomousagent"
+  description = "GCP project ID (default: i-for-ai — existing project, billing already wired)"
+  default     = "i-for-ai"
 }
 
 variable "billing_account" {

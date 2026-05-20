@@ -30,6 +30,11 @@ paths = [
   '''docs/runbooks/recovery\.md$''',
   '''docs/conventions/commit-messages\.md$''',
   '''docs/superpowers/.*\.md$''',
+  # Forensic audit artifacts (memos + captured logs/json) quote config keys
+  # and plugin paths verbatim; generic-api-key fires on strings like
+  # "key=observability/langfuse". Authors must keep real secrets out of
+  # audit/ at commit time (same contract as tests/).
+  '''audit/.*''',
   '''README\.md$''',
   '''CHANGELOG\.md$''',
   '''SECURITY\.md$''',

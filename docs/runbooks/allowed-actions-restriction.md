@@ -27,8 +27,58 @@ Related controls already in place in this repo:
 
 * every third-party action is **SHA-pinned** (`@<40-char-sha>  # vX.Y.Z`)
   — see `.github/workflows/*.yml`
+* SHA-pinning is **enforced in CI** via `scripts/check-sha-pinning.sh`,
+  wired into `ci.yml → enforce-sha-pinning`. A PR that introduces a
+  tag-pinned `uses:` fails the required check (audit Task 24).
 * `step-security/harden-runner` is **not** yet wired in (tracked separately)
 * SLSA Source L3 branch-protection is being closed in parallel (P1-3 runbook)
+
+### Server-side `sha_pinning_required` (additional layer, optional)
+
+GitHub's REST API now exposes `sha_pinning_required` on `PUT
+/repos/{owner}/{repo}/actions/permissions` (verified 2026-05-20 against
+`docs.github.com/en/rest/actions/permissions`; the field is also
+present on the org-level endpoint). When enabled, GitHub rejects
+workflow runs whose `uses:` refs are not 40-char SHAs **before** the
+runner picks them up. This is strictly additive to the in-repo
+`enforce-sha-pinning` CI job:
+
+* CI job catches the regression at PR time with a precise file:line
+  pointer and a `gh api` fix-hint — fast feedback loop.
+* `sha_pinning_required` is a server-side belt that blocks the run
+  even on a force-push to `main` or a workflow that somehow slipped
+  past the CI gate.
+
+Apply (operator, gh authenticated as repo admin):
+
+```bash
+# Requires allowed_actions=selected to already be in place (see above).
+gh api -X PUT /repos/Manzela/AutonomousAgent/actions/permissions \
+  --field enabled=true \
+  --field allowed_actions=selected \
+  --field sha_pinning_required=true
+
+# Verify
+gh api /repos/Manzela/AutonomousAgent/actions/permissions \
+  --jq '{enabled, allowed_actions, sha_pinning_required}'
+# Expect: {"enabled": true, "allowed_actions": "selected", "sha_pinning_required": true}
+```
+
+Rollback (only if a workflow that must use a tag-ref is blocked and
+the SHA-pin fix cannot ship within SLA):
+
+```bash
+gh api -X PUT /repos/Manzela/AutonomousAgent/actions/permissions \
+  --field enabled=true \
+  --field allowed_actions=selected \
+  --field sha_pinning_required=false
+```
+
+If the server-side flag is flipped on, the CI job below stays — it
+provides the better developer-feedback loop. Disabling the CI check
+is **not** an acceptable substitute for the server flag because the
+CI job runs against the PR's workflow definitions, but a manually
+re-run job on `main` would bypass it; the server flag covers both.
 
 ## What changes
 

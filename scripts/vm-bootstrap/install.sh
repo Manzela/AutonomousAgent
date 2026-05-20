@@ -27,6 +27,7 @@ apt-get install -y --no-install-recommends \
 # 2. Docker + compose plugin
 if ! command -v docker >/dev/null 2>&1; then
   install -m 0755 -d /etc/apt/keyrings
+  rm -f /etc/apt/keyrings/docker.gpg
   curl -fsSL https://download.docker.com/linux/debian/gpg \
     | gpg --batch --no-tty --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg

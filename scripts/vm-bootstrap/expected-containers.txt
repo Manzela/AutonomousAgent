@@ -1,0 +1,10 @@
+litellm-db
+litellm-proxy
+otel-collector
+phoenix
+shell-sandbox
+github-mcp
+hermes
+escalation-watcher
+snapshot-watchdog
+budget-watchdog

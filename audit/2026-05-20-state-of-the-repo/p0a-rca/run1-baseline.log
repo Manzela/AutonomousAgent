@@ -1,0 +1,183 @@
+NAME                                    IMAGE                                                                                                                 COMMAND                  SERVICE              CREATED         STATUS                        PORTS
+autonomous-agent-budget-watchdog-1      autonomousagent/hermes:0.1.0                                                                                          "python /app/scripts…"   budget-watchdog      2 minutes ago   Up About a minute
+autonomous-agent-escalation-watcher-1   autonomousagent/hermes:0.1.0                                                                                          "python /app/scripts…"   escalation-watcher   2 minutes ago   Up About a minute
+autonomous-agent-github-mcp-1           ghcr.io/github/github-mcp-server:latest@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4       "/server/github-mcp-…"   github-mcp           2 minutes ago   Up 2 minutes                  8082/tcp
+autonomous-agent-hermes-1               autonomousagent/hermes:0.1.0                                                                                          "hermes gateway run"     hermes               2 minutes ago   Up About a minute (healthy)
+autonomous-agent-litellm-db-1           postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229                            "docker-entrypoint.s…"   litellm-db           2 minutes ago   Up 2 minutes (healthy)        5432/tcp
+autonomous-agent-litellm-proxy-1        ghcr.io/berriai/litellm:v1.84.0@sha256:29252f25ed1b538d44f6b76ec97412c5537a180b39ede744b9f3e86ffdd278f5               "docker/prod_entrypo…"   litellm-proxy        2 minutes ago   Up 2 minutes (healthy)        4000/tcp
+autonomous-agent-otel-collector-1       otel/opentelemetry-collector-contrib:latest@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d   "/otelcol-contrib --…"   otel-collector       2 minutes ago   Up 2 minutes                  4317-4318/tcp, 55679/tcp
+autonomous-agent-phoenix-1              arizephoenix/phoenix:latest@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489                   "/usr/bin/python3.13…"   phoenix              2 minutes ago   Up 2 minutes                  127.0.0.1:4317->4317/tcp, 127.0.0.1:6006->6006/tcp
+autonomous-agent-shell-sandbox-1        autonomousagent/shell-sandbox:0.1.0                                                                                   "sleep infinity"         shell-sandbox        2 minutes ago   Up 2 minutes
+autonomous-agent-snapshot-watchdog-1    autonomousagent/hermes:0.1.0                                                                                          "python /app/scripts…"   snapshot-watchdog    2 minutes ago   Up About a minute
+hermes-1  | [plugins] DEBUG HERMES_PLUGINS_DEBUG=1 — verbose plugin discovery logging enabled
+hermes-1  | [plugins] DEBUG Scanning bundled plugins: /app/plugins
+hermes-1  | [plugins] DEBUG Parsed manifest: key=disk-cleanup name=disk-cleanup kind=standalone source=bundled path=/app/plugins/disk-cleanup
+hermes-1  | [plugins] DEBUG Skipping /app/plugins/example-dashboard/dashboard (no plugin.yaml, depth cap reached)
+hermes-1  | [plugins] DEBUG Parsed manifest: key=google_meet name=google_meet kind=standalone source=bundled path=/app/plugins/google_meet
+hermes-1  | [plugins] DEBUG Skipping /app/plugins/hermes-achievements/dashboard (no plugin.yaml, depth cap reached)
+hermes-1  | [plugins] DEBUG Skipping /app/plugins/hermes-achievements/docs (no plugin.yaml, depth cap reached)
+hermes-1  | [plugins] DEBUG Skipping /app/plugins/hermes-achievements/tests (no plugin.yaml, depth cap reached)
+hermes-1  | [plugins] DEBUG Parsed manifest: key=image_gen/openai name=openai kind=backend source=bundled path=/app/plugins/image_gen/openai
+hermes-1  | [plugins] DEBUG Parsed manifest: key=image_gen/openai-codex name=openai-codex kind=backend source=bundled path=/app/plugins/image_gen/openai-codex
+hermes-1  | [plugins] DEBUG Parsed manifest: key=image_gen/xai name=xai kind=backend source=bundled path=/app/plugins/image_gen/xai
+hermes-1  | [plugins] DEBUG Skipping /app/plugins/kanban/dashboard (no plugin.yaml, depth cap reached)
+hermes-1  | [plugins] DEBUG Skipping /app/plugins/kanban/systemd (no plugin.yaml, depth cap reached)
+hermes-1  | [plugins] DEBUG Parsed manifest: key=observability/langfuse name=langfuse kind=standalone source=bundled path=/app/plugins/observability/langfuse
+hermes-1  | [plugins] DEBUG Parsed manifest: key=spotify name=spotify kind=backend source=bundled path=/app/plugins/spotify
+hermes-1  | [plugins] DEBUG Parsed manifest: key=teams_pipeline name=teams_pipeline kind=standalone source=bundled path=/app/plugins/teams_pipeline
+hermes-1  | [plugins] DEBUG Parsed manifest: key=video_gen/fal name=fal kind=backend source=bundled path=/app/plugins/video_gen/fal
+hermes-1  | [plugins] DEBUG Parsed manifest: key=video_gen/xai name=xai kind=backend source=bundled path=/app/plugins/video_gen/xai
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/brave_free name=web-brave-free kind=backend source=bundled path=/app/plugins/web/brave_free
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/ddgs name=web-ddgs kind=backend source=bundled path=/app/plugins/web/ddgs
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/exa name=web-exa kind=backend source=bundled path=/app/plugins/web/exa
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/firecrawl name=web-firecrawl kind=backend source=bundled path=/app/plugins/web/firecrawl
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/parallel name=web-parallel kind=backend source=bundled path=/app/plugins/web/parallel
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/searxng name=web-searxng kind=backend source=bundled path=/app/plugins/web/searxng
+hermes-1  | [plugins] DEBUG Parsed manifest: key=web/tavily name=web-tavily kind=backend source=bundled path=/app/plugins/web/tavily
+hermes-1  | [plugins] DEBUG   bundled (top-level): 17 manifest(s)
+hermes-1  | [plugins] DEBUG Parsed manifest: key=google_chat-platform name=google_chat-platform kind=platform source=bundled path=/app/plugins/platforms/google_chat
+hermes-1  | [plugins] DEBUG Parsed manifest: key=irc-platform name=irc-platform kind=platform source=bundled path=/app/plugins/platforms/irc
+hermes-1  | [plugins] DEBUG Parsed manifest: key=line-platform name=line-platform kind=platform source=bundled path=/app/plugins/platforms/line
+hermes-1  | [plugins] DEBUG Parsed manifest: key=teams-platform name=teams-platform kind=platform source=bundled path=/app/plugins/platforms/teams
+hermes-1  | [plugins] DEBUG   bundled/platforms: 4 manifest(s)
+hermes-1  | [plugins] DEBUG Scanning user plugins: /home/hermes/.hermes/plugins
+hermes-1  | [plugins] DEBUG Parsed manifest: key=anchors name=anchors kind=standalone source=user path=/home/hermes/.hermes/plugins/anchors
+hermes-1  | [plugins] DEBUG Parsed manifest: key=durability name=durability kind=standalone source=user path=/home/hermes/.hermes/plugins/durability
+hermes-1  | [plugins] DEBUG Parsed manifest: key=evaluators name=evaluators kind=standalone source=user path=/home/hermes/.hermes/plugins/evaluators
+hermes-1  | [plugins] DEBUG Parsed manifest: key=kanban name=kanban kind=standalone source=user path=/home/hermes/.hermes/plugins/kanban
+hermes-1  | [plugins] DEBUG Parsed manifest: key=memory name=memory kind=standalone source=user path=/home/hermes/.hermes/plugins/memory
+hermes-1  | [plugins] DEBUG Parsed manifest: key=observability name=observability kind=standalone source=user path=/home/hermes/.hermes/plugins/observability
+hermes-1  | [plugins] DEBUG   user: 6 manifest(s)
+hermes-1  | [plugins] DEBUG Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)
+hermes-1  | [plugins] DEBUG   entrypoints: 0 manifest(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'disk-cleanup' (source=bundled, kind=standalone, path=/app/plugins/disk-cleanup)
+hermes-1  | [plugins] DEBUG Plugin disk-cleanup registered hook: post_tool_call
+hermes-1  | [plugins] DEBUG Plugin disk-cleanup registered hook: on_session_end
+hermes-1  | [plugins] DEBUG Plugin disk-cleanup registered command: /disk-cleanup
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 2 hook(s), 1 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Skipping 'google_meet' (not in plugins.enabled)
+hermes-1  | [plugins] DEBUG Loading plugin 'image_gen/openai' (source=bundled, kind=backend, path=/app/plugins/image_gen/openai)
+hermes-1  | [plugins] INFO Plugin 'openai' registered image_gen provider: openai
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'image_gen/openai-codex' (source=bundled, kind=backend, path=/app/plugins/image_gen/openai-codex)
+hermes-1  | [plugins] INFO Plugin 'openai-codex' registered image_gen provider: openai-codex
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'image_gen/xai' (source=bundled, kind=backend, path=/app/plugins/image_gen/xai)
+hermes-1  | [plugins] INFO Plugin 'xai' registered image_gen provider: xai
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Skipping 'observability/langfuse' (not in plugins.enabled)
+hermes-1  | [plugins] DEBUG Loading plugin 'spotify' (source=bundled, kind=backend, path=/app/plugins/spotify)
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_playback
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_devices
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_queue
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_search
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_playlists
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_albums
+hermes-1  | [plugins] DEBUG Plugin spotify registered tool: spotify_library
+hermes-1  | [plugins] DEBUG   registered: 7 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Skipping 'teams_pipeline' (not in plugins.enabled)
+hermes-1  | [plugins] DEBUG Loading plugin 'video_gen/fal' (source=bundled, kind=backend, path=/app/plugins/video_gen/fal)
+hermes-1  | [plugins] INFO Plugin 'fal' registered video_gen provider: fal
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'video_gen/xai' (source=bundled, kind=backend, path=/app/plugins/video_gen/xai)
+hermes-1  | [plugins] INFO Plugin 'xai' registered video_gen provider: xai
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/brave_free' (source=bundled, kind=backend, path=/app/plugins/web/brave_free)
+hermes-1  | [plugins] INFO Plugin 'web-brave-free' registered web provider: brave-free
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/ddgs' (source=bundled, kind=backend, path=/app/plugins/web/ddgs)
+hermes-1  | [plugins] INFO Plugin 'web-ddgs' registered web provider: ddgs
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/exa' (source=bundled, kind=backend, path=/app/plugins/web/exa)
+hermes-1  | [plugins] INFO Plugin 'web-exa' registered web provider: exa
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/firecrawl' (source=bundled, kind=backend, path=/app/plugins/web/firecrawl)
+hermes-1  | [plugins] INFO Plugin 'web-firecrawl' registered web provider: firecrawl
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/parallel' (source=bundled, kind=backend, path=/app/plugins/web/parallel)
+hermes-1  | [plugins] INFO Plugin 'web-parallel' registered web provider: parallel
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/searxng' (source=bundled, kind=backend, path=/app/plugins/web/searxng)
+hermes-1  | [plugins] INFO Plugin 'web-searxng' registered web provider: searxng
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'web/tavily' (source=bundled, kind=backend, path=/app/plugins/web/tavily)
+hermes-1  | [plugins] INFO Plugin 'web-tavily' registered web provider: tavily
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'google_chat-platform' (source=bundled, kind=platform, path=/app/plugins/platforms/google_chat)
+hermes-1  | [plugins] DEBUG Plugin google_chat-platform registered platform: google_chat
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'irc-platform' (source=bundled, kind=platform, path=/app/plugins/platforms/irc)
+hermes-1  | [plugins] DEBUG Plugin irc-platform registered platform: irc
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'line-platform' (source=bundled, kind=platform, path=/app/plugins/platforms/line)
+hermes-1  | [plugins] DEBUG Plugin line-platform registered platform: line
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'teams-platform' (source=bundled, kind=platform, path=/app/plugins/platforms/teams)
+hermes-1  | [plugins] DEBUG Plugin teams-platform registered platform: teams
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'anchors' (source=user, kind=standalone, path=/home/hermes/.hermes/plugins/anchors)
+hermes-1  | [plugins] DEBUG Plugin anchors registered hook: on_session_start
+hermes-1  | [plugins] DEBUG Plugin anchors registered hook: pre_tool_call
+hermes-1  | [plugins] DEBUG Plugin anchors registered command: /lock
+hermes-1  | [plugins] DEBUG Plugin anchors registered command: /skip
+hermes-1  | [plugins] DEBUG Plugin anchors registered command: /cancel
+hermes-1  | [plugins] DEBUG Plugin anchors registered command: /confirm
+hermes-1  | [plugins] DEBUG Plugin anchors registered CLI command: new
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 2 hook(s), 4 slash command(s), 1 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'durability' (source=user, kind=standalone, path=/home/hermes/.hermes/plugins/durability)
+hermes-1  | [plugins] DEBUG Plugin durability registered hook: pre_tool_call
+hermes-1  | [plugins] DEBUG Plugin durability registered hook: post_tool_call
+hermes-1  | [plugins] DEBUG Plugin durability registered hook: post_tool_call
+hermes-1  | [plugins] DEBUG Plugin durability registered hook: on_session_start
+hermes-1  | [plugins] DEBUG Plugin durability registered hook: on_session_start
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'evaluators' (source=user, kind=standalone, path=/home/hermes/.hermes/plugins/evaluators)
+hermes-1  | [plugins] DEBUG Plugin evaluators registered hook: post_tool_call
+hermes-1  | [plugins] DEBUG Plugin evaluators registered hook: pre_llm_call
+hermes-1  | [plugins] DEBUG Plugin evaluators registered hook: on_session_end
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 1 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'kanban' (source=user, kind=standalone, path=/home/hermes/.hermes/plugins/kanban)
+hermes-1  | [plugins] DEBUG Plugin kanban registered hook: pre_tool_call
+hermes-1  | [plugins] DEBUG Plugin kanban registered hook: post_tool_call
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'memory' (source=user, kind=standalone, path=/home/hermes/.hermes/plugins/memory)
+hermes-1  | [plugins] DEBUG Plugin memory registered command: /forget
+hermes-1  | [plugins] DEBUG Plugin memory registered command: /rejections
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 0 hook(s), 2 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] DEBUG Loading plugin 'observability' (source=user, kind=standalone, path=/home/hermes/.hermes/plugins/observability)
+hermes-1  | [plugins] DEBUG Plugin observability registered hook: on_session_start
+hermes-1  | [plugins] DEBUG Plugin observability registered hook: pre_tool_call
+hermes-1  | [plugins] DEBUG Plugin observability registered hook: post_tool_call
+hermes-1  | [plugins] DEBUG Plugin observability registered hook: pre_llm_call
+hermes-1  | [plugins] DEBUG Plugin observability registered hook: post_llm_call
+hermes-1  | [plugins] DEBUG Plugin observability registered hook: post_api_request
+hermes-1  | [plugins] DEBUG   registered: 0 tool(s), 2 hook(s), 0 slash command(s), 0 CLI command(s)
+hermes-1  | [plugins] INFO Plugin discovery complete: 27 found, 24 enabled
+hermes-1  | ┌─────────────────────────────────────────────────────────┐
+hermes-1  | │           ⚕ Hermes Gateway Starting...                 │
+hermes-1  | ├─────────────────────────────────────────────────────────┤
+hermes-1  | │  Messaging platforms + cron scheduler                    │
+hermes-1  | │  Press Ctrl+C to stop                                   │
+hermes-1  | └─────────────────────────────────────────────────────────┘
+hermes-1  |
+hermes-1  | WARNING tools.mcp_tool: MCP server 'github' initial connection failed (attempt 1/3), retrying in 1s: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'context7' initial connection failed (attempt 1/3), retrying in 1s: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'github' initial connection failed (attempt 2/3), retrying in 2s: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'context7' initial connection failed (attempt 2/3), retrying in 2s: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'github' initial connection failed (attempt 3/3), retrying in 4s: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'context7' initial connection failed (attempt 3/3), retrying in 4s: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'github' failed initial connection after 3 attempts, giving up: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: MCP server 'context7' failed initial connection after 3 attempts, giving up: unhandled errors in a TaskGroup (1 sub-exception)
+hermes-1  | WARNING tools.mcp_tool: Failed to connect to MCP server 'github': Client error '401 Unauthorized' for url 'http://github-mcp:8003'
+hermes-1  | For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/401
+hermes-1  | WARNING tools.mcp_tool: Failed to connect to MCP server 'context7': Session terminated
+hermes-1  | WARNING gateway.run: Telegram: python-telegram-bot not installed
+hermes-1  | WARNING gateway.run: No adapter available for telegram
+hermes-1  | WARNING gateway.run: No adapter could be created for any of the 1 configured platform(s). Check that required dependencies are installed and credentials are set. Gateway will continue for cron job execution.
+
+=== Reproduction summary ===
+Date: 2026-05-20T12:04:06Z
+Exit code: 0
+OOMKilled: false
+Last hermes log line captured (t+60s, no crash observed): WARNING gateway.run: No adapter could be created for any of the 1 configured platform(s). Check that required dependencies are installed and credentials are set. Gateway will continue for cron job execution.
+Hypothesis ordering after baseline: Original hypotheses A (submodule), B (tmpfs), C (disk_cleanup guard); add D = persistent-volume state corruption. Ordering after baseline: C > D > A > B - but note the bug did NOT reproduce in this clean run, so all hypothesis tests are now contingent on regaining reproducibility.

@@ -1,0 +1,84 @@
+# deploy/docker-compose.gcp.override.yml
+# GCP-specific overrides loaded alongside docker-compose.yml on the VM:
+#   docker compose -f docker-compose.yml -f docker-compose.gcp.override.yml up -d
+#
+# Three concerns handled here:
+#   1. Image overrides — custom images point to Artifact Registry, not Docker Hub
+#   2. Volume path overrides — all ../lib, ../config, ../scripts paths remapped to
+#      ./lib, ./config, ./scripts (everything lives under /opt/hermes/bootstrap/)
+#   3. Log driver — gcplogs for all services so logs land in Cloud Logging
+
+x-gcplogs: &gcplogs
+  driver: gcplogs
+  options:
+    gcp-log-cmd: "true"
+
+x-ar-hermes: &ar-hermes us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/hermes:0.1.0
+
+services:
+  hermes:
+    image: *ar-hermes
+    logging: *gcplogs
+
+  # All three watcher services: AR image + script/lib paths in bootstrap dir
+  escalation-watcher:
+    image: *ar-hermes
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./lib:/app/lib:ro
+      - ./config/limits.yaml:/config/limits.yaml:ro
+    logging: *gcplogs
+
+  snapshot-watchdog:
+    image: *ar-hermes
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./lib:/app/lib:ro
+    logging: *gcplogs
+
+  budget-watchdog:
+    image: *ar-hermes
+    volumes:
+      - ./scripts:/app/scripts:ro
+      - ./lib:/app/lib:ro
+    logging: *gcplogs
+
+  shell-sandbox:
+    image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/shell-sandbox:0.1.0
+    logging: *gcplogs
+
+  otel-collector:
+    volumes:
+      - ./otel/collector.prod.yaml:/etc/otelcol-contrib/config.yaml:ro
+    logging: *gcplogs
+
+  litellm-db:
+    logging: *gcplogs
+
+  litellm-proxy:
+    # Override bind mount paths: on VM everything lives under /opt/hermes/bootstrap/.
+    # ../lib and ../config don't exist; redirect to ./lib and ./config in bootstrap.
+    # Remove ${HOME}/.config/gcloud — GCE service account uses metadata-server ADC.
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      - ./lib/scrubber_callback.py:/app/scrubber_callback.py:ro
+      - ./lib:/app/lib:ro
+      - ./config/scrubber-patterns.yaml:/app/scrubber-patterns.yaml:ro
+    logging: *gcplogs
+
+  phoenix:
+    logging: *gcplogs
+
+  github-mcp:
+    logging: *gcplogs
+
+  volume-init:
+    logging: *gcplogs
+
+volumes:
+  hermes-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/hermes/data

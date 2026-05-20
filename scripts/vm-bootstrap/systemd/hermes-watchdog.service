@@ -1,0 +1,15 @@
+[Unit]
+Description=Hermes — host-level container watchdog
+After=docker-compose-hermes.service
+Requires=docker-compose-hermes.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hermes-watchdog.sh
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

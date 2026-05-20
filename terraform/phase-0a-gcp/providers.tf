@@ -4,6 +4,7 @@ terraform {
     google      = { source = "hashicorp/google",      version = "~> 5.30" }
     google-beta = { source = "hashicorp/google-beta", version = "~> 5.30" }
   }
+  # Backend bucket name is literal: Terraform forbids variable interpolation in backend blocks.
   backend "gcs" {
     bucket = "rx-research-autonomousagent-tfstate"
     prefix = "phase-0a"

@@ -24,6 +24,7 @@ locals {
   # a new SOPS env file is added.
   sops_env_files = [
     "chroma-cloud",
+    "hermes-provider",
     "honcho",
     "litellm-db",
     "telegram",

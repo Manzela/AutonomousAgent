@@ -12,8 +12,17 @@ x-gcplogs: &gcplogs
 
 services:
   # Image overrides: point custom images to Artifact Registry (not Docker Hub).
-  # Public images (litellm, otel, phoenix, etc.) are left as-is — pulled directly.
+  # All four hermes-based services share the same AR image; public images left as-is.
   hermes:
+    image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/hermes:0.1.0
+    logging: *gcplogs
+  escalation-watcher:
+    image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/hermes:0.1.0
+    logging: *gcplogs
+  snapshot-watchdog:
+    image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/hermes:0.1.0
+    logging: *gcplogs
+  budget-watchdog:
     image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/hermes:0.1.0
     logging: *gcplogs
   shell-sandbox:
@@ -30,12 +39,6 @@ services:
   github-mcp:
     logging: *gcplogs
   volume-init:
-    logging: *gcplogs
-  escalation-watcher:
-    logging: *gcplogs
-  snapshot-watchdog:
-    logging: *gcplogs
-  budget-watchdog:
     logging: *gcplogs
 
 volumes:

@@ -121,6 +121,16 @@ services:
       # is on; encrypts any model credentials prisma would write). The
       # same file is mounted on litellm-db above as the Postgres-init source.
       - ../secrets/litellm-db.env
+      # Wave-4 #35: OPENROUTER_API_KEY for fallback providers. File is
+      # OPTIONAL — Compose treats a missing env_file as fatal, so this
+      # entry has `required: false` so the stack still boots when the
+      # operator has not yet provisioned the OpenRouter secret. Without
+      # the key, any call routed to an openrouter/* model will 401
+      # immediately (fail-loud, NOT silent). Provision via:
+      #   sops decrypt secrets/openrouter.env.sops > secrets/openrouter.env
+      # See docs/runbooks/openrouter-fallback.md.
+      - path: ../secrets/openrouter.env
+        required: false
     secrets:
       - litellm_master_key
     volumes:

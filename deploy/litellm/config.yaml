@@ -15,6 +15,37 @@ model_list:
       vertex_project: i-for-ai
       vertex_location: global   # Gemini 3.1 Pro Preview is only served via the global endpoint (verified 2026-05-15: us-central1 returns 404, global returns 200). 1M ctx, thinking model — judges using this axis must allow generous max_output_tokens.
 
+  # ---- OpenRouter fallback providers (R3 single-provider risk) ----
+  #
+  # Wave-4 #35 (CICD-SEC-04 / R3 resilience): OpenRouter routes the same
+  # model families via independent infrastructure (Anthropic + Google
+  # native + multiple inference partners). When Vertex returns 5xx or
+  # quota-exhaust, LiteLLM's router_settings.fallbacks block (below)
+  # promotes the openrouter/* alias for the originating model.
+  #
+  # Auth: single OPENROUTER_API_KEY env var, sourced from sops-encrypted
+  # `secrets/openrouter.env` (env_file in docker-compose.yml). If the
+  # secret is absent, calls to the fallback alias fail-loud with 401;
+  # operator must `sops decrypt secrets/openrouter.env.sops > secrets/openrouter.env`
+  # before any fallback can fire (see docs/runbooks/openrouter-fallback.md).
+  #
+  # Model-ID stability: OpenRouter model slugs are part of their public
+  # /api/v1/models contract and have been stable for >12 months for the
+  # listed flagships. Verify against https://openrouter.ai/models before
+  # adjusting; the runbook documents the verification curl.
+  - model_name: openrouter/anthropic/claude-opus-4
+    litellm_params:
+      model: openrouter/anthropic/claude-opus-4
+      api_key: os.environ/OPENROUTER_API_KEY  # pragma: allowlist secret
+  - model_name: openrouter/anthropic/claude-sonnet-4
+    litellm_params:
+      model: openrouter/anthropic/claude-sonnet-4
+      api_key: os.environ/OPENROUTER_API_KEY  # pragma: allowlist secret
+  - model_name: openrouter/google/gemini-2.5-pro
+    litellm_params:
+      model: openrouter/google/gemini-2.5-pro
+      api_key: os.environ/OPENROUTER_API_KEY  # pragma: allowlist secret
+
 litellm_settings:
   drop_params: true
   num_retries: 5
@@ -43,6 +74,23 @@ litellm_settings:
 litellm_otel:
   endpoint: http://otel-collector:4317
   service_name: litellm-proxy
+
+router_settings:
+  # Wave-4 #35 (R3 mitigation): Vertex → OpenRouter fallback on retriable
+  # errors (5xx, 408, 425, 429, 502, 503, 504, 529) AFTER the per-call
+  # `litellm_settings.num_retries: 5` budget is exhausted. LiteLLM iterates
+  # each fallback list left-to-right and re-issues the original request body
+  # against the next model — there is no prompt translation because both
+  # providers serve the same model weights.
+  #
+  # Each key MUST be a `model_name` from `model_list` above (NOT the raw
+  # `litellm_params.model` value), and each fallback value MUST also be a
+  # `model_name` from `model_list`. LiteLLM resolves the alias→provider
+  # mapping internally. Operator runbook: docs/runbooks/openrouter-fallback.md.
+  fallbacks:
+    - vertex_ai/claude-opus-4-7: [openrouter/anthropic/claude-opus-4]
+    - vertex_ai/claude-sonnet-4-6: [openrouter/anthropic/claude-sonnet-4]
+    - vertex_ai/gemini-3.1-pro-preview: [openrouter/google/gemini-2.5-pro]
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

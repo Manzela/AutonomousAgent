@@ -13,23 +13,23 @@ ENV_DIR=/run/hermes/env
 mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR"
 
-# List every secret with the autonomousagent- prefix
-SECRETS=$(gcloud secrets list --project="$PROJECT_ID" \
-  --filter="name:autonomousagent-" --format="value(name)")
+# Hardcoded secret names — mirrors secret_manager.tf sops_env_files + autonomousagent- prefix.
+# Avoids requiring secretmanager.secrets.list; only secretmanager.versions.access is needed.
+# Update this list when a new SOPS env file is added.
+REQUIRED_SECRETS=(
+  "autonomousagent-chroma-cloud"
+  "autonomousagent-hermes-provider"
+  "autonomousagent-honcho"
+  "autonomousagent-litellm-db"
+  "autonomousagent-telegram"
+)
 
-if [ -z "$SECRETS" ]; then
-  echo "ERROR: no autonomousagent-* secrets found in project $PROJECT_ID" >&2
-  exit 1
-fi
-
-for secret in $SECRETS; do
-  # Strip project path: "projects/123/secrets/autonomousagent-honcho" -> "honcho"
-  short="${secret##*/}"          # strip path prefix
-  name="${short#autonomousagent-}"  # strip autonomousagent- prefix
+for secret in "${REQUIRED_SECRETS[@]}"; do
+  name="${secret#autonomousagent-}"
   out="$ENV_DIR/${name}.env"
-  gcloud secrets versions access latest --secret="$short" --project="$PROJECT_ID" > "$out"
+  gcloud secrets versions access latest --secret="$secret" --project="$PROJECT_ID" > "$out"
   chmod 600 "$out"
-  echo "loaded $short -> $out"
+  echo "loaded $secret -> $out"
 done
 
 echo "load-secrets done $(date -u +%FT%TZ)"

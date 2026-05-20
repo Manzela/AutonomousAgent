@@ -1,0 +1,2 @@
+NAME                        CONTAINER                   CPU %     MEM USAGE / LIMIT   MEM %     NET I/O          BLOCK I/O
+autonomous-agent-hermes-1   autonomous-agent-hermes-1   0.08%     122MiB / 7.75GiB    1.54%     6.23MB / 117kB   102kB / 18.7MB

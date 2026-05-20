@@ -29,3 +29,12 @@ target-version = "py311"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
+# Custom markers. Registered here so `--strict-markers` (and the default
+# PytestUnknownMarkWarning) doesn't choke on legitimate test scopes.
+# `integration` already in widespread use across tests/integration/*; the
+# `docker` marker is new for tests that physically run `docker compose up`
+# and must be skipped on hosts without a docker daemon.
+markers = [
+  "integration: integration-tier tests that cross module boundaries (config, plugin, container)",
+  "docker: tests that require a running docker daemon and `docker compose` CLI (auto-skipped on docker-less hosts)",
+]

@@ -1,0 +1,121 @@
+# Nightly evaluator smoke — IEEE 829 / SSDF PW.7 regression alarm.
+#
+# Runs the evaluators-plugin smoke suite nightly so any drift in
+# `cli-config.yaml` plugin allow-list, in `lib/evaluators/`, or in the
+# `judge` / `consensus` module surface raises a labelled GitHub issue
+# the next morning. The deeper end-to-end check
+# (`tests/integration/test_p1_2_judge_panel.py`) is intentionally NOT
+# wired here — that one needs the full LiteLLM stack and would burn
+# minutes plus Vertex quota on every run.
+#
+# Cron at 03:07 UTC — deliberately off the :00 minute to dodge the
+# global GitHub Actions congestion spike (every cron declared as
+# `0 * * * *` runs in the same minute and competes for runner capacity).
+#
+# Audit closure: item #24 ("Eval harness for agent regressions —
+# after every config/skill change, run a smoke-test suite").
+
+name: Nightly Evaluator Smoke
+
+on:
+  schedule:
+    - cron: "7 3 * * *"  # 03:07 UTC nightly (off-peak)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write  # required to open the agent-regression issue on failure
+
+concurrency:
+  group: nightly-eval
+  cancel-in-progress: false  # serial runs — never overlap two nightlies
+
+jobs:
+  smoke:
+    name: Evaluators plugin smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      result: ${{ steps.pytest.outcome }}
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false  # hermes-agent not required for plugin smoke
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dev dependencies
+        # Mirrors the unit-test job in ci.yml — installs the same dev
+        # extras so the smoke suite sees the same module surface.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run evaluator smoke suite
+        id: pytest
+        run: |
+          pytest tests/integration/test_evaluators_smoke.py \
+            -v --tb=short --junitxml=evaluator-smoke-junit.xml
+
+      - name: Upload junit results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: evaluator-smoke-junit
+          path: evaluator-smoke-junit.xml
+          retention-days: 30
+
+  alert-on-failure:
+    name: Open agent-regression issue on failure
+    needs: smoke
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open GitHub issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          today="$(date -u +%Y-%m-%d)"
+          # Write the body to a temp file so heredoc indentation does not
+          # leak into the issue text. `--body-file -` reads from stdin.
+          body_file="$(mktemp)"
+          cat >"${body_file}" <<BODY
+          The nightly evaluators-plugin smoke suite failed.
+
+          - Workflow run: ${RUN_URL}
+          - Triggered: schedule (cron 03:07 UTC)
+          - Suite: tests/integration/test_evaluators_smoke.py
+
+          ## Triage steps
+
+          1. Open the run URL above and inspect the pytest output.
+          2. Confirm 'evaluators' is still in plugins.enabled in
+             config/hermes/cli-config.yaml. If a recent PR removed it,
+             either restore it or close this issue + remove the nightly
+             workflow.
+          3. If import-side assertions failed, check lib/evaluators/
+             for a recent refactor that broke the judge / consensus
+             module surface.
+          4. Re-run the suite locally:
+             pytest tests/integration/test_evaluators_smoke.py -v
+
+          Closes via re-run once green.
+          BODY
+          # Strip the leading 10-space indent the YAML scalar block added.
+          sed -i 's/^          //' "${body_file}"
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Nightly evaluator smoke failed (${today})" \
+            --label "agent-regression" \
+            --assignee "Manzela" \
+            --body-file "${body_file}"

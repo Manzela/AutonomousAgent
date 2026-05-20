@@ -49,3 +49,39 @@ resource "google_secret_manager_secret" "envfiles" {
 
   depends_on = [google_project_service.enabled]
 }
+
+locals {
+  # Individual secrets: raw values (no .env extension), used as Docker
+  # compose file-type secrets (bind-mounted to /run/secrets/<name> in
+  # containers). load-secrets.sh fetches these to /run/hermes/env/<name>
+  # (no .env suffix) so the symlink resolves correctly.
+  individual_secrets = [
+    "github-pat",
+    "litellm-master-key",
+  ]
+}
+
+# IMPORT REQUIRED for existing environments:
+# These secrets were bootstrapped via gcloud. Import before first apply:
+#   terraform import 'google_secret_manager_secret.individual["github-pat"]' \
+#     projects/i-for-ai/secrets/autonomousagent-github-pat
+#   terraform import 'google_secret_manager_secret.individual["litellm-master-key"]' \
+#     projects/i-for-ai/secrets/autonomousagent-litellm-master-key
+resource "google_secret_manager_secret" "individual" {
+  for_each = toset(local.individual_secrets)
+  project  = var.project_id
+
+  secret_id = "autonomousagent-${each.value}"
+
+  replication {
+    auto {}
+  }
+
+  labels = {
+    phase     = "0a"
+    component = "autonomousagent"
+    source    = "individual"
+  }
+
+  depends_on = [google_project_service.enabled]
+}

@@ -1,7 +1,10 @@
-"""33-mode failure matrix mapping F-codes to trichotomy class + handler reference.
+"""Failure matrix mapping F-codes to trichotomy class + handler reference.
 
-Source of truth: docs/architecture/failure-matrix.md (extended in this PR
-from the initial 16-mode draft to 33 modes per the AA-Atelier sweep).
+Source of truth: docs/architecture/failure-matrix.md.
+
+Codes F1-F33 are the original AA-Atelier sweep (self-heal F1-F11, fail-soft
+F12-F20, fail-loud F21-F33). Codes F34+ are runtime-detector additions tracked
+in audit/2026-05-20-architecture-research-gap-analysis/audit-plan.md.
 """
 
 from enum import Enum
@@ -181,6 +184,21 @@ FAILURE_MATRIX: Dict[str, Dict[str, Any]] = {
     "F33": {
         "class": TrichotomyClass.FAIL_LOUD,
         "description": "F-code lookup failed (unclassified exception)",
+        "handler": "halt_alert_snapshot",
+    },
+    # === Runtime detectors F34-F35 (J4 — Framing #2) ===
+    # F-LOOP: N consecutive identical-fingerprint tool calls. Fail-soft so
+    # the orchestrator can inject loop-break feedback rather than halt.
+    "F34": {
+        "class": TrichotomyClass.FAIL_SOFT,
+        "description": "F-LOOP: agent repeated same tool-call fingerprint N times without progress",
+        "handler": "interrupt_with_loop_feedback",
+    },
+    # F-STALL: no tool-call activity for idle_timeout_s while task in_progress.
+    # Fail-loud — an idle agent on an open task is usually an upstream hang.
+    "F35": {
+        "class": TrichotomyClass.FAIL_LOUD,
+        "description": "F-STALL: no tool-call activity for idle_timeout_s while task in_progress",
         "handler": "halt_alert_snapshot",
     },
 }

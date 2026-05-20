@@ -180,6 +180,13 @@ durability:
     interval_s: 300
   snapshot_watchdog:
     interval_s: 1800
+  # J4 (Framing #2) runtime detectors. See lib/durability/runtime_detectors.py
+  # and docs/architecture/failure-matrix.md F34/F35.
+  loop_detector:
+    threshold: 5             # consecutive identical-fingerprint calls -> F34
+  stall_detector:
+    idle_timeout_s: 300      # seconds of no tool-call while in_progress -> F35
+    check_interval_s: 60     # how often the watchdog checks per session
 
 memory:
   rejected_md_path: /data/MEMORY/REJECTED.md

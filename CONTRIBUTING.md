@@ -76,6 +76,33 @@ Three classes of docs:
 
 Anything you'd want to know if you came back in 6 months: write it down.
 
+## Updating pinned hashes (SOUL.md)
+
+`config/hermes/SOUL.md` is the Hermes persona file. Because a silent edit
+changes agent behaviour in production, its SHA-256 is pinned in
+`config/limits.yaml` under `integrity.soul_md_sha256` and enforced by
+both a unit test (`tests/unit/test_soul_md_integrity.py`) and a dedicated
+CI job (`soul-md-integrity` in `.github/workflows/ci.yml`).
+
+When you **intentionally** edit `SOUL.md`, refresh the pin in the same
+commit using the helper script:
+
+```bash
+./scripts/update_soul_pin.sh
+git add config/hermes/SOUL.md config/limits.yaml
+git commit -m "feat(persona): <what changed and why>"
+```
+
+The script is idempotent: with no SOUL.md changes it prints
+"`pin already current`" and leaves the working tree clean, so it's safe
+to run defensively. It uses `shasum -a 256` (portable across macOS and
+Linux) and only rewrites the single `soul_md_sha256:` line.
+
+If CI reports `SOUL.md sha256 drift detected`, that means the persona
+was edited without bumping the pin — re-run the script and commit the
+resulting `config/limits.yaml` diff (or revert the SOUL.md change if it
+was unintentional).
+
 ## Reporting issues
 
 Use the templates in `.github/ISSUE_TEMPLATE/`. For security issues, do not open a public issue — contact the owner directly.

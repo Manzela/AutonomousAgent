@@ -29,6 +29,7 @@ locals {
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
     "roles/artifactregistry.reader",
+    "roles/storage.objectViewer",
     "roles/storage.objectCreator",
   ]
 }

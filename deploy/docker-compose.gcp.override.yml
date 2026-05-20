@@ -1,0 +1,43 @@
+# deploy/docker-compose.gcp.override.yml
+# GCP-specific overrides loaded alongside docker-compose.yml on the VM:
+#   docker compose -f docker-compose.yml -f docker-compose.gcp.override.yml up -d
+#
+# Adds gcplogs log driver to every service and binds hermes-data volume
+# to /opt/hermes/data on the host (the mounted persistent disk).
+
+x-gcplogs: &gcplogs
+  driver: gcplogs
+  options:
+    gcp-log-cmd: "true"
+
+services:
+  litellm-db:
+    logging: *gcplogs
+  litellm-proxy:
+    logging: *gcplogs
+  otel-collector:
+    logging: *gcplogs
+  phoenix:
+    logging: *gcplogs
+  shell-sandbox:
+    logging: *gcplogs
+  github-mcp:
+    logging: *gcplogs
+  volume-init:
+    logging: *gcplogs
+  hermes:
+    logging: *gcplogs
+  escalation-watcher:
+    logging: *gcplogs
+  snapshot-watchdog:
+    logging: *gcplogs
+  budget-watchdog:
+    logging: *gcplogs
+
+volumes:
+  hermes-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/hermes/data

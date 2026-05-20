@@ -37,6 +37,22 @@ psycopg ImportError downgrades the spend dump to a no-op WARNING
 log; the rest of the snapshot still uploads. Pairs with the weekly
 cost-summary workflow so the operator can reconstruct historical
 spend even after the LiteLLM Postgres table is rotated.
+
+**CSV scope and column safety.** The dumped CSV contains only the
+billing-relevant columns from ``LiteLLM_SpendLogs`` (request_id,
+model, user, api_key, spend, startTime, endTime, call_type) — it
+does NOT include request ``messages`` or response payloads, which
+keeps the snapshot small and avoids replicating prompt-bearing
+records to the recovery host. The ``api_key`` column is the SHA-256
+hashed Prisma token stored by LiteLLM (e.g.
+``hashed-sk-xxxxxxxxxxxx``), NOT the raw master key — LiteLLM
+hashes inbound keys at ingress, so the snapshot can never leak the
+master credential even if the GCS bucket is later mis-scoped.
+
+**Out of scope (tracked separately).** Honcho session export and
+Phoenix-sqlite trace bundling are NOT included in this snapshot —
+both are tracked as follow-up work in issue #110 so the FinOps
+slice can ship without blocking on those subsystems.
 """
 
 from __future__ import annotations

@@ -42,6 +42,7 @@ from typing import Any, Optional
 import httpx
 
 from lib.kanban.notification_policy import status_transition_to_notification
+from lib.scrubber import scrub_string
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +210,16 @@ def send_alert(card_id: Any, msg: str) -> bool:
         return False
 
     url = _TELEGRAM_API_URL.format(token=token)
+    # P2 #34: scrub the message body before send. Telegram retains chat
+    # messages indefinitely, and the upstream caller may have interpolated
+    # raw card title/description (which can contain pasted secrets) into
+    # ``msg``. The scrubber is idempotent on already-scrubbed text.
+    scrubbed_msg = scrub_string(msg, source="telegram_alert")
     payload = {
         "chat_id": chat_id,
         # Prefix with the card id so the operator can grep / quote-reply
         # without needing to copy from the body.
-        "text": f"[card {card_id}] {msg}",
+        "text": f"[card {card_id}] {scrubbed_msg}",
     }
     try:
         with httpx.Client(timeout=_TELEGRAM_SEND_TIMEOUT_S) as client:

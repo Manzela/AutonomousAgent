@@ -103,6 +103,15 @@ logs:
   level: INFO
   destination: stdout
 
+# Reasoning audit trail (audit checklist item #27).
+# `show_reasoning: true` instructs Hermes to log the model's chain-of-thought
+# / extended-thinking text so the rationale behind each decision is recoverable
+# post-hoc. Pairs with the `llm.reasoning` OpenInference span attribute emitted
+# by lib/observability/__init__.py::_post_llm_call — the span is the structured
+# audit-trail surface; the display setting is the human-facing companion.
+display:
+  show_reasoning: true
+
 # Phase 1 plugin allow-list (audit final-sweep P0-α resolution).
 #
 # Hermes' PluginManager is opt-in by default — standalone plugins discovered

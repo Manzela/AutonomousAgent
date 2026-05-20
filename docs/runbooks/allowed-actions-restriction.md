@@ -1,0 +1,204 @@
+# Allowed-actions restriction — repository-level allowlist
+
+The audit P2-8 finding closes the OWASP **CICD-SEC-05** ("Insufficient
+[restriction of] Pipeline-Based Access Controls" / "Restrict action usage")
+gap by switching the repository from `allowed_actions=all` (any action on the
+public marketplace can run) to `allowed_actions=selected` (GitHub-owned +
+verified-publisher + an explicit pattern allowlist). This runbook is the
+companion to that flip — it owns the inventory, the API procedure, the
+rollback, and the smoke-test.
+
+The flip itself is **API-only** (no repo files change); the orchestrator
+applies it after this PR merges. Keep this runbook in sync any time a
+workflow adds a new `uses:` line.
+
+## Why
+
+OWASP Top-10 CI/CD Security Risks lists CICD-SEC-05 ("Insufficient PBAC"):
+in the Actions context, the canonical mitigation is to disable the
+default `allowed_actions=all` and only permit GitHub-owned actions, verified
+publishers, and a hand-curated allowlist of third-party actions. With
+`all`, a freshly compromised marketplace action (or a typo-squat) can run on
+the next push to `main` with `GITHUB_TOKEN` and the full secrets store. With
+`selected`, an attacker must additionally compromise an admin to extend the
+allowlist before they can ship.
+
+Related controls already in place in this repo:
+
+* every third-party action is **SHA-pinned** (`@<40-char-sha>  # vX.Y.Z`)
+  — see `.github/workflows/*.yml`
+* `step-security/harden-runner` is **not** yet wired in (tracked separately)
+* SLSA Source L3 branch-protection is being closed in parallel (P1-3 runbook)
+
+## What changes
+
+| Field | Before | After |
+| --- | --- | --- |
+| `allowed_actions` | `all` | `selected` |
+| `github_owned_allowed` | n/a | `true` |
+| `verified_allowed` | n/a | `true` |
+| `patterns_allowed` | n/a | hand-curated allowlist (below) |
+
+Nothing in the repo changes. No workflow rewrites. The change is applied
+once via the Actions Permissions REST API and persists on the repository
+settings object until explicitly reverted.
+
+## Categorized inventory (as of 2026-05-20)
+
+Scanned all `.github/workflows/*.yml`. Every unique `uses:` reference is
+listed below, categorized by how it's allowed:
+
+| Action | Pin | Category | Used by |
+| --- | --- | --- | --- |
+| `actions/checkout` | `de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6` | GitHub-owned | ci, codeql, release, sbom-cosign, secret-scan, trivy |
+| `actions/setup-python` | `a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6` | GitHub-owned | secret-scan |
+| `actions/upload-artifact` | `043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7` | GitHub-owned | ci |
+| `github/codeql-action/init` | `458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3` | GitHub-owned | codeql |
+| `github/codeql-action/analyze` | `458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3` | GitHub-owned | codeql |
+| `github/codeql-action/upload-sarif` | `458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3` | GitHub-owned | secret-scan, trivy |
+| `astral-sh/setup-uv` | `37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7` | Verified (astral-sh) | ci |
+| `anchore/sbom-action` | `e22c389904149dbc22b58101806040fa8d37a610  # v0` | Verified (anchore) | sbom-cosign |
+| `sigstore/cosign-installer` | `f713795cb21599bc4e5c4b58cbad1da852d7eeb9  # v3` | Verified (sigstore) | sbom-cosign |
+| `aquasecurity/trivy-action` | `a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0` | Verified (aquasecurity) | trivy |
+| `softprops/action-gh-release` | `b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3` | **Unverified — pattern** | release, sbom-cosign |
+| `amannn/action-semantic-pull-request` | `48f256284bd46cdaab1048c3721360e808335d50  # v6` | **Unverified — pattern** | pr-validation |
+| `hadolint/hadolint-action` | `2332a7b74a6de0dda2e2221d575162eba76ba5e5  # v3.3.0` | **Unverified — pattern** | ci |
+
+Counts: **6 GitHub-owned**, **4 verified publisher**, **3 unverified
+(SHA-pinned)**. All 13 distinct `uses:` references covered. All
+third-party actions (verified or not) are SHA-pinned at the call site —
+the patterns_allowed entries below are deliberately written as `@*`
+because GitHub Actions Permissions evaluates the pattern against the
+ref, and a strict pattern match would refuse updates without an
+operator rerun of this runbook. The SHA pin in the workflow file is
+what enforces immutability of the version actually executed.
+
+### patterns_allowed
+
+```json
+{
+  "patterns_allowed": [
+    "softprops/action-gh-release@*",
+    "amannn/action-semantic-pull-request@*",
+    "hadolint/hadolint-action@*"
+  ]
+}
+```
+
+If a new third-party action lands in `.github/workflows/`, update this
+runbook (table + JSON block) **and** re-run the API call below in the
+same PR, or the next CI run on that workflow will hard-fail with
+`Resource not accessible by integration` / `This action is not allowed
+to run on this repository`.
+
+## Operator procedure (apply)
+
+Run from a shell with `gh` authenticated as a repo admin.
+
+```bash
+# 1. Flip the top-level allowed_actions to "selected".
+gh api -X PUT /repos/Manzela/AutonomousAgent/actions/permissions \
+  --field enabled=true \
+  --field allowed_actions=selected
+
+# 2. PUT the selected-actions payload (GitHub-owned + verified + patterns).
+gh api -X PUT /repos/Manzela/AutonomousAgent/actions/permissions/selected-actions \
+  --field github_owned_allowed=true \
+  --field verified_allowed=true \
+  --raw-field 'patterns_allowed=["softprops/action-gh-release@*","amannn/action-semantic-pull-request@*","hadolint/hadolint-action@*"]'
+```
+
+(Equivalent single-shot using a JSON payload, if the shell-flag form
+trips on quoting:)
+
+```bash
+gh api -X PUT /repos/Manzela/AutonomousAgent/actions/permissions/selected-actions \
+  --input - <<'JSON'
+{
+  "github_owned_allowed": true,
+  "verified_allowed": true,
+  "patterns_allowed": [
+    "softprops/action-gh-release@*",
+    "amannn/action-semantic-pull-request@*",
+    "hadolint/hadolint-action@*"
+  ]
+}
+JSON
+```
+
+## Verification (post-apply)
+
+```bash
+gh api /repos/Manzela/AutonomousAgent/actions/permissions
+# Expect: {"enabled": true, "allowed_actions": "selected", "selected_actions_url": "..."}
+
+gh api /repos/Manzela/AutonomousAgent/actions/permissions/selected-actions
+# Expect: {
+#   "github_owned_allowed": true,
+#   "verified_allowed": true,
+#   "patterns_allowed": ["softprops/action-gh-release@*", "amannn/action-semantic-pull-request@*", "hadolint/hadolint-action@*"]
+# }
+```
+
+## Smoke-test
+
+Trigger one workflow that exercises each category and confirm all stay
+green. The fastest coverage path:
+
+1. Open a no-op PR against `main` (e.g. whitespace tweak in a markdown
+   file). This fires:
+   * `ci.yml` → covers `actions/checkout`, `actions/setup-python`,
+     `actions/upload-artifact`, `astral-sh/setup-uv` (verified),
+     `hadolint/hadolint-action` (unverified pattern).
+   * `pr-validation.yml` → covers
+     `amannn/action-semantic-pull-request` (unverified pattern).
+   * `codeql.yml` → covers `github/codeql-action/*` (GitHub-owned).
+   * `secret-scan.yml` → covers `actions/setup-python` and
+     `github/codeql-action/upload-sarif` (GitHub-owned).
+   * `trivy.yml` → covers `aquasecurity/trivy-action` (verified) and
+     `github/codeql-action/upload-sarif` (GitHub-owned).
+2. Watch `gh pr checks <num> --watch` until all required checks resolve.
+3. Cut a throwaway tag (e.g. `v0.0.0-smoke`) and delete it within five
+   minutes — this exercises `release.yml` (`softprops/action-gh-release`)
+   and `sbom-cosign.yml` (`anchore/sbom-action`, `sigstore/cosign-installer`,
+   `softprops/action-gh-release`). Skip this step in the smoke-test if a
+   real release is queued within 24h; the next real release covers the
+   gap.
+
+Any **policy denial** surfaces in the workflow run as:
+
+```
+This workflow contains an action that is not allowed to be used in this repository.
+```
+
+If you see that string, either (a) the action needs to be added to
+`patterns_allowed` here and the operator procedure re-run, or (b) the
+publisher's verified-creator status changed upstream and a new entry
+in `patterns_allowed` is the workaround.
+
+## Rollback
+
+Reverts the repository to "any marketplace action allowed" — same posture as
+before this PR. Use only if a policy denial blocks a critical workflow and
+the right patch (adding the missing action above) cannot ship within the
+SLA.
+
+```bash
+gh api -X PUT /repos/Manzela/AutonomousAgent/actions/permissions \
+  --field enabled=true \
+  --field allowed_actions=all
+```
+
+After rollback, open a follow-up issue to triage the missing action and
+re-apply the restriction. Do not leave `allowed_actions=all` in place — it
+reopens CICD-SEC-05.
+
+## Related
+
+* OWASP CICD-SEC-05: <https://owasp.org/www-project-top-10-ci-cd-security-risks/CICD-SEC-05>
+* GitHub Docs — "Managing GitHub Actions settings for a repository":
+  <https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository>
+* GitHub REST API — Actions Permissions:
+  <https://docs.github.com/en/rest/actions/permissions>
+* Companion runbook: `docs/runbooks/branch-protection.md` (SLSA Source L3
+  gap-closure, paired effort).

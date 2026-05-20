@@ -69,3 +69,56 @@ resource "google_compute_disk_resource_policy_attachment" "data_snapshot" {
   disk    = google_compute_disk.data.name
   zone    = var.zone
 }
+
+resource "google_compute_instance" "autonomousagent" {
+  name         = "autonomousagent-vm"
+  machine_type = var.vm_machine_type
+  zone         = var.zone
+  tags         = ["autonomousagent-vm"]
+
+  boot_disk {
+    source      = google_compute_disk.boot.self_link
+    auto_delete = false
+  }
+
+  attached_disk {
+    source      = google_compute_disk.data.self_link
+    device_name = "hermes-data"
+    mode        = "READ_WRITE"
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.autonomousagent.id
+    # No access_config block — no public IP.
+  }
+
+  service_account {
+    email  = google_service_account.vm_runtime.email
+    scopes = ["cloud-platform"]
+  }
+
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
+  }
+
+  scheduling {
+    automatic_restart   = true
+    on_host_maintenance = "MIGRATE"
+    preemptible         = false
+  }
+
+  metadata = {
+    enable-oslogin     = "TRUE"
+    startup-script-url = "gs://i-for-ai-autonomousagent-snapshots/bootstrap/install.sh"
+    hermes-image-repo  = "us-central1-docker.pkg.dev/${var.project_id}/autonomousagent-images"
+  }
+
+  labels = {
+    phase = "0a"
+  }
+
+  allow_stopping_for_update = true
+  depends_on                = [google_storage_bucket.snapshots]
+}

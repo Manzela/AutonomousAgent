@@ -32,3 +32,19 @@ output "snapshot_bucket" {
   value       = google_storage_bucket.snapshots.url
   description = "GCS bucket for in-region PD snapshot staging"
 }
+
+# Task 16 — VM identity and addressing.
+output "vm_name" {
+  value       = google_compute_instance.autonomousagent.name
+  description = "GCE VM instance name"
+}
+
+output "vm_internal_ip" {
+  value       = google_compute_instance.autonomousagent.network_interface[0].network_ip
+  description = "VM internal IP (no public IP — access via IAP SSH)"
+}
+
+output "vm_zone" {
+  value       = var.zone
+  description = "Zone the VM is deployed in"
+}

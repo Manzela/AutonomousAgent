@@ -2,3 +2,21 @@
 output "project_id" {
   value = var.project_id
 }
+
+# Task 10 — runtime identity attached to the VM.
+output "vm_runtime_sa_email" {
+  value       = google_service_account.vm_runtime.email
+  description = "Service account attached to the GCE VM"
+}
+
+# Task 11 — CI federation outputs; consumed by .github/workflows/phase-0a-deploy.yml
+# as repository variables GCP_WIF_PROVIDER and GCP_DEPLOYER_SA.
+output "wif_provider_resource_name" {
+  value       = google_iam_workload_identity_pool_provider.autonomousagent_actions.name
+  description = "Full resource name of the WIF provider — set as GCP_WIF_PROVIDER repo variable"
+}
+
+output "github_ci_sa_email" {
+  value       = google_service_account.github_ci.email
+  description = "CI deployer SA email — set as GCP_DEPLOYER_SA repo variable"
+}

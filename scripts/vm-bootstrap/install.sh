@@ -65,6 +65,12 @@ install -m 0755 /opt/hermes/bootstrap/hermes-watchdog.sh                      /u
 mkdir -p /etc/hermes
 install -m 0644 /opt/hermes/bootstrap/expected-containers.txt                 /etc/hermes/expected-containers.txt
 mkdir -p /run/hermes/env
+# Symlink /opt/hermes/secrets -> /run/hermes/env so docker-compose env_file
+# paths (../secrets/*.env relative to /opt/hermes/bootstrap/) resolve to tmpfs.
+ln -sfn /run/hermes/env /opt/hermes/secrets
+# openrouter is optional (required: false in compose); create placeholder
+touch /run/hermes/env/openrouter.env
+chmod 600 /run/hermes/env/openrouter.env
 
 # 6. Authenticate Docker with Artifact Registry
 gcloud auth configure-docker us-central1-docker.pkg.dev --quiet

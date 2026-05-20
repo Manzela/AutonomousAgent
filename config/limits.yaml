@@ -162,6 +162,11 @@ evaluators:
     safety: vertex_ai/claude-opus-4-7
     scope-fit: vertex_ai/claude-sonnet-4-6
     completeness: vertex_ai/gemini-3.1-pro-preview
+  judge_events:
+    # J1 (Framing #2): one JSONL line per consensus decision. Downstream
+    # RL trajectory shipper (J3) tails this file. Persistence is fail-open.
+    enabled: true
+    path: trajectories/judge-events.jsonl
 
 durability:
   checkpoint:

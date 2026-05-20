@@ -24,6 +24,8 @@ build/
 *.log
 logs/
 trajectories/queue/
+trajectories/judge-events.jsonl
+trajectories/judge-events.jsonl.*
 .cache/
 
 # OS

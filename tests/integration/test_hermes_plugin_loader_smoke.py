@@ -38,8 +38,10 @@ Test design
   what we need to see the per-plugin ``Loading plugin '<key>'`` lines
   (upstream ``_load_plugin`` logs at DEBUG; the INFO-level
   ``Plugin discovery complete:`` summary is always emitted).
-* Polls ``docker compose logs hermes`` for up to 90 s for the discovery
-  summary, then asserts:
+* ``--wait`` blocks compose until the hermes healthcheck flips, which
+  is the canonical signal that ``discover_and_load`` returned. We then
+  do a short (~10 s) belt-and-braces poll of ``docker compose logs
+  hermes`` to absorb the json-file log-driver flush latency, then assert:
     1. The summary line was emitted (proves loader ran end-to-end).
     2. ``Loading plugin 'disk-cleanup'`` appears (proves discovery saw
        the manifest AND the allowlist let it through to ``_load_plugin``).
@@ -48,15 +50,19 @@ Test design
        ``plugins.disabled``).
     4. No ``Failed to load plugin 'disk-cleanup'`` line (proves the
        module import + ``register(ctx)`` call did not raise).
-* Tears down with ``docker compose down -v hermes`` even on failure.
+* Tears down with ``docker compose down -v --remove-orphans`` against
+  an isolated per-process project (``COMPOSE_PROJECT_NAME`` env or a
+  PID-derived fallback). Isolation is what makes the destructive
+  teardown safe on shared / self-hosted runners — without it, ``down
+  -v`` could wipe an operator's local ``hermes-data`` volume.
 
 Marker discipline
 -----------------
 Marked both ``@pytest.mark.integration`` and ``@pytest.mark.docker`` (the
-latter is the gate that lets dockerless hosts skip cleanly). The module
-also probes the daemon at import time and skips the whole module if
-``docker info`` fails — this lets ``pytest --collect-only`` work
-everywhere without requiring docker.
+latter is the gate that lets dockerless hosts skip cleanly). The
+``_docker_available()`` probe is lazy + cached and fires inside the
+fixture, not at module import, so ``pytest --collect-only`` works
+everywhere without spawning ``docker info``.
 
 References
 ----------
@@ -69,6 +75,7 @@ References
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -83,6 +90,51 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = str(REPO_ROOT / "deploy" / "docker-compose.yml")
 SERVICE = "hermes"
+
+
+def _compose_project_name() -> str:
+    """Return an isolated docker-compose project name for this test run.
+
+    Why isolation matters:
+      * The default project name (``deploy``, derived from the compose
+        file's directory) collides on self-hosted runners or when a
+        long-running local hermes stack is already up. A collision causes
+        ``--force-recreate`` to nuke the operator's running stack and
+        teardown to take down services it didn't start.
+      * With a per-process project we can safely use ``down -v
+        --remove-orphans`` in teardown — the named volumes only belong
+        to this disposable project, so we cannot collateral-damage
+        ``hermes-data`` from a sibling local stack.
+
+    Resolution order:
+      1. ``COMPOSE_PROJECT_NAME`` env var (CI sets this; lets both the
+         test and the workflow's log-capture / teardown steps converge
+         on a single name without hand-passing it across processes).
+      2. A name derived from ``PYTEST_XDIST_WORKER`` + ``os.getpid()``
+         for local runs and parallel-pytest splits.
+    """
+    explicit = os.environ.get("COMPOSE_PROJECT_NAME")
+    if explicit:
+        return explicit
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "0")
+    return f"hermes-plugin-loader-smoke-{worker}-{os.getpid()}"
+
+
+# Resolved once at import. Used by every compose invocation in this file
+# and read by ``_fetch_logs`` / the teardown via the same lookup.
+COMPOSE_PROJECT = _compose_project_name()
+
+
+def _compose_cmd(*args: str) -> list[str]:
+    """Build a ``docker compose -f <file> -p <project> ...`` argv list.
+
+    Centralised so every invocation hits the same isolated project — a
+    bare ``docker compose`` call against the default project here would
+    talk to a different stack than the test fixture's ``up`` did, which
+    is exactly the bug pattern this helper exists to prevent.
+    """
+    return ["docker", "compose", "-f", COMPOSE_FILE, "-p", COMPOSE_PROJECT, *args]
+
 
 # Upstream PluginManager log strings we grep for. These come from
 # ``hermes-agent/hermes_cli/plugins.py``:
@@ -100,15 +152,29 @@ LOG_PATTERN_SKIP_NOT_ENABLED = "Skipping 'disk-cleanup' (not in plugins.enabled)
 LOG_PATTERN_LOAD_FAILED = "Failed to load plugin 'disk-cleanup'"
 
 
+_DOCKER_AVAILABLE_CACHE: bool | None = None
+
+
 def _docker_available() -> bool:
     """True iff a docker daemon is reachable AND ``docker compose`` works.
 
-    Probed at module import via ``docker info`` (cheaper than `docker ps`
-    and the canonical "is the daemon up" check). We additionally verify
-    ``docker compose version`` to catch the case where ``docker`` is on
-    PATH but the Compose v2 plugin isn't (some minimal CI images).
+    Probed lazily (first call only) via ``docker info`` (cheaper than
+    `docker ps` and the canonical "is the daemon up" check). We
+    additionally verify ``docker compose version`` to catch the case
+    where ``docker`` is on PATH but the Compose v2 plugin isn't (some
+    minimal CI images).
+
+    Cached so ``pytest --collect-only`` and parametrized collection both
+    pay the ~50 ms probe cost at most once per process — the previous
+    eager-at-import call ran twice for every collect (once per skipif
+    evaluation) and slowed unrelated test runs that only happened to
+    import this module's marks.
     """
+    global _DOCKER_AVAILABLE_CACHE
+    if _DOCKER_AVAILABLE_CACHE is not None:
+        return _DOCKER_AVAILABLE_CACHE
     if shutil.which("docker") is None:
+        _DOCKER_AVAILABLE_CACHE = False
         return False
     try:
         info = subprocess.run(
@@ -118,6 +184,7 @@ def _docker_available() -> bool:
             check=False,
         )
         if info.returncode != 0:
+            _DOCKER_AVAILABLE_CACHE = False
             return False
         ver = subprocess.run(
             ["docker", "compose", "version"],
@@ -125,21 +192,19 @@ def _docker_available() -> bool:
             timeout=5,
             check=False,
         )
-        return ver.returncode == 0
+        _DOCKER_AVAILABLE_CACHE = ver.returncode == 0
+        return _DOCKER_AVAILABLE_CACHE
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        _DOCKER_AVAILABLE_CACHE = False
         return False
 
 
-# Module-level skip: when no docker available, none of the tests in this
-# module can run. Collect-only still works. CI's integration job that
-# starts the docker daemon will run them.
+# Module-level marks. The docker-availability skip is deferred to the
+# fixture (collect-only does not call into the daemon), so
+# ``pytest --collect-only`` stays fast on hosts without docker.
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.docker,
-    pytest.mark.skipif(
-        not _docker_available(),
-        reason="docker daemon and/or `docker compose` CLI not available on this host",
-    ),
 ]
 
 
@@ -162,23 +227,25 @@ def hermes_container():
     prior ``docker compose up`` (potentially with a different image
     build, an older cli-config.yaml bind, or a stale plugin allowlist)
     cannot mask a real loader regression.
+
+    Project isolation: every compose call here runs against
+    ``COMPOSE_PROJECT`` (see ``_compose_project_name``). This is the
+    load-bearing primitive that lets the teardown safely use ``down -v
+    --remove-orphans`` — the volumes and orphaned containers we tear
+    down only exist inside this disposable project, so we cannot
+    collateral-damage an operator's local hermes stack.
     """
+    # Docker daemon probe is deferred to here (not module-level pytestmark)
+    # so ``pytest --collect-only`` stays fast on hosts without docker.
+    if not _docker_available():
+        pytest.skip("docker daemon and/or `docker compose` CLI not available on this host")
+
     # Up. Long timeout because first-run image pulls (pinned digests in
     # deploy/docker-compose.yml) can be slow on cold caches. The
     # ``--wait`` flag blocks until healthcheck passes — for hermes that
     # implicitly waits past discover_and_load().
     up = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "-f",
-            COMPOSE_FILE,
-            "up",
-            "-d",
-            "--force-recreate",
-            "--wait",
-            SERVICE,
-        ],
+        _compose_cmd("up", "-d", "--force-recreate", "--wait", SERVICE),
         capture_output=True,
         text=True,
         timeout=300,
@@ -189,6 +256,16 @@ def hermes_container():
         # missing-image failure isn't conflated with a plugin-loader
         # regression. Skip rather than fail when compose itself is
         # unhealthy — this test is about the loader, not stack hygiene.
+        # Still attempt teardown on the isolated project so we don't
+        # leave dangling networks/containers behind if `up` failed
+        # mid-create.
+        subprocess.run(
+            _compose_cmd("down", "-v", "--remove-orphans"),
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
         pytest.skip(
             f"docker compose up failed (rc={up.returncode}); not a "
             f"plugin-loader signal.\nstdout:\n{up.stdout}\nstderr:\n{up.stderr}"
@@ -196,19 +273,16 @@ def hermes_container():
     try:
         yield
     finally:
-        # Stop only the hermes service. We deliberately do NOT ``down -v``
-        # the full stack because:
-        #   * dependent services (otel-collector, github-mcp, etc.) were
-        #     already running on this host — tearing them down here would
-        #     be a side effect the test should not have.
-        #   * ``-v`` on a per-service down removes the named volumes
-        #     ``hermes-data`` is attached to, which other long-running
-        #     local services (escalation-watcher, snapshot-watchdog,
-        #     budget-watchdog) also mount.
-        # Plugin-loader state lives in the container process, not on
-        # disk, so a plain ``stop`` is sufficient cleanup.
+        # Full teardown of the isolated project. ``down -v
+        # --remove-orphans`` is safe here precisely because COMPOSE_PROJECT
+        # is unique per-process (see _compose_project_name): the only
+        # volumes / orphan containers it can touch are the ones this
+        # fixture created. Without that isolation we would risk wiping
+        # the operator's ``hermes-data`` volume and other long-running
+        # local services that share it. ``stop`` alone leaks the
+        # compose-managed networks and named volumes across CI re-runs.
         subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE, "stop", SERVICE],
+            _compose_cmd("down", "-v", "--remove-orphans"),
             capture_output=True,
             text=True,
             timeout=60,
@@ -219,7 +293,7 @@ def hermes_container():
 def _fetch_logs() -> str:
     """Return the current hermes container stdout+stderr."""
     result = subprocess.run(
-        ["docker", "compose", "-f", COMPOSE_FILE, "logs", "--no-color", SERVICE],
+        _compose_cmd("logs", "--no-color", SERVICE),
         capture_output=True,
         text=True,
         timeout=15,
@@ -238,7 +312,13 @@ def test_disk_cleanup_plugin_loads_in_real_hermes_container(hermes_container):
     # Wait for plugin discovery to finish. Discovery runs at hermes
     # startup (``gateway run`` -> import-time hooks); the INFO summary
     # line is the canonical "loader fully exited" signal.
-    deadline = time.time() + 90
+    #
+    # ``--wait`` in the fixture already gated readiness via healthcheck,
+    # which transitively waits past ``discover_and_load()``. The poll
+    # here is belt-and-braces against docker's json-file log driver
+    # buffering the discovery line behind the healthcheck flip — a
+    # ~10 s ceiling is plenty for that flush.
+    deadline = time.time() + 10
     logs = ""
     discovered = False
     while time.time() < deadline:
@@ -246,16 +326,17 @@ def test_disk_cleanup_plugin_loads_in_real_hermes_container(hermes_container):
         if LOG_PATTERN_DISCOVERY_DONE in logs:
             discovered = True
             break
-        time.sleep(2)
+        time.sleep(1)
 
     # Trim noisy tail for assertion messages — full logs are still
     # printed by pytest's captured-output when the test fails.
     tail = logs[-4000:]
 
     assert discovered, (
-        f"hermes did not emit '{LOG_PATTERN_DISCOVERY_DONE}' within 90 s. "
-        "Either the container failed to start, or PluginManager.discover_and_load "
-        f"never ran. Last 4 KB of logs:\n{tail}"
+        f"hermes did not emit '{LOG_PATTERN_DISCOVERY_DONE}' within 10 s "
+        "after healthcheck reported ready. Either the container failed "
+        "to start, PluginManager.discover_and_load never ran, or the "
+        f"json-file log driver is dropping output. Last 4 KB of logs:\n{tail}"
     )
 
     # Positive: the loader actually called _load_plugin(disk-cleanup).
@@ -305,18 +386,7 @@ def test_disk_cleanup_appears_in_hermes_plugins_list(hermes_container):
     "subcommand changed" message rather than a cryptic assertion error.
     """
     result = subprocess.run(
-        [
-            "docker",
-            "compose",
-            "-f",
-            COMPOSE_FILE,
-            "exec",
-            "-T",
-            SERVICE,
-            "hermes",
-            "plugins",
-            "list",
-        ],
+        _compose_cmd("exec", "-T", SERVICE, "hermes", "plugins", "list"),
         capture_output=True,
         text=True,
         timeout=30,

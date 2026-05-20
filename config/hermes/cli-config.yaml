@@ -117,6 +117,7 @@ plugins:
     - memory         # P1-4 /forget + /rejections slash commands
     - kanban         # P1-5 Kanban -> Telegram bridge
     - observability  # OTel SDK init + turn.start/tool.dispatch/model.call spans (Phase 1 acceptance step 4)
+    - disk-cleanup   # P2-7 session hygiene — bundled hermes-agent/plugins/disk-cleanup; post_tool_call + on_session_end hooks auto-clean ephemeral test/temp files under HERMES_HOME (audit P2-7)
 
 # Overrides default 4 AM daily reset to preserve context for long-running autonomous goals.
 session_reset:

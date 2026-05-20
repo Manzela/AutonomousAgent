@@ -271,12 +271,14 @@ jobs:
           echo "[deploy] Pulling new images..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
 
-          echo "[deploy] Restarting compose stack..."
-          # --remove-orphans can fail on stale container IDs (manual removes or chaos tests);
-          # suppress its error since the smoke check is the authoritative gate.
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" up -d --quiet-pull 2>&1 || true
-          # Give slow-start containers (snapshot-watchdog et al.) extra time.
-          sleep 5
+          echo "[deploy] Stopping existing stack for clean restart..."
+          # docker compose down ensures stale container references are cleared.
+          # Containers with --remove-orphans or manual kills can leave IDs that
+          # docker compose up refuses to replace without a clean down first.
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" down --timeout 30 2>&1 || true
+
+          echo "[deploy] Starting compose stack..."
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" up -d --quiet-pull
 
           echo "[deploy] Waiting 15 s for containers to initialise..."
           sleep 15

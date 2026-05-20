@@ -145,12 +145,13 @@ Items are tagged **P0** (do first) → **P2** (nice-to-have).
 
 ### P2 — Useful, but defer until P0/P1 land
 
-#### J8 — A2A research spike (scoping only, no impl)
+#### J8 — A2A research spike (scoping only, no impl) — **CLOSED 2026-05-20**
 
+- **Status:** Memo delivered at `j8-a2a-memo.md`. **Outcome: NO**, do not wire Google A2A. Critical finding: the upstream `hermes-agent/acp_adapter/` is Zed's Agent Client Protocol (IDE integration), **not** Google's Agent-to-Agent peer protocol — the audit's earlier "70% capability" claim is retracted. No ADR-0007 written (per spec: ADR optional, outcome was "no").
 - **What:** 2-day timeboxed read of `hermes-agent/acp_adapter/` upstream code + the public A2A spec. Output: a 1-page memo answering "Is A2A worth wiring at all for a single-agent system?" — **decision artifact, no code.**
 - **Why:** Component 8 says A2A is "not yet" — but the research doc never asks whether a *single-agent* wrapper should adopt a peer-to-peer protocol at all. The memo settles the question before any implementation effort.
 - **Where:** `hermes-agent/acp_adapter/` (read), new `docs/decisions/0007-a2a-adoption.md` (write — optional, only if outcome is "yes").
-- **Effort:** **2 days max** (hard timebox).
+- **Effort:** **2 days max** (hard timebox). **Actual:** ~3 hours including disambiguation evidence-gathering.
 
 #### J9 — Context-usage gauge → soft escalation
 
@@ -183,7 +184,7 @@ Listed for completeness. Only execute if user explicitly chooses to supersede AD
 | P1 | **F4.** GRPO-trained Hierarchical Memory Manager (Component 3) — learned STORE/RETRIEVE/UPDATE/SUMMARIZE/DISCARD per Yu 2026 | Rewrite `hermes-agent/agent/curator.py` + new `lib/memory/manager.py` | **2–4 months** | F1 |
 | P1 | **F5.** RLFA Free Agent lifecycle (Component 5) — Active/Warning/Benched/Probation/Replaced state machine | New `lib/rlfa/` | **1–2 months** | F2 |
 | P1 | **F6.** Multi-project consensus core (Component 6) — read-only core layer, namespace ACLs, write-ahead log, promotion quorum | New `lib/memory/consensus/`, schema migrations on SQLite | **2–3 months** | None (could land independently, but value depends on multi-agent context) |
-| P2 | **F7.** A2A protocol stack (Component 8 second half) — agent cards, peer discovery, RPC envelope | New `lib/a2a/`, alongside existing `hermes-agent/acp_adapter/` | **1–2 months** | J8 memo decides go/no-go |
+| P2 | **F7.** A2A protocol stack (Component 8 second half) — agent cards, peer discovery, RPC envelope. **NB:** `hermes-agent/acp_adapter/` is Zed's IDE protocol (`agent-client-protocol` pkg), not Google A2A — does NOT reduce this scope. | New `lib/a2a/` (greenfield); ACP adapter unaffected | **1–2 months** (standalone, no reuse) | J8 memo (2026-05-20) recommends **defer indefinitely**; reopen only on multi-agent roadmap trigger |
 | P2 | **F8.** gVisor / Firecracker / WASM tiers in sandbox router (Component 9 second half) | `deploy/sandboxes/`, `lib/toolset_router.py`, new tier configs | **1–2 months per tier** | None |
 | P2 | **F9.** Full Metacognitive Governor module (Component 7) as a stateful service, not failure-matrix extension | New `lib/metacognition/` | **2–3 months** | F2 (needs expert-swap action) |
 
@@ -260,7 +261,7 @@ Three parallel `Explore` subagents + a local read of `config/hermes/{MEMORY,USER
 | Item | Pass 1 | Pass 2 | Reason |
 |---|---|---|---|
 | **H2** (reconcile research doc with ADR-0005) | P0 hygiene | **P0 hygiene — now load-bearing** | `docs/spec/phase2.md:1-22,492-510` explicitly declares Phase 2 is system-of-record and excludes every Framing #2 J-item from scope. H2's reconciliation ADR is the *vehicle* by which Framing #2 items become approvable. Without it, J1-J10 have no sanctioning authority. |
-| **J8** (A2A research spike) | P2, 2-day timebox, decision artifact only | **Promote to P1 if user picks Framing #2** | Upstream `hermes-agent/acp_adapter/` is **~70% of A2A capability**: full ACP v2 server in `server.py:445`, 55K of tool dispatch in `tools.py`, session lifecycle in `session.py`. Missing piece is just an ACP **client** to call peer agents. Spike narrows from "should we?" to "how do we bolt a client onto the existing server?". |
+| **J8** (A2A research spike) | P2, 2-day timebox, decision artifact only | **Closed 2026-05-20 — outcome: NO** (see `j8-a2a-memo.md`) | Memo found: ACP (Zed's `agent-client-protocol` pkg, for IDE integration) ≠ Google A2A (peer-agent protocol). The Pass-2 "~70% of A2A capability" claim **conflated two protocols** and is retracted; `acp_adapter/` contributes 0% A2A surface area. F7 (A2A protocol stack) effort estimate stands as standalone, not a reduction. |
 | **J4** (loop + stall detection) | 4-6 days | **3 days** | Failure matrix pattern is well-established with CI guards (`tests/unit/test_handlers.py::test_all_33_codes_dispatch_to_callable`). Adding F-LOOP + F-STALL is "follow the 4-step pattern", not "build infra". Caveat: **read F25 ("Clarification loop max") handler before adding F-LOOP** — F25 might already partially cover it. |
 
 ### Demotions / scope reductions

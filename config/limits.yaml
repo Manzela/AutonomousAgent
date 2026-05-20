@@ -192,3 +192,15 @@ kanban:
   db_path: /home/hermes/.hermes/kanban.db
   notification_rate_limit_per_minute: 6
   use_hermes_status_names: true   # accept Hermes' enum, don't fork
+
+# Tamper-evident pins for files that change agent behaviour silently.
+# Enforced by:
+#   - tests/unit/test_soul_md_integrity.py   (fast local fail)
+#   - .github/workflows/ci.yml soul-md-integrity job (PR gate)
+# If you intentionally edit a pinned file, recompute the hash in the SAME
+# commit (`shasum -a 256 <file> | awk '{print $1}'`) and update the value
+# below. Drift = audit P2 #36 escalation.
+integrity:
+  # The value below is a SHA-256 digest, not a credential. detect-secrets
+  # flags it as a high-entropy string; the inline pragma silences that.
+  soul_md_sha256: c642f9ce5aa80e380086d8177af77d7422405ebadfc45c22b4c683c138fc7919  # pragma: allowlist secret

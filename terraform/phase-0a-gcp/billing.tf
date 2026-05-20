@@ -1,7 +1,9 @@
 # Phase 0a — Billing budget alert for project i-for-ai (AC-10).
 #
-# Budget: $125/mo (Phase 0a estimate; ±20% tolerance = $100-$150 range).
-# Alert thresholds: 80% ($100) and 100% ($125) of budget.
+# Budget: $7,750/mo (~$250/day × 31 days).
+# GCP billing budgets are calendar-month scoped — no native daily period.
+# $250/day cap is approximated as a monthly ceiling.
+# Alert thresholds: 25% (~$63/day), 50% (~$125/day), 75%, 100%.
 #
 # Scoped to project i-for-ai to avoid cross-project noise on this shared
 # billing account. Notification emails go to the same channel as monitoring.
@@ -14,18 +16,28 @@ resource "google_billing_budget" "autonomousagent" {
   display_name    = "autonomousagent-phase-0a"
 
   budget_filter {
-    projects = ["projects/${var.project_id}"]
+    projects = ["projects/85113401879"]
   }
 
   amount {
     specified_amount {
       currency_code = "USD"
-      units         = "125"
+      units         = "7750"
     }
   }
 
   threshold_rules {
-    threshold_percent = 0.8
+    threshold_percent = 0.25
+    spend_basis       = "CURRENT_SPEND"
+  }
+
+  threshold_rules {
+    threshold_percent = 0.50
+    spend_basis       = "CURRENT_SPEND"
+  }
+
+  threshold_rules {
+    threshold_percent = 0.75
     spend_basis       = "CURRENT_SPEND"
   }
 

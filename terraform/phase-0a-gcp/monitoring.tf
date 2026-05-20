@@ -84,7 +84,7 @@ resource "google_monitoring_alert_policy" "vm_down" {
   conditions {
     display_name = "VM not running"
     condition_threshold {
-      filter          = "metric.type=\"compute.googleapis.com/instance/uptime\" resource.type=\"gce_instance\" resource.label.\"instance_name\"=\"autonomousagent-vm\""
+      filter          = "metric.type=\"compute.googleapis.com/instance/uptime\" resource.type=\"gce_instance\" metadata.system_labels.name=\"autonomousagent-vm\""
       comparison      = "COMPARISON_LT"
       threshold_value = 1
       duration        = "300s"

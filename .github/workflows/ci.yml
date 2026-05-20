@@ -476,13 +476,20 @@ jobs:
               )
               sys.exit(2)
           ')"
-          actual="$(sha256sum config/hermes/SOUL.md | awk '{print $1}')"
+          # `shasum -a 256` works on macOS and Linux; `sha256sum` is
+          # Linux-only. Keep the same tool everywhere (YAML comment,
+          # update script, CI) so contributors don't get conflicting
+          # remediation snippets — see CONTRIBUTING.md "Updating pinned
+          # hashes (SOUL.md)".
+          actual="$(shasum -a 256 config/hermes/SOUL.md | awk '{print $1}')"
           echo "pinned: ${pinned}"
           echo "actual: ${actual}"
           if [ "${pinned}" != "${actual}" ]; then
             msg="SOUL.md sha256 drift detected. pinned=${pinned} actual=${actual}."
-            msg="${msg} If you intentionally changed SOUL.md, update"
-            msg="${msg} integrity.soul_md_sha256 in config/limits.yaml in the same commit."
+            msg="${msg} If you intentionally changed SOUL.md, run"
+            msg="${msg} ./scripts/update_soul_pin.sh and commit the resulting"
+            msg="${msg} config/limits.yaml diff in the SAME commit as your"
+            msg="${msg} SOUL.md edit (see CONTRIBUTING.md)."
             echo "::error file=config/hermes/SOUL.md::${msg}"
             exit 1
           fi

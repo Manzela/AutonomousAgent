@@ -211,15 +211,19 @@ jobs:
           # credentials_file is used by gcloud for subsequent calls (SSH, gsutil)
           create_credentials_file: true
 
+      # Install a current gcloud SDK — the runner's pre-installed gcloud has a
+      # bug (quote_from_bytes() TypeError) when calling gcloud compute ssh via
+      # IAP on some runner image versions.
+      - name: Install gcloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+
       - name: Set up gcloud CLI
-        # The auth action installs gcloud automatically when create_credentials_file
-        # is true. Explicitly activate the service account credentials so all
-        # subsequent gcloud/gsutil calls use the CI SA, not ADC from the runner.
         run: |
           gcloud config set project "$GCP_PROJECT"
           gcloud config set compute/zone "$GCP_ZONE"
           gcloud config set compute/region "$GCP_REGION"
-          # Verify auth is working before attempting SSH
           gcloud auth list
 
       # ------------------------------------------------------------------

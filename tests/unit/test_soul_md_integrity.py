@@ -20,11 +20,15 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
 import yaml
+
+from lib.limits_validator import validate
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOUL_MD = REPO_ROOT / "config" / "hermes" / "SOUL.md"
 LIMITS_YAML = REPO_ROOT / "config" / "limits.yaml"
+LIMITS_SCHEMA = REPO_ROOT / "config" / "limits-schema.json"
 
 
 def _pinned_sha256() -> str:
@@ -75,3 +79,95 @@ def test_pinned_sha256_is_well_formed_hex():
     assert isinstance(pin, str), f"pin must be a string, got {type(pin).__name__}"
     assert len(pin) == 64, f"sha256 hex must be 64 chars, got {len(pin)}"
     int(pin, 16)  # raises ValueError if not pure hex
+
+
+# ---------------------------------------------------------------------------
+# Schema-pattern regression coverage.
+#
+# `test_pinned_sha256_is_well_formed_hex` (above) validates the *value*
+# in our shipped config. The cases below pin down the *schema* itself:
+# they drive bad values through `lib.limits_validator.validate` and
+# assert each is rejected with a `soul_md_sha256`-shaped error.
+#
+# If a future schema edit loosens the pattern (e.g. drops the `^...$`
+# anchors, or accepts uppercase hex) any of the cases below will start
+# passing schema validation and the test will fail. That's the point.
+# ---------------------------------------------------------------------------
+
+# (description, bad-pin-value, expected-substring-in-error)
+_INVALID_SHA256_CASES = [
+    pytest.param(
+        "A" * 64,
+        id="uppercase_hex",
+    ),
+    pytest.param(
+        "a" * 63,
+        id="too_short_63",
+    ),
+    pytest.param(
+        "a" * 65,
+        id="too_long_65",
+    ),
+    pytest.param(
+        "0x" + "a" * 62,
+        id="0x_prefixed",
+    ),
+    pytest.param(
+        "z" * 64,
+        id="non_hex_chars",
+    ),
+    pytest.param(
+        " " + "a" * 64,
+        id="leading_whitespace_breaks_anchor",
+    ),
+    pytest.param(
+        "a" * 64 + " ",
+        id="trailing_whitespace_breaks_anchor",
+    ),
+    pytest.param(
+        "aBcD" + "0" * 60,
+        id="mixed_case_hex",
+    ),
+]
+
+
+@pytest.mark.parametrize("bad_pin", _INVALID_SHA256_CASES)
+def test_schema_rejects_invalid_sha256(tmp_path, bad_pin):
+    """The `^[0-9a-f]{64}$` pattern must reject malformed pins.
+
+    Drives each invalid value through the real limits-schema via
+    `lib.limits_validator.validate`. The assertion looks for an error
+    whose path mentions `soul_md_sha256` — the line/section that
+    failed — which proves the pattern fired (rather than some other
+    schema rule).
+    """
+    cfg = yaml.safe_load(LIMITS_YAML.read_text())
+    cfg["integrity"]["soul_md_sha256"] = bad_pin
+    bad_path = tmp_path / "limits-bad.yaml"
+    bad_path.write_text(yaml.dump(cfg))
+
+    errors = validate(bad_path, LIMITS_SCHEMA)
+    assert errors, f"schema accepted invalid sha256 pin: {bad_pin!r}"
+    # The validator emits errors keyed by `<path>: <message>`; the path
+    # for this pattern violation is `integrity/soul_md_sha256`.
+    assert any(
+        "soul_md_sha256" in e for e in errors
+    ), f"expected a soul_md_sha256 error for {bad_pin!r}, got: {errors}"
+
+
+def test_schema_accepts_valid_lowercase_64_hex(tmp_path):
+    """Positive control: a well-formed pin must still validate.
+
+    Without this, a regression that broke every pattern would also make
+    `test_schema_rejects_invalid_sha256` pass vacuously.
+    """
+    cfg = yaml.safe_load(LIMITS_YAML.read_text())
+    # 64 lowercase hex chars, distinct from the real pin to make it
+    # obvious this is a fixture, not the shipped value.
+    cfg["integrity"]["soul_md_sha256"] = "0" * 63 + "f"
+    good_path = tmp_path / "limits-good.yaml"
+    good_path.write_text(yaml.dump(cfg))
+
+    errors = validate(good_path, LIMITS_SCHEMA)
+    soul_errors = [e for e in errors if "soul_md_sha256" in e]
+    assert soul_errors == [], f"valid sha256 pin rejected by schema: {soul_errors}"

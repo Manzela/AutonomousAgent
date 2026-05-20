@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import List, Tuple
 
+from lib.scrubber import scrub_string
+
 logger = logging.getLogger(__name__)
 
 # Default Kanban DB path. The container runs as user `hermes` (uid 1000)
@@ -64,8 +66,15 @@ def emit_escalation(card_id: int, title: str, age_h: float) -> None:
     care about side channels (e.g. ``find_stale_blocked_cards`` used
     standalone).
     """
+    # P2 #34: scrub the card title before interpolating it into any
+    # outbound payload. Kanban card titles are operator-supplied (or
+    # derived from inbound Telegram messages) and may carry pasted
+    # secrets — both the Telegram primary channel and the GitHub Issues
+    # fallback retain messages indefinitely. Scrub once here so both
+    # downstream sites see a clean string.
+    safe_title = scrub_string(title, source="escalation_title")
     msg = (
-        f"⚠️ Card {card_id} '{title}' blocked >24h ({age_h:.1f}h). "
+        f"⚠️ Card {card_id} '{safe_title}' blocked >24h ({age_h:.1f}h). "
         f"Use `/resume {card_id}` or `/cancel {card_id}`."
     )
 
@@ -98,7 +107,7 @@ def emit_escalation(card_id: int, title: str, age_h: float) -> None:
 
         open_incident_issue(
             card_id=card_id,
-            title=f"[F32] Card {card_id} blocked >{int(age_h)}h ({title})",
+            title=f"[F32] Card {card_id} blocked >{int(age_h)}h ({safe_title})",
             body=msg,
         )
     except Exception as exc:  # noqa: BLE001 — fallback must also fail-open

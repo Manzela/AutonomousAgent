@@ -28,11 +28,14 @@ services:
   shell-sandbox:
     image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/shell-sandbox:0.1.0
     logging: *gcplogs
+  # Use prod otel config (not dev) on GCP; path resolves to /opt/hermes/bootstrap/otel/
+  otel-collector:
+    volumes:
+      - ./otel/collector.prod.yaml:/etc/otelcol-contrib/config.yaml:ro
+    logging: *gcplogs
   litellm-db:
     logging: *gcplogs
   litellm-proxy:
-    logging: *gcplogs
-  otel-collector:
     logging: *gcplogs
   phoenix:
     logging: *gcplogs

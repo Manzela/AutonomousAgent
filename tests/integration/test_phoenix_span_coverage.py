@@ -234,6 +234,106 @@ def test_short_turn_emits_both_llm_and_tool_spans_with_openinference_attrs(
     assert llm_attrs.get("llm.api_duration_ms") == 420
 
 
+# ----------------------------------------------------------------------
+# Reasoning audit-trail (#33) — llm.reasoning span attribute
+# ----------------------------------------------------------------------
+
+
+def test_model_call_emits_llm_reasoning_when_response_carries_reasoning_field(
+    in_memory_tracer,
+):
+    """When the LiteLLM/Anthropic response carries a ``reasoning`` field
+    (chain-of-thought / extended-thinking text), the ``model.call`` span
+    MUST surface it as the OpenInference ``llm.reasoning`` attribute so
+    the reasoning is captured in the Phoenix audit trail — Hermes audit
+    checklist item #27 (`display.show_reasoning: true` companion)."""
+
+    from lib.observability import register
+
+    ctx = _FakeHermesContext()
+    register(ctx)
+
+    sid = "sess-reasoning-present"
+
+    class _RespWithReasoning:
+        """LiteLLM ``Message``-style object carrying a ``reasoning`` attr —
+        mirrors the shape Anthropic extended-thinking responses surface
+        on ``message.reasoning_content`` / ``message.reasoning``."""
+
+        content = "Final answer: 42"
+        reasoning = "Step 1: identify the question. Step 2: compute. Step 3: 42."
+
+        def __str__(self) -> str:  # _safe_str path for output.value
+            return self.content
+
+    ctx.invoke("pre_llm_call", session_id=sid, user_message="why", model="m")
+    ctx.invoke("post_llm_call", session_id=sid, assistant_response=_RespWithReasoning())
+
+    spans = list(in_memory_tracer.get_finished_spans())
+    model_calls = [s for s in spans if s.name == "model.call"]
+    assert len(model_calls) == 1
+    attrs = _attrs(model_calls[0])
+    assert attrs.get("llm.reasoning") == (
+        "Step 1: identify the question. Step 2: compute. Step 3: 42."
+    )
+
+
+def test_model_call_emits_llm_reasoning_when_response_is_dict_with_reasoning_key(
+    in_memory_tracer,
+):
+    """Same as above but for the dict-shaped response path — LiteLLM also
+    surfaces reasoning as ``{"reasoning": "..."}`` for some providers /
+    proxy paths. Both attribute access and dict-key access must work."""
+
+    from lib.observability import register
+
+    ctx = _FakeHermesContext()
+    register(ctx)
+
+    sid = "sess-reasoning-dict"
+    response = {
+        "content": "Final answer: 42",
+        "reasoning": "dict-style reasoning text",
+    }
+
+    ctx.invoke("pre_llm_call", session_id=sid, user_message="why", model="m")
+    ctx.invoke("post_llm_call", session_id=sid, assistant_response=response)
+
+    spans = list(in_memory_tracer.get_finished_spans())
+    model_calls = [s for s in spans if s.name == "model.call"]
+    assert len(model_calls) == 1
+    attrs = _attrs(model_calls[0])
+    assert attrs.get("llm.reasoning") == "dict-style reasoning text"
+
+
+def test_model_call_omits_llm_reasoning_when_response_has_no_reasoning(
+    in_memory_tracer,
+):
+    """When the response lacks a reasoning field, the span MUST still
+    emit successfully and MUST NOT carry an ``llm.reasoning`` attribute —
+    the absence is the signal that the model produced no chain-of-thought
+    output, not a span-emission failure."""
+
+    from lib.observability import register
+
+    ctx = _FakeHermesContext()
+    register(ctx)
+
+    sid = "sess-reasoning-absent"
+    # Plain string response — the common case for non-reasoning models
+    ctx.invoke("pre_llm_call", session_id=sid, user_message="ping", model="m")
+    ctx.invoke("post_llm_call", session_id=sid, assistant_response="pong")
+
+    spans = list(in_memory_tracer.get_finished_spans())
+    model_calls = [s for s in spans if s.name == "model.call"]
+    assert len(model_calls) == 1
+    attrs = _attrs(model_calls[0])
+    # Span still emits with output content (no regression)
+    assert attrs.get("output.value") == "pong"
+    # Reasoning attribute is absent — not present-with-empty-string
+    assert "llm.reasoning" not in attrs
+
+
 def test_short_turn_cleans_up_module_state(in_memory_tracer):
     """After a complete turn, the per-session bookkeeping in
     ``lib.observability`` must be empty — otherwise a long-running agent

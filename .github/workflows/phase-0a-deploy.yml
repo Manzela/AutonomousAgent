@@ -251,16 +251,17 @@ jobs:
             << 'REMOTE_SCRIPT'
           set -euo pipefail
 
-          DEPLOY_DIR="/opt/autonomousagent"
-          COMPOSE_FILE="${DEPLOY_DIR}/deploy/docker-compose.yml"
-          AR_REPO="us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images"
+          # Bootstrap lives at /opt/hermes/bootstrap/ on the VM.
+          # Compose files: docker-compose.yml + docker-compose.gcp.override.yml
+          BOOTSTRAP_DIR="/opt/hermes/bootstrap"
+          COMPOSE_BASE="${BOOTSTRAP_DIR}/docker-compose.yml"
+          COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
           BOOTSTRAP_TARBALL="gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz"
           EXPECTED_CONTAINERS=10
 
           echo "[deploy] Refreshing bootstrap tarball from GCS..."
           gsutil -q cp "${BOOTSTRAP_TARBALL}" /tmp/hermes-bootstrap.tar.gz
-          tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${DEPLOY_DIR}" --strip-components=1 || \
-            tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${DEPLOY_DIR}"
+          tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${BOOTSTRAP_DIR}" 2>/dev/null
           rm -f /tmp/hermes-bootstrap.tar.gz
           echo "[deploy] Bootstrap tarball extracted."
 
@@ -268,21 +269,22 @@ jobs:
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
           echo "[deploy] Pulling new images..."
-          docker compose -f "${COMPOSE_FILE}" pull --quiet
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
 
           echo "[deploy] Restarting compose stack..."
-          docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --quiet-pull
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" up -d --remove-orphans --quiet-pull
 
           echo "[deploy] Waiting 15 s for containers to initialise..."
           sleep 15
 
           echo "[deploy] Smoke check — counting running containers..."
-          running=$(docker compose -f "${COMPOSE_FILE}" ps --status running --format json \
+          running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+            ps --status running --format json \
             | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
           echo "[deploy] Running containers: ${running} (expected: ${EXPECTED_CONTAINERS})"
           if [ "${running}" -ne "${EXPECTED_CONTAINERS}" ]; then
             echo "[deploy] ERROR: expected ${EXPECTED_CONTAINERS} containers, got ${running}." >&2
-            docker compose -f "${COMPOSE_FILE}" ps >&2
+            docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" ps >&2
             exit 1
           fi
           echo "[deploy] Smoke check passed."

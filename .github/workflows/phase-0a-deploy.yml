@@ -271,11 +271,12 @@ jobs:
           echo "[deploy] Pulling new images..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
 
-          echo "[deploy] Stopping existing stack for clean restart..."
-          # docker compose down ensures stale container references are cleared.
-          # Containers with --remove-orphans or manual kills can leave IDs that
-          # docker compose up refuses to replace without a clean down first.
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" down --timeout 30 2>&1 || true
+          echo "[deploy] Stopping containers (preserving networks)..."
+          # stop + rm clears stale container references without tearing down
+          # the Docker networks. compose down would remove networks, causing
+          # "network not found" on the next compose up.
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" stop --timeout 30 2>&1 || true
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" rm -f 2>&1 || true
 
           echo "[deploy] Starting compose stack..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" up -d --quiet-pull

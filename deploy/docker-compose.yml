@@ -308,6 +308,27 @@ services:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
     command: ["gateway", "run"]
+    # Docker CIS 5.x baseline (P2 #20). Mirrors shell-sandbox's hardening:
+    #   - cap_drop: [ALL]                  → drop every Linux capability
+    #   - security_opt: no-new-privileges  → block setuid escalation
+    #   - read_only: true                  → root fs immutable; writes only
+    #     allowed through explicit volume mounts or tmpfs below
+    # All hermes write paths are covered by named volumes:
+    #   /data                       → hermes-data
+    #   /home/hermes/.hermes        → hermes-data (state.db, sessions/,
+    #                                 kanban/kanban.db, plugins/, .healthprobe)
+    # Tmpfs covers everything else POSIX/Python tooling might touch:
+    #   /tmp   (tempfile.mkstemp default, voice plugin if ever enabled, etc.)
+    #   /run   (pidfiles, unix sockets if upstream Hermes ever needs them)
+    # Logs go to stdout (cli-config.yaml `logs.destination: stdout`) so the
+    # docker json-file driver captures them; no /var/log write needed.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      - /run:size=64m,mode=1777
     environment:
       HERMES_CONFIG: /app/config/cli-config.yaml
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key

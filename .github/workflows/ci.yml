@@ -4,13 +4,14 @@
 # where possible and fail loudly with actionable error messages.
 #
 # Matrix (kept minimal to conserve Actions minutes across the account):
-#   - lint-python      (ruff + ruff-format)        — Python style + format
-#   - lint-shell       (shellcheck)                — Bash strict-mode + quoting
-#   - lint-yaml        (yamllint)                  — YAML well-formedness
-#   - lint-dockerfile  (hadolint)                  — Dockerfile best practices
-#   - unit-tests       (pytest)                    — Unit test suite
-#   - validate-config  (limits_validator)          — limits.yaml schema validity
-#   - validate-compose (docker compose config)     — Compose render check
+#   - lint-python        (ruff + ruff-format)         — Python style + format
+#   - lint-shell         (shellcheck)                 — Bash strict-mode + quoting
+#   - lint-yaml          (yamllint)                   — YAML well-formedness
+#   - lint-dockerfile    (hadolint)                   — Dockerfile best practices
+#   - enforce-sha-pinning (check-sha-pinning.sh)      — Workflow supply-chain hygiene
+#   - unit-tests         (pytest)                     — Unit test suite
+#   - validate-config    (limits_validator)           — limits.yaml schema validity
+#   - validate-compose   (docker compose config)      — Compose render check
 #
 # Each job is independent and can be re-run individually from the GitHub UI.
 # Markdown lint, CodeQL, and Dependency Review were removed — the first was
@@ -171,6 +172,39 @@ jobs:
           dockerfile: deploy/sandboxes/Dockerfile.shell-sandbox
           ignore: DL3008,DL3009,DL3015
         continue-on-error: true
+
+  # ------------------------------------------------------------------
+  # Enforce SHA-pinning on every third-party Action used by workflows.
+  # Closes audit Task 24 (Wave-3 P2 follow-up). Companion to the
+  # repo-level `allowed_actions=selected` policy described in
+  # docs/runbooks/allowed-actions-restriction.md — that policy gates
+  # *which* actions may run; this check gates *how* they are
+  # referenced. Both layers exist because a tag-pinned action drawn
+  # from the patterns_allowed list still satisfies the API-side
+  # selected-actions filter but undermines supply-chain immutability.
+  #
+  # Rationale (industry standards):
+  #   - OpenSSF Scorecard "pinned-dependencies" check
+  #   - OWASP CICD-SEC-05 (Insufficient Pipeline-Based Access Controls)
+  #   - SLSA L2 (Build Provenance — pinning is a prerequisite)
+  #
+  # Pure-bash, no third-party tool dependency. Runs in seconds.
+  # ------------------------------------------------------------------
+  enforce-sha-pinning:
+    name: Enforce Action SHA-pinning
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false  # Hermes submodule not relevant for workflow lint
+
+      - name: Run scripts/check-sha-pinning.sh
+        # Default policy: every uses: reference (including github-owned)
+        # must SHA-pin. Set ALLOW_GITHUB_OWNED_TAGS=1 to relax this for
+        # actions/* and github/* refs — see script header for rationale.
+        run: bash scripts/check-sha-pinning.sh
 
   # ------------------------------------------------------------------
   # Unit tests via pytest

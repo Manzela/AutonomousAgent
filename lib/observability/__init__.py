@@ -411,6 +411,29 @@ def _post_llm_call(
                 "llm.output_messages.0.message.content",
                 _safe_str(assistant_response, _MAX_MSG_CONTENT_LEN * 2),
             )
+            # Audit trail: surface reasoning / chain-of-thought text on the
+            # span (audit item #27, OpenInference llm.reasoning convention).
+            # LiteLLM Anthropic responses expose this on Message.reasoning_content
+            # (and ``reasoning`` on some proxy paths); dict-shaped responses
+            # carry the key verbatim. Guard fully — absence of the field MUST
+            # NOT break the span emission for non-reasoning models.
+            reasoning_text = None
+            try:
+                if isinstance(assistant_response, dict):
+                    reasoning_text = assistant_response.get("reasoning") or assistant_response.get(
+                        "reasoning_content"
+                    )
+                else:
+                    reasoning_text = getattr(assistant_response, "reasoning", None) or getattr(
+                        assistant_response, "reasoning_content", None
+                    )
+            except Exception:  # noqa: BLE001
+                reasoning_text = None
+            if reasoning_text:
+                span.set_attribute(
+                    "llm.reasoning",
+                    _safe_str(reasoning_text, _MAX_MSG_CONTENT_LEN * 2),
+                )
         span.end()
     except Exception as exc:  # noqa: BLE001
         logger.debug("model.call end failed: %s", exc)

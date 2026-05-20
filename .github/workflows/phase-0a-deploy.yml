@@ -284,20 +284,26 @@ jobs:
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
             up -d --quiet-pull || true
 
-          echo "[deploy] Waiting 40 s for containers to initialise..."
-          sleep 40
-
-          echo "[deploy] Smoke check — counting running containers..."
-          running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
-            ps --status running --format json \
-            | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
-          echo "[deploy] Running containers: ${running} (expected: ${EXPECTED_CONTAINERS})"
-          if [ "${running}" -ne "${EXPECTED_CONTAINERS}" ]; then
-            echo "[deploy] ERROR: expected ${EXPECTED_CONTAINERS} containers, got ${running}." >&2
-            docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" ps >&2
-            exit 1
-          fi
-          echo "[deploy] Smoke check passed."
+          echo "[deploy] Smoke check — polling up to 120 s for ${EXPECTED_CONTAINERS} containers..."
+          # snapshot-watchdog depends_on hermes which depends_on litellm-proxy
+          # (healthy) which depends_on litellm-db (healthy). The full chain
+          # takes 60-90 s; a retry loop is more reliable than a fixed sleep.
+          for attempt in $(seq 1 12); do
+            running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+              ps --status running --format json \
+              | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
+            echo "[deploy] t+${attempt}0s: running=${running}/${EXPECTED_CONTAINERS}"
+            if [ "${running}" -ge "${EXPECTED_CONTAINERS}" ]; then
+              echo "[deploy] Smoke check passed."
+              break
+            fi
+            if [ "${attempt}" -eq 12 ]; then
+              echo "[deploy] ERROR: timeout — only ${running}/${EXPECTED_CONTAINERS} containers running." >&2
+              docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" ps >&2
+              exit 1
+            fi
+            sleep 10
+          done
           REMOTE_SCRIPT
 
       - name: Deploy summary

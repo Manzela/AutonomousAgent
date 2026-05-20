@@ -271,15 +271,12 @@ jobs:
           echo "[deploy] Pulling new images..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
 
-          echo "[deploy] Stopping containers (preserving networks)..."
-          # stop + rm clears stale container references without tearing down
-          # the Docker networks. compose down would remove networks, causing
-          # "network not found" on the next compose up.
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" stop --timeout 30 2>&1 || true
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" rm -f 2>&1 || true
-
-          echo "[deploy] Starting compose stack..."
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" up -d --quiet-pull
+          echo "[deploy] Recreating compose stack..."
+          # --force-recreate replaces all containers regardless of image/config
+          # changes, bypassing stale container-reference issues without a
+          # separate stop phase. Networks and volumes are preserved.
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+            up -d --force-recreate --quiet-pull
 
           echo "[deploy] Waiting 15 s for containers to initialise..."
           sleep 15

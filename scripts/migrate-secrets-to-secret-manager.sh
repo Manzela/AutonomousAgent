@@ -15,6 +15,8 @@ set -euo pipefail
 PROJECT_ID="${PROJECT_ID:-i-for-ai}"
 DRY_RUN="${DRY_RUN:-false}"
 SECRETS_DIR="${SECRETS_DIR:-secrets}"
+# Ensure sops can find the Age private key regardless of XDG config resolution
+export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-${HOME}/.config/sops/age/keys.txt}"
 
 if ! command -v sops >/dev/null 2>&1; then
   echo "ERROR: sops not installed. Run: brew install sops" >&2
@@ -39,7 +41,7 @@ for sops_file in "${sops_files[@]}"; do
   # shellcheck disable=SC2064
   trap "rm -f '$tmp'" EXIT
 
-  sops -d "$sops_file" > "$tmp"
+  sops --input-type dotenv --output-type dotenv -d "$sops_file" > "$tmp"
 
   new_hash=$(sha256sum "$tmp" | awk '{print $1}')
 

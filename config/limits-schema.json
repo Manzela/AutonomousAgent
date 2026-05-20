@@ -220,6 +220,51 @@
           "properties": {
             "interval_s": {"type": "integer", "minimum": 60}
           }
+        },
+        "loop_detector": {
+          "type": "object",
+          "required": ["threshold"],
+          "additionalProperties": false,
+          "description": "J4 (Framing #2) F34 / F-LOOP detector. See lib/durability/runtime_detectors.py:LoopDetector.",
+          "properties": {
+            "threshold": {
+              "type": "integer",
+              "minimum": 2,
+              "description": "Consecutive identical-fingerprint tool-calls that fire F34. Matches LoopDetector.__init__ ValueError on threshold < 2."
+            }
+          }
+        },
+        "stall_detector": {
+          "type": "object",
+          "required": ["idle_timeout_s", "check_interval_s"],
+          "additionalProperties": false,
+          "description": "J4 (Framing #2) F35 / F-STALL detector. See lib/durability/runtime_detectors.py:StallDetector.",
+          "properties": {
+            "idle_timeout_s": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Wall-clock idle seconds while task in_progress before F35 fires. Matches StallDetector.__init__ ValueError on idle_timeout_s < 1."
+            },
+            "check_interval_s": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Watchdog cadence — how often the orchestrator polls StallDetector.check() per session."
+            }
+          }
+        },
+        "context_detector": {
+          "type": "object",
+          "required": ["warn_threshold"],
+          "additionalProperties": false,
+          "description": "J9 (Framing #2) F36 / F-CONTEXT detector. See lib/durability/runtime_detectors.py:ContextUsageDetector. Surfaces 'compaction already failed' state — does NOT trigger compaction itself (Hermes' context_compressor handles that at 0.5).",
+          "properties": {
+            "warn_threshold": {
+              "type": "number",
+              "exclusiveMinimum": 0.0,
+              "maximum": 1.0,
+              "description": "prompt_tokens / context_length ratio that fires F36. Matches ContextUsageDetector.__init__ ValueError on warn_threshold outside (0.0, 1.0]."
+            }
+          }
         }
       }
     },

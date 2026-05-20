@@ -33,6 +33,12 @@ model_list:
   # /api/v1/models contract and have been stable for >12 months for the
   # listed flagships. Verify against https://openrouter.ai/models before
   # adjusting; the runbook documents the verification curl.
+  #
+  # Capability step-down: primary aliases pin to the newest point-versions
+  # (claude-opus-4-7, claude-sonnet-4-6, gemini-3.1-pro-preview); OpenRouter
+  # exposes the nearest stable base-version (claude-opus-4, claude-sonnet-4,
+  # gemini-2.5-pro). Expect a quality regression in fallback-served responses
+  # — this is the intended trade-off for an outage-mitigation path.
   - model_name: openrouter/anthropic/claude-opus-4
     litellm_params:
       model: openrouter/anthropic/claude-opus-4

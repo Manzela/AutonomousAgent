@@ -9,7 +9,7 @@ healthy.
 **Owner:** Solo operator (`@Manzela`).
 **Defined:** Wave-4 audit task #35 (closes R3).
 **Source-of-record:** `deploy/litellm/config.yaml` `model_list` +
-`litellm_settings.fallbacks`; `deploy/docker-compose.yml` LiteLLM service
+`router_settings.fallbacks`; `deploy/docker-compose.yml` LiteLLM service
 `env_file` block.
 
 ---
@@ -34,7 +34,17 @@ LiteLLM's router compares the originating model name against the
 504, 529) AFTER the per-call `num_retries: 5` budget is exhausted, it
 re-issues the call against the fallback model with the same prompt.
 There is no prompt translation — both providers serve the same model
-weights, so the request body is portable as-is.
+family weights, so the request body is portable as-is.
+
+**Capability step-down during fallback (expected and acceptable).** The
+primary aliases pin to the newest point-versions (`claude-opus-4-7`,
+`claude-sonnet-4-6`, `gemini-3.1-pro-preview`); OpenRouter exposes the
+nearest stable base-version (`claude-opus-4`, `claude-sonnet-4`,
+`gemini-2.5-pro`). Operators should expect a quality regression in
+fallback-served responses (Opus 4 vs 4.7 is ~2 minor revisions; Gemini
+2.5 vs 3.1-pro-preview is a full major). This is the intended trade-off
+for an outage-mitigation path — keeping the agent unblocked beats
+matching frontier capability during a Vertex degradation.
 
 ---
 
@@ -88,14 +98,16 @@ If any ID differs (e.g. version suffix changed, model deprecated):
 The `.env` file pattern matches the existing `secrets/*.env.sops` convention.
 
 ```bash
-cat > /tmp/openrouter.env <<EOF
+cat > secrets/openrouter.env <<EOF
 OPENROUTER_API_KEY=sk-or-v1-REPLACE_WITH_REAL_KEY
 EOF
 
-sops --encrypt --age "$(cat secrets/.age.pub)" /tmp/openrouter.env \
-  > secrets/openrouter.env.sops
+# Recipient is auto-resolved by .sops.yaml (creation_rules.path_regex matches
+# secrets/.+, encrypts to age1z4c2...rzpcgtq3r9a0a). The plaintext file is
+# covered by the deny-by-default rule in secrets/.gitignore — only *.sops is
+# whitelisted, so the plaintext can never be committed.
+sops -e secrets/openrouter.env > secrets/openrouter.env.sops
 
-shred -u /tmp/openrouter.env
 git add secrets/openrouter.env.sops
 git commit -m "chore(secrets): add openrouter api key (encrypted)"
 ```
@@ -107,7 +119,7 @@ locally only and is covered by the deny-by-default rule in
 ### 4. Decrypt locally for Compose
 
 ```bash
-sops --decrypt secrets/openrouter.env.sops > secrets/openrouter.env
+sops -d secrets/openrouter.env.sops > secrets/openrouter.env
 chmod 600 secrets/openrouter.env
 ```
 
@@ -144,14 +156,32 @@ Expected: `PONG`. The fallback should NOT fire.
 
 ### Force-test the fallback path
 
-The cleanest way to exercise the fallback without breaking Vertex is to
-issue a request against a model alias that does not exist on Vertex but
-does have a fallback mapping. Since all three model aliases map 1:1, the
-production path is to wait for an actual Vertex degradation. For a manual
-test, temporarily set an invalid `vertex_project` in `config.yaml`, reload,
-issue the same request, and confirm the response comes back via the
-fallback (LiteLLM adds an `x-litellm-model-name` response header showing
-which model actually served the call). Revert the config change after.
+LiteLLM's fallback ONLY fires on retriable transport errors (5xx, 408,
+425, 429, 502, 503, 504, 529). It will NOT fall back on
+`AuthenticationError` or other 4xx — those surface to the caller as-is.
+That makes "invalid `vertex_project`" the wrong knob (it raises an auth
+4xx). Use one of these two reliable triggers instead:
+
+**Option A — invalid region (yields 404 → retried → fallback):**
+Temporarily set `vertex_location: us-east99` (a non-existent region) in
+`config.yaml` for one model, restart the proxy, issue the same request,
+confirm the response comes back via OpenRouter. The
+`x-litellm-model-name` response header shows which model actually served
+the call. Revert the region after.
+
+**Option B — direct openrouter call (skips fallback, exercises the
+provider path):** Issue the request against the `openrouter/*` alias
+directly:
+
+```bash
+curl -s -X POST http://localhost:4000/v1/chat/completions \
+  -H "Authorization: Bearer $(cat secrets/litellm-master-key)" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openrouter/anthropic/claude-opus-4","messages":[{"role":"user","content":"PONG?"}],"max_tokens":10}'
+```
+
+A successful response confirms the OpenRouter provider is wired and the
+key is valid; the fallback-routing logic itself is exercised by Option A.
 
 ### Confirm fallback is wired in router_settings
 
@@ -195,8 +225,10 @@ If the secret is suspected to be compromised:
 2. Click **Revoke** on the `autonomousagent-prod-fallback` key.
 3. Re-mint per "One-time secret provisioning" §1 above.
 4. Re-encrypt per §3.
-5. `sops --decrypt secrets/openrouter.env.sops > secrets/openrouter.env`.
-6. `docker compose restart litellm-proxy`.
+5. `sops -d secrets/openrouter.env.sops > secrets/openrouter.env`.
+6. `docker compose -f deploy/docker-compose.yml up -d --force-recreate litellm-proxy`
+   — `restart` alone does NOT re-read env_files in all Compose versions;
+   `up -d --force-recreate` is the portable form.
 
 ### 3. Remove the secret file entirely
 

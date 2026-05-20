@@ -76,3 +76,32 @@ resource "google_compute_firewall" "allow_egress_all" {
   destination_ranges = ["0.0.0.0/0"]
   target_tags        = ["autonomousagent-vm"]
 }
+
+# Cloud Router + Cloud NAT: provides outbound internet access for the VM
+# without a public IP. Required for apt-get (Debian mirrors), Docker
+# installation (download.docker.com), and any non-GCP egress.
+#
+# AUTO_ONLY: GCP auto-allocates ephemeral external IPs for NAT — no
+# static IP reservation needed. ERRORS_ONLY log filter keeps log volume
+# manageable while still capturing NAT failures.
+
+resource "google_compute_router" "autonomousagent" {
+  project = var.project_id
+  name    = "autonomousagent-router"
+  region  = var.region
+  network = google_compute_network.autonomousagent.id
+}
+
+resource "google_compute_router_nat" "autonomousagent" {
+  project                            = var.project_id
+  name                               = "autonomousagent-nat"
+  router                             = google_compute_router.autonomousagent.name
+  region                             = var.region
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
+  }
+}

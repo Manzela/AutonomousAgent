@@ -114,16 +114,18 @@ Items are tagged **P0** (do first) → **P2** (nice-to-have).
 
 ### P1 — Concrete wins, low coordination cost
 
-#### J5 — Expand MCP coverage (filesystem, fetch, time)
+#### J5 — Expand MCP coverage (filesystem, fetch, time) — **CLOSED 2026-05-20 (partial)**
 
-- **What:** Add the three official Anthropic MCPs (filesystem, fetch, time) to `config/hermes/cli-config.yaml` `mcp_servers:` block + matching sidecars in `deploy/docker-compose.yml`. Update `docs/mcp-inventory.md` table in the same PR (per H3).
-- **Why:** Research doc cites "MCP P0 done" but the runtime tool surface is **2 active MCPs**. These three are low-risk, official, well-documented, and routinely useful. They also exercise the add-a-new-MCP checklist (`docs/mcp-inventory.md:75-109`) which validates the inventory process works.
-- **Where:**
-  - `config/hermes/cli-config.yaml` — mcp_servers block.
-  - `deploy/docker-compose.yml` — 3 new sidecars.
-  - `docs/mcp-inventory.md:32-43` — 3 new table rows; remove "deferred" status on playwright if we also pin its invocation (separate decision).
-- **Effort:** **2 days** for all three combined; mostly running through the 7-step checklist.
-- **Tests:** `curl -sS -o /dev/null -w "%{http_code}\n" http://localhost:<port>/` per `docs/mcp-inventory.md:113-122` health pattern.
+- **Status:** Shipped 2 of 3 in commit `a667ad6` (`fetch`, `time` as stdio subprocesses via `uvx`). `filesystem` + `git` deferred with documented blockers (see "Deferred" table in `docs/mcp-inventory.md`).
+- **Actual scope vs plan:**
+  - Plan assumed **3 HTTP sidecars in `docker-compose.yml`**. Reality: official Anthropic MCPs are stdio-only Python servers — no HTTP wrapper exists upstream. Chose stdio subprocess pattern (matches upstream design, no compose changes needed). New "stdio vs HTTP MCPs" section in inventory documents the divergence.
+  - `filesystem` deferred: npm-only — adding nodejs to the `python:3.11-slim` base would expand supply-chain ~150MB for marginal gain.
+  - `git` deferred: needs a workspace mount the `read_only: true` Hermes container lacks; wiring requires an ADR on self-modifying source tree vs sandboxed workspace clone.
+- **What shipped:**
+  - `config/hermes/cli-config.yaml` — added `fetch` + `time` entries with rationale comment.
+  - `docs/mcp-inventory.md` — 2 new active rows + new "stdio vs HTTP MCPs" section + 2 new "Deferred" rows. Count now 4 active / 3 deferred (was 2 active / 1 deferred).
+- **Effort actual:** ~2 hours (less than the planned 2 days because docker-compose sidecars were skipped — net scope reduced).
+- **Tests:** stdio MCPs are exercised by Hermes startup; no `curl` healthcheck applies. The official Anthropic MCPs have their own test coverage upstream. **Known gap:** `tests/integration/test_evaluators_smoke.py` not extended (checklist item 5). Tracked as a follow-up.
 
 #### J6 — Sandbox tier-naming reconciliation note
 

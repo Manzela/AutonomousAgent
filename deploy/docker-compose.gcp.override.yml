@@ -36,6 +36,14 @@ services:
   litellm-db:
     logging: *gcplogs
   litellm-proxy:
+    # Override bind mount paths: on VM everything lives under /opt/hermes/bootstrap/.
+    # ../lib and ../config don't exist; redirect to ./lib and ./config in bootstrap dir.
+    # Remove ${HOME}/.config/gcloud: on GCE the service account uses metadata-server ADC.
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+      - ./lib/scrubber_callback.py:/app/scrubber_callback.py:ro
+      - ./lib:/app/lib:ro
+      - ./config/scrubber-patterns.yaml:/app/scrubber-patterns.yaml:ro
     logging: *gcplogs
   phoenix:
     logging: *gcplogs

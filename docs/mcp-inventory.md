@@ -93,10 +93,13 @@ in the PR description.
    `internal` and (if required) `egress` Docker networks — never the
    host network. Outbound egress to third-party APIs is documented.
 5. [ ] **Eval test added.** A test under `tests/integration/` exercises
-   at least one round-trip call through the new MCP, and the
-   [nightly eval workflow](../.github/workflows/nightly-eval.yml) picks
-   it up (it discovers every `tests/integration/test_*.py` by default).
-   Without this, regressions in the upstream MCP go undetected.
+   at least one round-trip call through the new MCP. The
+   [nightly eval workflow](../.github/workflows/nightly-eval.yml)
+   currently runs a single hardcoded file
+   (`tests/integration/test_evaluators_smoke.py`); to wire new MCP
+   coverage into the nightly cadence, either add an assertion to that
+   file or extend the workflow's `pytest` invocation with an additional
+   path. Without this, regressions in the upstream MCP go undetected.
 6. [ ] **Sunset hook reviewed.** Confirm at least one of the sunset
    criteria above is monitorable for this MCP (typically the OTel
    call-count signal under "Zero call traffic"). If the MCP carries no

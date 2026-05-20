@@ -51,6 +51,16 @@ No SIGKILL, no OOM, no plugin guard kills, no crash-related log entries.
 
 Given the **non-reproduction**, the original hypotheses require re-assessment:
 
+### Divergence point (smoking gun for non-reproduction)
+
+The 2026-05-19 crash log (per findings.md F-2026-05-20-1) ended at:
+> `[plugins] INFO Plugin discovery complete: 27 found, 24 enabled`
+
+The 2026-05-20 baseline run continued ~21 log-lines past that point, through:
+> Gateway Starting → MCP connection attempts (`github` 401, `context7` terminated) → `WARNING: No adapter could be created for any of the 1 configured platform(s)` → cron-only-mode banner.
+
+Whatever environmental condition aborted the process at the plugin-discovery boundary on 2026-05-19 was absent in the 2026-05-20 baseline. This is the discrete signal that distinguishes the two runs and motivates Hypothesis D.
+
 ### Hypothesis A: Submodule Regression (hermes a7aa850 → 254056e)
 **Status**: Less likely
 **Reasoning**: If the regression were deterministic, it should have reproduced in a clean 60s run. The issue may be:
@@ -70,6 +80,17 @@ Given the **non-reproduction**, the original hypotheses require re-assessment:
 - No guard kill in this run, but this was a **passive observation** (no active session, no tool calls, no disk writes to trigger cleanup logic)
 - Guard kill may only trigger under specific conditions (e.g., large file writes, rapid tmpfs growth, aggressive cleanup thresholds)
 
+### Hypothesis D: Persistent-volume state corruption (new candidate)
+**Status**: Plausible but not most parsimonious
+**Reasoning**:
+- The clean run included `down -v` which removes all named volumes (workspace-data, hermes-data). If pre-existing volume state had become corrupted (partial-write artifacts, lock files from prior session, disk_cleanup race-condition residue), `down -v` would clear it.
+- **Counter-evidence**: per findings.md F-2026-05-20-1, the originating crash occurred on what was effectively a fresh stack (escalation-watcher and phoenix containers had never been created). If the originating crash was already on near-fresh volumes, "stale volume state" cannot explain it.
+- **Competing explanations not yet ruled out**:
+  - **D2**: Docker Desktop daemon state drift across the ~2h44m gap between original observation (2026-05-19 ~09:20 UTC) and this baseline run (2026-05-20 12:04 UTC)
+  - **D3**: Stale image-layer cache rebuilt or evicted between the two windows
+  - **D4**: Host-level resource conditions (free RAM, swap pressure, FS-level disk pressure) that differed across the gap
+- D, D2, D3, D4 are not mutually exclusive. The non-reproduction is empirically real; the cause is not yet identified.
+
 ## Implications for Audit Plan
 
 1. **Baseline test (Phase A, Task 1)**: COMPLETE with non-reproduction result.
@@ -80,7 +101,7 @@ Given the **non-reproduction**, the original hypotheses require re-assessment:
 
 ## Recommended Next Steps
 
-1. **Gather production logs** from the GCP environment where exit-137 was observed (if available).
+1. **Gather any additional crash logs**: the originating 2026-05-19 observation per findings.md F-2026-05-20-1 was on this *local* stack (no GCP deployment exists yet). If the crash reappears in any environment (local re-trigger or post-Phase-B GCP), capture full log + inspect output before recovery.
 2. **Simulate active session**: Run hermes with actual MCP tool calls, file writes, and session activity to trigger disk_cleanup guard logic.
 3. **Review disk_cleanup plugin source**: Inspect cleanup thresholds, guard kill conditions, and tmpfs monitoring logic.
 4. **Test in GCP environment**: Reproduce baseline test on the target deployment environment to rule out Docker Desktop vs. GCP differences.
@@ -93,4 +114,4 @@ All diagnostic outputs in `audit/2026-05-20-state-of-the-repo/p0a-rca/`:
 - `run1-baseline-ps.log`: Container states at t=60s
 - `run1-baseline-logs.log`: Last 200 lines of hermes logs
 - `run1-baseline-stats.log`: Memory/CPU stats snapshot
-- `run1-baseline-inspect.json`: Full `docker inspect` output (not committed — pre-commit hook false positives on container IDs/SHAs; available locally for deep-dive analysis)
+- `run1-baseline-inspect.json` (excluded, then deleted from disk): full `docker inspect` output contained real high-entropy secrets (container IDs, registry tokens, a Telegram Bot Token from the running stack's env). The spec-required 3-field extract (`{{.State.ExitCode}} {{.State.OOMKilled}} {{.State.Error}}`) is captured in `run1-memstats.log` instead.

@@ -179,5 +179,5 @@ hermes-1  | WARNING gateway.run: No adapter could be created for any of the 1 co
 Date: 2026-05-20T12:04:06Z
 Exit code: 0
 OOMKilled: false
-Last hermes log line before crash: WARNING gateway.run: No adapter could be created for any of the 1 configured platform(s). Check that required dependencies are installed and credentials are set. Gateway will continue for cron job execution.
+Last hermes log line captured (t+60s, no crash observed): WARNING gateway.run: No adapter could be created for any of the 1 configured platform(s). Check that required dependencies are installed and credentials are set. Gateway will continue for cron job execution.
 Hypothesis ordering after baseline: Original hypotheses A (submodule), B (tmpfs), C (disk_cleanup guard); add D = persistent-volume state corruption. Ordering after baseline: C > D > A > B - but note the bug did NOT reproduce in this clean run, so all hypothesis tests are now contingent on regaining reproducibility.

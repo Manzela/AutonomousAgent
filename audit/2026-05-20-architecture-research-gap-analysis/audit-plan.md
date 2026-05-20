@@ -162,7 +162,7 @@ Items are tagged **P0** (do first) → **P2** (nice-to-have).
   - Upstream already compacts at **0.5** (`threshold_percent` default), so a 0.9 detector firing means compaction either failed or was suppressed by the anti-thrashing guard (≥ 2 ineffective compactions in a row). 0.9 is therefore a **"compaction already failed"** warning surface, NOT a second compaction trigger as the original plan implied.
   - The signal source is `last_prompt_tokens / context_length` — both already on the `ContextCompressor` instance.
 - **What shipped (this PR):**
-  - `lib/durability/failure_matrix.py` — `F36` / **F-CONTEXT** (Fail-Soft, handler `escalate_context_pressure` — stub for now, dispatches to `halt_alert_snapshot` via the matrix's stub mechanism).
+  - `lib/durability/failure_matrix.py` — `F36` / **F-CONTEXT** (Fail-Soft, handler `escalate_context_pressure` — stub for now, dispatches to `fallback_local_log` via the matrix's auto-stub mechanism in `lib/durability/handlers.py:_make_stub` per trichotomy class. Verified live-dispatch 2026-05-20: `action="continue"`, `handler="fallback_local_log"`).
   - `lib/durability/runtime_detectors.py` — `ContextUsageDetector` class with `record_usage(session_id, prompt_tokens, context_length)`. Mirrors `StallDetector`'s one-fire-per-episode + re-arm semantics; thread-safe via single mutex.
   - `config/limits.yaml` — `durability.context_detector.warn_threshold: 0.9`.
   - `tests/unit/test_runtime_detectors.py` — 10 new tests for `ContextUsageDetector`.
@@ -321,3 +321,67 @@ Day 15+ [J10, J13 — documentation + optional upstream PR]
 - Framing recommendation: **still Framing #2**.
 - Overall effort estimate: **still 4-8 weeks for Framing #2**; **still multi-quarter for Framing #1**.
 - Approval gate still mandatory before any implementation.
+
+---
+
+## 8. Pass 3 closures (execution ledger, 2026-05-20)
+
+Roll-up of every audit-plan item that has reached a terminal state, with the
+commit SHA(s) and the file-touch surface. Inline status flags on §1/§2 item
+headings are preserved as the original snapshot in time; this table is the
+single place to read "what is actually shipped".
+
+| Item | Status | Commits (this branch) | Surface / notes |
+|---|---|---|---|
+| **H1** — relocate research doc | ✅ Closed | `777409f` | Moved to `audit/2026-05-20-architecture-research-gap-analysis/source.md` (option b, per Pass 1 recommendation). |
+| **H2** — reconciliation ADR | ⏭️ Deferred via Stream B | (on `research/framing-1-moe-rl-spike`: `docs/decisions/0008-architecture-research-disposition.md`) | Stream B (Gemini Framing-#1 spike) owns ADR-0008; lives on `wt-framing-1` branch. Both branches target `main`; ADR will appear once Stream B's PR squash-merges. No duplicate commit on `wt-framing-2` to avoid merge-time conflict. |
+| **H3** — README inventory sync | ✅ Closed | (this commit set) | `README.md` service inventory now points to `docs/mcp-inventory.md` for in-Hermes MCPs (stdio + hosted-HTTP). The compose service table stays compose-only by design; in-process MCPs are not docker services. |
+| **J1** — judge JSONL persistence (RLAIF substrate) | ✅ Closed | `92e6746` | `lib/evaluators/orchestrator_hook.py` + `lib/evaluators/consensus.py` + `trajectories/.gitignore`. Schema v1 in `docs/architecture/judge-events-schema-v1.md`. |
+| **J3** — trajectory shipper MVP | ⏸️ Blocked | — | Blocked on `gs://<project>-trajectories/` bucket; Stream A (Phase 0a) charter excludes new GCS buckets. Open task #12. |
+| **J4** — F-LOOP + F-STALL | ✅ Closed | `0a0019a` (+ schema fix `e42cc87`) | `lib/durability/runtime_detectors.py` (LoopDetector, StallDetector). F34/F35 in matrix + handlers. **Schema fix `e42cc87`** added `durability.{loop_detector,stall_detector}` properties to `config/limits-schema.json` — caught by `test_shipped_limits_is_valid` during Pass-3 verification. |
+| **J5** — fetch + time MCPs | ✅ Closed (partial) | `a667ad6`, `0ef2a72` | 2/3 shipped as stdio MCPs (uvx); `filesystem` + `git` deferred with documented blockers — see line 117. |
+| **J6** — sandbox-tiers reconciliation note | ✅ Closed | `612e91f` | `docs/architecture/sandbox-tiers.md`. |
+| **J7** — memory-layers reconciliation note | ✅ Closed | `57dd798` | `docs/architecture/memory-layers.md`. |
+| **J8** — A2A scoping memo | ✅ Closed — outcome NO | `48bad41` | `j8-a2a-memo.md` in this audit dir. ACP ≠ A2A clarified; no ADR-0007 (per spec). |
+| **J9** — F-CONTEXT (F36) | ✅ Closed (partial) | `9f994f0` (+ schema fix `e42cc87`) | `ContextUsageDetector` shipped + F36 registered. **OTel gauge `agent.memory.context_usage_pct` explicitly deferred** (needs MeterProvider in `lib/observability/otel_setup.py` — trace-only today). **Schema fix `e42cc87`** added `durability.context_detector` property. |
+| **J10** — RLAIF ADR | ✅ Closed | `48901e2` | `docs/decisions/0009-judge-panel-as-rlaif.md` (chose new ADR over extending 0005). |
+| **J11** — OTel GenAI dual-emit | ✅ Closed | `24e98cd` | `lib/observability/__init__.py` dual-emits `gen_ai.*` alongside `llm.*` when `OTEL_DUAL_EMIT_GEN_AI=1`. Gated off by default → preserves Phoenix compatibility. |
+| **J12** — F25 vs F-LOOP non-overlap analysis | ✅ Closed (this commit) | — | See dedicated subsection below. |
+| **J13** — upstream Hermes PR for `pre/post_llm_call` hooks | ❌ Optional, not started | — | Tracked as task #14 (P2); needs user approval before opening upstream PR. |
+
+### J12 — F25 (clarification-loop cap) does not subsume F-LOOP (F34)
+
+The Pass-2 enrichment flagged **J12** as a 30-minute decision gate to read
+F25's handler before adding F-LOOP, to avoid duplicate F-codes. Closure
+analysis confirms **no overlap** along four axes:
+
+| Axis | F25 (clarification cap) | F34 / F-LOOP (tool-call repeat) |
+|---|---|---|
+| **Lifecycle phase** | Pre-anchor — TaskSpec **lock-time** clarification dialog (`lib/anchors/clarification_loop.py`). | Post-anchor — tool execution after the TaskSpec is locked (`lib/durability/runtime_detectors.py:LoopDetector`). |
+| **Observed signal** | Count of clarification questions asked of the user before the limit at `anchors.max_clarification_questions` (default 6). | SHA-256 fingerprint of `(tool_name, canonical-JSON args)` repeated N times (default 5, `durability.loop_detector.threshold`). |
+| **Trichotomy class** | Fail-Loud — `halt_alert_request_approval` → escalates to user for an unblock. | Fail-Soft — `interrupt_with_loop_feedback` → injects guidance and continues. |
+| **Counterparty** | Human-in-the-loop (the agent is stuck asking the user). | Agent itself (the agent is stuck calling the same tool). |
+
+Because F25 only fires when the agent is in a clarification dialog with the
+user *before* a TaskSpec exists, and F-LOOP only fires after task-anchor
+lock during tool execution, the two codes cannot both be applicable to the
+same observed event. F-LOOP is therefore a genuinely new code, not a
+re-fingerprint of F25. **Conclusion: keep both as-is.** No code change
+required by this analysis.
+
+### Verification gates that ran during Pass 3
+
+1. **Schema validation** — `tests/unit/test_limits_schema.py` 5/5 green after `e42cc87`. Pre-fix: `test_shipped_limits_is_valid` failed because `config/limits.yaml` had three new `durability.*_detector` keys not declared in `config/limits-schema.json` (the section has `additionalProperties: false`). The regression was invisible to the J4 + J9 commits because neither extended the schema. Caught by the verification queue; fixed in the same audit-plan close.
+2. **Failure-matrix parity** — code: 36 F-codes registered; doc: 36 rows in §2 table. Stale "33 modes" header on `failure-matrix.md` updated to "36 modes" + lockstep-enforcement description rewritten to point at the actual unit-test asserts (`test_baseline_codes_f1_to_f33_present` + `test_{loop_and_stall,context}_code_present`) instead of a non-existent CI grep guard.
+3. **Full unit suite** — `pytest tests/unit/` ⇒ 422 passed / 17 skipped / 0 failed after the schema fix.
+
+### Items explicitly deferred (with reason and unblock condition)
+
+| Item | Deferral reason | Unblock condition |
+|---|---|---|
+| **J3** trajectory shipper | Needs `gs://<project>-trajectories/` bucket; Stream A (Phase 0a) charter excludes new GCS buckets. | Either Stream A completes and lets us add the bucket, or a new mini-spec authorizes it on this branch. Task #12. |
+| **J9 OTel gauge** | Wrapper's OTel SDK is trace-only; gauge needs a `MeterProvider` + OTLP metrics exporter wired into `lib/observability/otel_setup.py`. | Separate observability slice — not Framing #2 P2 scope. |
+| **J9 runtime hook wiring** | Upstream Hermes does not expose `post_llm_call` invocation; detector is importable but not called per-turn yet. | Resolves via J13 (upstream PR) OR wrapper-side `_post_llm_call` shim in `lib/observability/__init__.py`. |
+| **J13** upstream PR | Optional Framing #2 P2; outside-team review timeline unbounded. | User approval required before opening upstream PR. Task #14. |
+| **J5 `filesystem` + `git` MCPs** | npm-only + read-only-container blocker, respectively. Documented in `docs/mcp-inventory.md` deferred section. | `filesystem`: a second Node-only MCP would amortise the supply-chain cost. `git`: ADR-level decision on self-modifying source tree vs sandboxed workspace clone. |
+| **H2** ADR | Stream B owns; lives on `wt-framing-1` branch. | Stream B's PR squash-merges to main. |

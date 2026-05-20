@@ -1,11 +1,18 @@
-# Hermes Failure Matrix (33 Modes)
+# Hermes Failure Matrix (36 Modes)
 
 The system enforces a **Fail-Loud / Fail-Soft / Self-Heal** trichotomy. Every tool and system error must be explicitly classified and handled according to this matrix.
 
 > **Source of truth:** the codified F-code → trichotomy class + handler mapping lives in
-> `lib/durability/failure_matrix.py`. This document mirrors that table for human readers and
-> must be kept in lockstep with it (the `test_all_33_codes_present` unit test enforces the
-> code-side; doc parity is enforced via `grep -cE "^\| F[0-9]+ \|" docs/architecture/failure-matrix.md == 33` in CI as the row-count guard).
+> `lib/durability/failure_matrix.py`. This document mirrors that table for human readers and must be kept in lockstep with it.
+>
+> Lockstep enforcement (all in `tests/unit/test_failure_matrix.py`):
+>
+> - `test_baseline_codes_f1_to_f33_present` — locks the F1-F33 AA-Atelier baseline; any future deletion regresses.
+> - `test_loop_and_stall_codes_present` — locks F34 (F-LOOP) and F35 (F-STALL) added by J4 (Framing #2).
+> - `test_context_code_present` — locks F36 (F-CONTEXT) added by J9 (Framing #2).
+> - `test_every_code_maps_to_valid_class` + `test_no_duplicate_codes` — invariant guards over every row.
+>
+> **Current count: 36** (F1-F33 baseline + F34-F36 runtime detectors). Adding a new F-code requires (1) a row in `FAILURE_MATRIX` in code, (2) a row in §2 below, and (3) a new `test_*_code_present` assertion mirroring the J4/J9 pattern.
 
 ## 1. The Trichotomy Definition
 

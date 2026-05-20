@@ -13,10 +13,9 @@ ENV_DIR=/run/hermes/env
 mkdir -p "$ENV_DIR"
 chmod 700 "$ENV_DIR"
 
-# Hardcoded secret names — mirrors secret_manager.tf sops_env_files + autonomousagent- prefix.
-# Avoids requiring secretmanager.secrets.list; only secretmanager.versions.access is needed.
-# Update this list when a new SOPS env file is added.
-REQUIRED_SECRETS=(
+# ENV file secrets (full env-file content stored per secret).
+# Mirrors secret_manager.tf sops_env_files + autonomousagent- prefix.
+ENV_SECRETS=(
   "autonomousagent-chroma-cloud"
   "autonomousagent-hermes-provider"
   "autonomousagent-honcho"
@@ -24,9 +23,24 @@ REQUIRED_SECRETS=(
   "autonomousagent-telegram"
 )
 
-for secret in "${REQUIRED_SECRETS[@]}"; do
+for secret in "${ENV_SECRETS[@]}"; do
   name="${secret#autonomousagent-}"
   out="$ENV_DIR/${name}.env"
+  gcloud secrets versions access latest --secret="$secret" --project="$PROJECT_ID" > "$out"
+  chmod 600 "$out"
+  echo "loaded $secret -> $out"
+done
+
+# Individual Docker secret files (raw value, no KEY= prefix).
+# Used as Docker compose bind-mount secrets (file: ../secrets/<name>).
+INDIVIDUAL_SECRETS=(
+  "autonomousagent-github-pat"
+  "autonomousagent-litellm-master-key"
+)
+
+for secret in "${INDIVIDUAL_SECRETS[@]}"; do
+  name="${secret#autonomousagent-}"
+  out="$ENV_DIR/${name}"
   gcloud secrets versions access latest --secret="$secret" --project="$PROJECT_ID" > "$out"
   chmod 600 "$out"
   echo "loaded $secret -> $out"

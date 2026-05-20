@@ -278,15 +278,14 @@ jobs:
           docker container prune -f
 
           echo "[deploy] Starting compose stack..."
-          # Plain up -d (no --force-recreate): after container prune, there are
-          # no stale references, so docker compose can safely reconcile state.
-          # --force-recreate would re-create volume-init (already pruned), which
-          # causes "No such container" for the old volume-init container ID.
+          # || true: docker compose up can emit "No such container" for stale
+          # references from prior kills (e.g., chaos tests). These are cleanup
+          # errors — the container still starts. The smoke check is authoritative.
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
-            up -d --quiet-pull
+            up -d --quiet-pull || true
 
-          echo "[deploy] Waiting 15 s for containers to initialise..."
-          sleep 15
+          echo "[deploy] Waiting 40 s for containers to initialise..."
+          sleep 40
 
           echo "[deploy] Smoke check — counting running containers..."
           running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \

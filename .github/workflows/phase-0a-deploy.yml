@@ -277,9 +277,13 @@ jobs:
           # --force-recreate. Prune removes them without touching running ones.
           docker container prune -f
 
-          echo "[deploy] Recreating compose stack..."
+          echo "[deploy] Starting compose stack..."
+          # Plain up -d (no --force-recreate): after container prune, there are
+          # no stale references, so docker compose can safely reconcile state.
+          # --force-recreate would re-create volume-init (already pruned), which
+          # causes "No such container" for the old volume-init container ID.
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
-            up -d --force-recreate --quiet-pull
+            up -d --quiet-pull
 
           echo "[deploy] Waiting 15 s for containers to initialise..."
           sleep 15

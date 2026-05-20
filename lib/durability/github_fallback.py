@@ -32,6 +32,8 @@ import shutil
 import subprocess
 from typing import Optional, Sequence
 
+from lib.scrubber import scrub_string
+
 logger = logging.getLogger(__name__)
 
 # Default repo for issue creation. Matches the github-mcp ``--repo``
@@ -154,6 +156,16 @@ def open_incident_issue(
     if existing:
         return existing
 
+    # P2 #34: scrub title + body before they are POSTed to GitHub Issues.
+    # GitHub Issues retains content indefinitely (audit log + email
+    # notifications + the issue body itself), so any pasted secret in the
+    # caller-supplied strings becomes permanent. Defence-in-depth: the
+    # primary caller (lib.durability.escalation.emit_escalation) also
+    # scrubs the card title, but scrubbing again here is idempotent and
+    # protects against future call sites that forget.
+    safe_title = scrub_string(title, source="github_fallback_title")
+    safe_body = scrub_string(body, source="github_fallback_body")
+
     labels_csv = ",".join(labels)
     args = [
         "issue",
@@ -161,9 +173,9 @@ def open_incident_issue(
         "--repo",
         repo,
         "--title",
-        title,
+        safe_title,
         "--body",
-        body,
+        safe_body,
         "--label",
         labels_csv,
     ]

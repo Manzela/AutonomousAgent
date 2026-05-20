@@ -13,7 +13,7 @@
 
 1. **P0 today (≤6 hours):** Ship 3 uncommitted WIP files + add snapshot integrity CI test + correct README service count + implement 3 baseline failure-matrix handlers + wire MCP error classification (pass-2 found these errors firing live but uncaptured).
 2. **P1 this week:** Query `spend_logs` table directly for budget tracking (pass-2 found `/spend/total` returns 404 — schema-direct is the only path), grow trichotomy regex from live MCP error data, implement GCS snapshot executor (pass-2: cron is config-only with no executor), supply-chain baseline (CodeQL + Trivy + SBOM + cosign + Action SHA pinning — hermes-agent sibling at 100% SHA-pinned is the reference).
-3. **P2 next:** Phase-2 spec authored *on top of* a hardened foundation, plus Hermes submodule bump (pass-2: 757 commits / 5 days behind, hook contract stable).
+3. **P2 next:** Phase-2 spec authored *on top of* a hardened foundation, plus Hermes submodule bump (pass-2: 790 commits / 5 days behind, hook contract stable).
 
 **Why not Path A (Phase 2 spec first)?** Authoring a Phase-2 spec on top of unimplemented handler stubs (R4 — pass-2 confirmed: not in upstream either, must be local) means the spec inherits the same gap. Foundation first costs ~5–7 days; Phase 2 spec then has accurate failure modes to design around.
 
@@ -186,7 +186,7 @@ Once contributors are aligned on signing, flip the toggle.
 **Effort:** 5 min for the toggle; days of human coordination first.
 
 ### P2-6. Hermes submodule bump + ADR (NEW from pass-2)
-**What:** Pass-2 found `hermes-agent/` pinned at `ddb8d8fa8` (2026-05-14), **757 commits / 5 days behind** upstream HEAD. Includes one release tag `v2026.5.16`. Hook contract is **STABLE** in the delta (no breaking changes — verified). One backward-compatible feature added: tool-override flag in `ctx.register_tool()` (commit `016c772e7`).
+**What:** Pass-2 found `hermes-agent/` pinned at `ddb8d8fa8` (2026-05-14), **790 commits / 5 days behind** upstream HEAD. Includes one release tag `v2026.5.16`. Hook contract is **STABLE** in the delta (no breaking changes — verified). One backward-compatible feature added: tool-override flag in `ctx.register_tool()` (commit `016c772e7`).
 **Why:** Routine maintenance; not urgent. But will be P1 if it stays untouched for 30+ days.
 **Standard:** NIST SSDF PW.4 ("Keep only needed software" — current).
 **Where:** `git submodule update --remote hermes-agent` → review delta → commit + ADR.
@@ -294,7 +294,7 @@ Pass-2 enrichment ran 4 parallel `Explore` agents against: (a) the upstream `her
 - **P0-7** — MCP error classification wiring. Pass-2 found `github-mcp 401 Unauthorized` and `context7 Session terminated` errors firing in live logs but **never flowing through `trichotomy.classify()`**. The 33-mode matrix gets no input today. This is higher-priority than I had in pass-1.
 - **P0-8** — README service count fix (still says "twelve", reality is 9 defined / 7 long-running). Pass-2 confirmed PR #67 did not patch the line.
 - **P1-1b** — Implement GCS snapshot executor. Pass-2 found `/app/lib/snapshots/` does not exist in the hermes container and no Python code references `gcs_snapshot`. The 04:00 UTC cron is **config-only with no executor.** This pairs with P0-6 — snapshot integrity tests are meaningless without snapshots actually being produced.
-- **P2-6** — Hermes submodule bump (757 commits / 5 days behind upstream; hook contract stable; no breaking changes in the delta).
+- **P2-6** — Hermes submodule bump (790 commits / 5 days behind upstream; hook contract stable; no breaking changes in the delta).
 - **P2-7** — Upstream `disk-cleanup` plugin available; useful for long-running session hygiene.
 - **P2-8** — Tighten `allowed_actions` from "all" to "github,verified" (OWASP CICD-SEC-05).
 

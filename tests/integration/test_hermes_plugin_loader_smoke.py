@@ -140,6 +140,7 @@ def _compose_cmd(*args: str) -> list[str]:
 # ``hermes-agent/hermes_cli/plugins.py``:
 #   - ``logger.info("Plugin discovery complete: %d found, %d enabled", ...)``
 #   - ``logger.debug("Loading plugin '%s' (source=%s, kind=%s, ...)", ...)``
+#   - ``logger.debug("Plugin %s registered hook: %s", manifest.name, hook_name)``
 #   - ``logger.debug("Skipping '%s' (not in plugins.enabled)", ...)``
 #   - ``logger.debug("Skipping disabled plugin '%s'", ...)``
 #   - ``logger.warning("Failed to load plugin '%s': %s", ...)``
@@ -147,6 +148,13 @@ def _compose_cmd(*args: str) -> list[str]:
 # surface DEBUG to stderr so docker captures them via its json-file driver.
 LOG_PATTERN_DISCOVERY_DONE = "Plugin discovery complete:"
 LOG_PATTERN_LOADING = "Loading plugin 'disk-cleanup'"
+# Positive post-register marker. Emitted from PluginContext.register_hook
+# AFTER the plugin's register(ctx) call has run far enough to register at
+# least one hook (disk-cleanup registers `post_tool_call` and
+# `on_session_end`). Catches the failure mode where Loading + Loaded both
+# emit but the body of register() partially succeeded — distinct signal
+# from the negative "Failed to load" assertion.
+LOG_PATTERN_HOOK_REGISTERED = "Plugin disk-cleanup registered hook:"
 LOG_PATTERN_SKIP_DISABLED = "Skipping disabled plugin 'disk-cleanup'"
 LOG_PATTERN_SKIP_NOT_ENABLED = "Skipping 'disk-cleanup' (not in plugins.enabled)"
 LOG_PATTERN_LOAD_FAILED = "Failed to load plugin 'disk-cleanup'"
@@ -349,6 +357,22 @@ def test_disk_cleanup_plugin_loads_in_real_hermes_container(hermes_container):
         "production loader entered _load_plugin for disk-cleanup). Did "
         "HERMES_PLUGINS_DEBUG=1 get removed from deploy/docker-compose.yml? "
         f"Last 4 KB of logs:\n{tail}"
+    )
+
+    # Positive: register(ctx) ran far enough to register a hook. This is
+    # the canonical post-register success marker emitted by
+    # PluginContext.register_hook — distinct from the "Loading plugin"
+    # line above (which only proves _load_plugin entered) and from the
+    # negative "Failed to load" assertion below. Together they cover
+    # the entire register-and-handshake path without overlap: entry,
+    # mid-flight, and exit-without-exception.
+    assert LOG_PATTERN_HOOK_REGISTERED in logs, (
+        f"Expected '{LOG_PATTERN_HOOK_REGISTERED}' in hermes logs (proves "
+        "the body of disk-cleanup's register(ctx) ran to at least one "
+        "register_hook call). Absence here with a present 'Loading plugin' "
+        "line means register() returned without registering hooks — likely "
+        "a regression in the plugin module that the importlib-based test "
+        f"will not catch.\nLast 4 KB of logs:\n{tail}"
     )
 
     # Negative: must not have been skipped via either skip-path.

@@ -12,13 +12,19 @@ terraform {
 }
 
 provider "google" {
-  project = var.project_id
-  region  = var.region
-  zone    = var.zone
+  project               = var.project_id
+  region                = var.region
+  zone                  = var.zone
+  # Required for billingbudgets.googleapis.com with local ADC: sets the quota
+  # project so the billing API uses i-for-ai instead of the ADC default project.
+  billing_project       = var.project_id
+  user_project_override = true
 }
 
 provider "google-beta" {
-  project = var.project_id
-  region  = var.region
-  zone    = var.zone
+  project               = var.project_id
+  region                = var.region
+  zone                  = var.zone
+  billing_project       = var.project_id
+  user_project_override = true
 }

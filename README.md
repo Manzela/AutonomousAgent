@@ -13,6 +13,13 @@
 
 A complete deployment wrapper around the upstream Hermes Agent. The agent runs in Docker on your Mac, connects to Anthropic Claude 4.7 via Vertex AI through a LiteLLM proxy, persists state across restarts, talks to you via Telegram, and continuously improves itself by curating its own memory, autonomously creating skills from successful task completions, and (eventually, in Phase 4) fine-tuning its own model on captured trajectories.
 
+## System of Record
+
+The authoritative architectural description for this repository is
+[docs/spec/phase2.md](docs/spec/phase2.md) (Phase 2 codification, ISO/IEC/IEEE 42010 §4.1).
+Any change that alters architectural decisions, failure-mode contracts (F-codes), or
+the durability/observability/security baseline MUST update that spec first.
+
 ## Why this exists
 
 Production agents need more than `pip install` and an API key. This project supplies:

@@ -2,6 +2,13 @@
 
 This is a single-developer project, but it follows production conventions so future contributors (or future you) can pick it up cleanly.
 
+## System of Record
+
+The authoritative architectural description for this repository is
+[docs/spec/phase2.md](docs/spec/phase2.md) (Phase 2 codification, ISO/IEC/IEEE 42010 §4.1).
+Any change that alters architectural decisions, failure-mode contracts (F-codes), or
+the durability/observability/security baseline MUST update that spec first.
+
 ## Workflow
 
 1. **Pick the right worktree.** All phase work happens in a dedicated worktree under `.worktrees/`. Don't commit directly to `main`.

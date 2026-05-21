@@ -1,0 +1,5 @@
+name: trajectory
+version: 0.1.0
+description: "J3 trajectory shipper — per-record Model Armor sanitize + GCS upload; Persistence Trap (#12.c) contract"
+kind: standalone
+provides_hooks: []

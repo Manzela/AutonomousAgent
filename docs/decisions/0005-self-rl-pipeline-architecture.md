@@ -63,3 +63,4 @@ Trained models are open-weight only (Llama, Qwen, DeepSeek). They land in a GCS 
 - Spec §6
 - `config/limits.yaml` `rl_training` section
 - Atropos: https://github.com/NousResearch/atropos
+- ADR-0009 (`0009-judge-panel-as-rlaif.md`) — names the AI-feedback signal source this ADR left open

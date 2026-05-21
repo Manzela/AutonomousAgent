@@ -17,3 +17,4 @@ The full architectural design lives in [`../superpowers/specs/2026-05-14-hermes-
 | Self-RL loop | spec §6, ADR 0005 |
 | Phase gating | spec §10, ADR 0006 |
 | Worktree-per-phase | ADR 0007, conventions/branching.md |
+| OTel GenAI dual-emit (J11) | `HERMES_DUAL_EMIT_GEN_AI=1` toggles `gen_ai.*` attrs alongside OpenInference `llm.*` on `model.call` spans. See `lib/observability/__init__.py` module docstring. Default off to preserve Phoenix UI compatibility. |

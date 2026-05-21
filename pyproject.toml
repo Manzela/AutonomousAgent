@@ -37,4 +37,5 @@ asyncio_mode = "auto"
 markers = [
   "integration: integration-tier tests that cross module boundaries (config, plugin, container)",
   "docker: tests that require a running docker daemon and `docker compose` CLI (auto-skipped on docker-less hosts)",
+  "persistence_trap: Persistence Trap (#12.c) contract tests for the J3 trajectory shipper. Required on every PR that touches lib/trajectory/, lib/durability/failure_matrix.py, lib/evaluators/judge_events.py, or terraform/phase-0a-gcp/model-armor/.",
 ]

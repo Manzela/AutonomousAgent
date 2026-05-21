@@ -49,7 +49,7 @@ git -C "/Users/danielmanzela/RX-Research Project/wt-framing-2" worktree add \
 ### Rationale for branch bases
 
 - **T-B off `main`** — keeps A2A spike PR diff scoped to `lib/a2a/`, `tests/integration/a2a/`, `deploy/docker-compose.canary.yml` only. Reviewable independent of framing-2 cleanup.
-- **T-C off `feat/phase-0a-h-plus`** — inherits in-flight phase-0a terraform context that Gemini Stream A is building on. Prevents drift when Stream A merges.
+- **T-C off `feat/phase-0a-h-plus` + merge `feat/framing-2-bolt-on`** — inherits in-flight phase-0a terraform context that Gemini Stream A is building on (smoke/chaos/acceptance scripts, runbook, deploy CI, otel fix). Merges framing-2 to also inherit the Persistence Trap foundation (`a847f1a` J3 shipper, `38856f2` contract tests, `47bbb45` spec, `0911028` Model Armor regional fix, `8cf3270` Postgres sub-module) which Plan C depends on. Wave 1A T-C Task 0 discovered this dependency was missing from h-plus-alone; spec amended 2026-05-21.
 
 ### Plan file location
 

@@ -412,6 +412,10 @@ services:
       # the app-level spans the Phase 1 acceptance runbook step 4 expects:
       # turn.start, tool.dispatch, model.call at service.name=hermes-agent.
       - ../lib/observability:/home/hermes/.hermes/plugins/observability:ro
+      # A2A (Agent-to-Agent) protocol plugin — Day 1 scaffolding shell.
+      # Spec-pinned to e997516 per audit/2026-05-21-a2a-spike-plan/SPEC-VERSION.md.
+      # Feature-flag gated: NOT in plugins.enabled until Day 5 (auth land).
+      - ../lib/a2a:/home/hermes/.hermes/plugins/a2a:ro
       # The plugins above declare `from lib.X import Y` for cross-module
       # imports inside their own __init__.py. Mount the full lib/ as a
       # PYTHONPATH-rooted package at /app/lib so those imports resolve.

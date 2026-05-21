@@ -1,6 +1,7 @@
 """Unit tests for the failure matrix lookup table.
 
-Matrix size: F1-F33 original (AA-Atelier sweep) + F34/F35 runtime detectors (J4).
+Matrix size: F1-F33 original (AA-Atelier sweep) + F34/F35 runtime detectors (J4)
++ F36 F-CONTEXT (J9) + F37 Model Armor PII gate (Stream B / ADR-0008 Q6).
 Adding new F-codes is expected — these tests assert the baseline plus contracts
 (unique, valid class, baseline codes preserved).
 """
@@ -30,6 +31,21 @@ def test_context_code_present():
     assert FAILURE_MATRIX["F36"]["class"] == TrichotomyClass.FAIL_SOFT
     assert "F-CONTEXT" in FAILURE_MATRIX["F36"]["description"]
     assert FAILURE_MATRIX["F36"]["handler"] == "escalate_context_pressure"
+
+
+def test_model_armor_sanitize_code_present():
+    """Stream B (ADR-0008 Q6) added F37 = Model Armor sanitize unavailable.
+
+    F37 must be FAIL_LOUD because the J1 trajectory shipper writes to the
+    RLAIF training substrate; a missed PII redaction is functionally
+    unrecallable after Phase 4 training memorizes it. Handler must be
+    halt_alert_snapshot — fallback_local_log would only defer the leak.
+    """
+    assert "F37" in FAILURE_MATRIX
+    assert FAILURE_MATRIX["F37"]["class"] == TrichotomyClass.FAIL_LOUD
+    assert "Model Armor" in FAILURE_MATRIX["F37"]["description"]
+    assert "sanitize" in FAILURE_MATRIX["F37"]["description"]
+    assert FAILURE_MATRIX["F37"]["handler"] == "halt_alert_snapshot"
 
 
 def test_every_code_maps_to_valid_class():

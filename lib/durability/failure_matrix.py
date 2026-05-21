@@ -213,6 +213,22 @@ FAILURE_MATRIX: Dict[str, Dict[str, Any]] = {
         "description": "F-CONTEXT: prompt-token usage exceeded warning threshold (compaction may be ineffective)",
         "handler": "escalate_context_pressure",
     },
+    # F37 (Stream B — Framing #2, ADR-0008 Q6): Model Armor templates.sanitize
+    # call failed or timed out while the J1 trajectory shipper was preparing a
+    # judge verdict for GCS persistence. Fail-loud is the correct posture even
+    # though sanitize APIs being down is a "transient infra" condition: the
+    # shipper writes to the RLAIF training substrate, and an un-redacted PII
+    # leak there is functionally unrecallable (Phase 4 training will memorize
+    # the leak). Fail-soft (e.g. fallback_local_log of the redacted intent
+    # WITHOUT the payload) would defer the failure mode but not eliminate it.
+    # The shipper code MUST raise F37 rather than catch+continue when sanitize
+    # is unavailable. See model-armor-j1-config memory and
+    # audit/2026-05-20-model-armor-j1-runbook/runbook.md for context.
+    "F37": {
+        "class": TrichotomyClass.FAIL_LOUD,
+        "description": "Model Armor templates.sanitize unavailable (J1 trajectory shipper PII redaction)",
+        "handler": "halt_alert_snapshot",
+    },
 }
 
 

@@ -16,13 +16,18 @@ Closes risk R4 in ``audit/2026-05-19-resume-orchestration/audit-plan.md``
 import json
 from unittest import mock
 
+import pytest
+
 from lib.durability.failure_matrix import FAILURE_MATRIX, TrichotomyClass
 from lib.durability.handlers import (
     HANDLER_REGISTRY,
+    LOOP_FEEDBACK_TEMPLATE,
     HandlerResult,
     dispatch,
+    escalate_context_pressure,
     fallback_local_log,
     halt_alert_snapshot,
+    interrupt_with_loop_feedback,
     retry_with_backoff,
 )
 
@@ -288,3 +293,374 @@ def test_handler_result_defaults():
     assert r.handler is None
     assert r.message is None
     assert r.extra == {}
+
+
+# ----------------------------------------------------------------------
+# F34 — interrupt_with_loop_feedback (production handler)
+# ----------------------------------------------------------------------
+
+
+def test_interrupt_with_loop_feedback_returns_continue_action(tmp_path):
+    result = interrupt_with_loop_feedback(
+        "F34",
+        session_id="sess-loop-1",
+        tool_name="github_search",
+        repeat_count=5,
+        fingerprint="abc123",
+        log_dir=tmp_path,
+    )
+    assert isinstance(result, HandlerResult)
+    assert result.action == "continue"
+    assert result.f_code == "F34"
+    assert result.handler == "interrupt_with_loop_feedback"
+
+
+def test_interrupt_with_loop_feedback_message_includes_tool_and_count(tmp_path):
+    result = interrupt_with_loop_feedback(
+        "F34",
+        tool_name="github_search",
+        repeat_count=7,
+        log_dir=tmp_path,
+    )
+    assert "github_search" in result.message
+    assert "7" in result.message
+
+
+def test_interrupt_with_loop_feedback_extra_carries_orchestrator_payload(tmp_path):
+    """The orchestrator reads extra['loop_break_feedback'] to inject into the next turn."""
+    result = interrupt_with_loop_feedback(
+        "F34",
+        session_id="sess-loop-2",
+        tool_name="bash",
+        repeat_count=5,
+        fingerprint="deadbeef",
+        log_dir=tmp_path,
+    )
+    assert result.extra["loop_break_feedback"] == result.message
+    assert result.extra["tool_name"] == "bash"
+    assert result.extra["repeat_count"] == 5
+    assert result.extra["fingerprint"] == "deadbeef"
+
+
+def test_interrupt_with_loop_feedback_writes_jsonl_forensic_log(tmp_path):
+    interrupt_with_loop_feedback(
+        "F34",
+        session_id="sess-loop-3",
+        tool_name="grep",
+        repeat_count=5,
+        log_dir=tmp_path,
+    )
+    jsonl_files = list(tmp_path.rglob("f34.jsonl"))
+    assert len(jsonl_files) == 1
+    record = json.loads(jsonl_files[0].read_text(encoding="utf-8").strip())
+    assert record["f_code"] == "F34"
+    assert record["payload"]["session_id"] == "sess-loop-3"
+    assert record["payload"]["tool_name"] == "grep"
+    assert record["payload"]["repeat_count"] == 5
+    assert "loop_break_feedback" in record["payload"]
+
+
+def test_interrupt_with_loop_feedback_handles_missing_optional_fields(tmp_path):
+    """Sparse dispatch (no tool_name, no repeat_count) must not raise."""
+    result = interrupt_with_loop_feedback("F34", log_dir=tmp_path)
+    assert result.action == "continue"
+    assert "<unknown tool>" in result.message
+    assert "N" in result.message  # placeholder for repeat count
+
+
+def test_interrupt_with_loop_feedback_forensic_log_failure_is_isolated():
+    """A broken local-log write must NOT raise — handler returns normally."""
+    with mock.patch(
+        "lib.durability.handlers.fallback_local_log",
+        side_effect=OSError("disk full"),
+    ):
+        result = interrupt_with_loop_feedback(
+            "F34",
+            tool_name="x",
+            repeat_count=5,
+        )
+    assert result.action == "continue"
+    assert result.handler == "interrupt_with_loop_feedback"
+
+
+def test_interrupt_with_loop_feedback_logs_warning_with_evidence(caplog, tmp_path):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="lib.durability.handlers"):
+        interrupt_with_loop_feedback(
+            "F34",
+            session_id="sess-x",
+            tool_name="curl",
+            repeat_count=5,
+            log_dir=tmp_path,
+        )
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("interrupt_with_loop_feedback" in m for m in warn_msgs)
+    assert any("curl" in m for m in warn_msgs)
+
+
+def test_interrupt_with_loop_feedback_preserves_detector_payload(tmp_path):
+    """Caller-supplied payload dict survives into the forensic record."""
+    interrupt_with_loop_feedback(
+        "F34",
+        tool_name="x",
+        repeat_count=5,
+        payload={"custom_field": "custom_value"},
+        log_dir=tmp_path,
+    )
+    record = json.loads(list(tmp_path.rglob("f34.jsonl"))[0].read_text(encoding="utf-8").strip())
+    assert record["payload"]["detector_payload"] == {"custom_field": "custom_value"}
+
+
+def test_loop_feedback_template_is_exported_for_external_consumers():
+    """Orchestrator code may want to format the same string without invoking
+    the handler — e.g. to inject loop-break guidance preemptively."""
+    s = LOOP_FEEDBACK_TEMPLATE.format(tool_name="x", repeat_count=5)
+    assert "x" in s and "5" in s
+
+
+# ----------------------------------------------------------------------
+# F36 — escalate_context_pressure (production handler)
+# ----------------------------------------------------------------------
+
+
+def test_escalate_context_pressure_returns_continue_action(tmp_path):
+    with (
+        mock.patch("lib.kanban.telegram_bridge.send_alert"),
+    ):
+        result = escalate_context_pressure(
+            "F36",
+            session_id="sess-ctx-1",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    assert isinstance(result, HandlerResult)
+    assert result.action == "continue"
+    assert result.f_code == "F36"
+    assert result.handler == "escalate_context_pressure"
+
+
+def test_escalate_context_pressure_message_includes_ratio_and_model(tmp_path):
+    with mock.patch("lib.kanban.telegram_bridge.send_alert"):
+        result = escalate_context_pressure(
+            "F36",
+            prompt_tokens=180_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    assert "claude-opus-4-7" in result.message
+    assert "90.0%" in result.message
+    assert "200,000" in result.message
+    assert "180,000" in result.message
+
+
+def test_escalate_context_pressure_reads_payload_when_kwargs_missing(tmp_path):
+    """Observability shim dispatches via payload={...}; handler must accept that form."""
+    with mock.patch("lib.kanban.telegram_bridge.send_alert"):
+        result = escalate_context_pressure(
+            "F36",
+            session_id="sess-ctx-payload",
+            payload={
+                "model": "vertex_ai/claude-sonnet-4-6",
+                "prompt_tokens": 195_000,
+                "context_length": 200_000,
+            },
+            log_dir=tmp_path,
+        )
+    assert "vertex_ai/claude-sonnet-4-6" in result.message
+    assert "97.5%" in result.message
+    assert result.extra["ratio"] == pytest.approx(0.975)
+
+
+def test_escalate_context_pressure_calls_telegram_send_alert(tmp_path):
+    with mock.patch("lib.kanban.telegram_bridge.send_alert") as mock_send:
+        escalate_context_pressure(
+            "F36",
+            session_id="sess-ctx-tg",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            card_id=42,
+            log_dir=tmp_path,
+        )
+    mock_send.assert_called_once()
+    # Card id is the first positional arg per telegram_bridge.send_alert signature.
+    args, kwargs = mock_send.call_args
+    assert args[0] == 42
+    # The message is the second positional arg.
+    assert "claude-opus-4-7" in args[1]
+
+
+def test_escalate_context_pressure_does_not_call_update_card_status(tmp_path):
+    """FAIL_SOFT — handler MUST NOT transition the card to BLOCKED."""
+    with (
+        mock.patch("lib.kanban.telegram_bridge.send_alert"),
+        mock.patch("lib.kanban.telegram_bridge.update_card_status") as mock_update,
+    ):
+        escalate_context_pressure(
+            "F36",
+            session_id="sess-ctx-noblock",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            card_id=42,
+            log_dir=tmp_path,
+        )
+    mock_update.assert_not_called()
+
+
+def test_escalate_context_pressure_telegram_failure_is_isolated(tmp_path):
+    with mock.patch(
+        "lib.kanban.telegram_bridge.send_alert",
+        side_effect=RuntimeError("telegram api down"),
+    ):
+        result = escalate_context_pressure(
+            "F36",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    assert result.action == "continue"
+    # Forensic log still written despite Telegram failure.
+    assert list(tmp_path.rglob("f36.jsonl"))
+
+
+def test_escalate_context_pressure_writes_jsonl_forensic_log(tmp_path):
+    with mock.patch("lib.kanban.telegram_bridge.send_alert"):
+        escalate_context_pressure(
+            "F36",
+            session_id="sess-ctx-jsonl",
+            prompt_tokens=180_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    jsonl_files = list(tmp_path.rglob("f36.jsonl"))
+    assert len(jsonl_files) == 1
+    record = json.loads(jsonl_files[0].read_text(encoding="utf-8").strip())
+    assert record["f_code"] == "F36"
+    assert record["payload"]["session_id"] == "sess-ctx-jsonl"
+    assert record["payload"]["model"] == "claude-opus-4-7"
+    assert record["payload"]["prompt_tokens"] == 180_000
+    assert record["payload"]["context_length"] == 200_000
+    assert record["payload"]["ratio"] == pytest.approx(0.9)
+    assert "escalation_message" in record["payload"]
+
+
+def test_escalate_context_pressure_extra_has_stable_flags(tmp_path):
+    """Hermes loop layer checks extra['context_pressure'] to force compaction."""
+    with mock.patch("lib.kanban.telegram_bridge.send_alert"):
+        result = escalate_context_pressure(
+            "F36",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    assert result.extra["context_pressure"] is True
+    assert result.extra["recommended_action"] == "force_compaction_or_request_new_session"
+    assert result.extra["ratio"] == pytest.approx(0.95)
+    assert result.extra["model"] == "claude-opus-4-7"
+
+
+def test_escalate_context_pressure_handles_degenerate_inputs(tmp_path):
+    """Missing/zero context_length must NOT crash the handler."""
+    with mock.patch("lib.kanban.telegram_bridge.send_alert"):
+        result = escalate_context_pressure(
+            "F36",
+            session_id="sess-degen",
+            prompt_tokens=None,
+            context_length=None,
+            model=None,
+            log_dir=tmp_path,
+        )
+    assert result.action == "continue"
+    assert result.f_code == "F36"
+    assert result.extra["ratio"] == 0.0
+    assert "incomplete" in result.message.lower()
+
+
+def test_escalate_context_pressure_forensic_log_failure_is_isolated():
+    """Local-log failure does not break handler return."""
+    with (
+        mock.patch("lib.kanban.telegram_bridge.send_alert"),
+        mock.patch(
+            "lib.durability.handlers.fallback_local_log",
+            side_effect=OSError("disk full"),
+        ),
+    ):
+        result = escalate_context_pressure(
+            "F36",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+        )
+    assert result.action == "continue"
+
+
+def test_escalate_context_pressure_logs_warning(caplog, tmp_path):
+    import logging
+
+    with (
+        caplog.at_level(logging.WARNING, logger="lib.durability.handlers"),
+        mock.patch("lib.kanban.telegram_bridge.send_alert"),
+    ):
+        escalate_context_pressure(
+            "F36",
+            session_id="sess-warn",
+            prompt_tokens=180_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    warn_msgs = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("escalate_context_pressure" in m for m in warn_msgs)
+
+
+# ----------------------------------------------------------------------
+# Registry promotion — F34/F36 stubs replaced by production handlers
+# ----------------------------------------------------------------------
+
+
+def test_F34_handler_in_registry_is_production_not_stub():
+    assert HANDLER_REGISTRY["interrupt_with_loop_feedback"] is interrupt_with_loop_feedback
+    # A stub would have __name__ starting with "stub_"
+    assert not HANDLER_REGISTRY["interrupt_with_loop_feedback"].__name__.startswith("stub_")
+
+
+def test_F36_handler_in_registry_is_production_not_stub():
+    assert HANDLER_REGISTRY["escalate_context_pressure"] is escalate_context_pressure
+    assert not HANDLER_REGISTRY["escalate_context_pressure"].__name__.startswith("stub_")
+
+
+def test_dispatch_F34_routes_to_production_handler(tmp_path):
+    result = dispatch(
+        "F34",
+        session_id="sess-d34",
+        tool_name="grep",
+        repeat_count=5,
+        log_dir=tmp_path,
+    )
+    assert result.handler == "interrupt_with_loop_feedback"
+    assert result.action == "continue"
+    assert "grep" in result.message
+    assert "5" in result.message
+
+
+def test_dispatch_F36_routes_to_production_handler(tmp_path):
+    with mock.patch("lib.kanban.telegram_bridge.send_alert"):
+        result = dispatch(
+            "F36",
+            session_id="sess-d36",
+            prompt_tokens=190_000,
+            context_length=200_000,
+            model="claude-opus-4-7",
+            log_dir=tmp_path,
+        )
+    assert result.handler == "escalate_context_pressure"
+    assert result.action == "continue"
+    assert "claude-opus-4-7" in result.message

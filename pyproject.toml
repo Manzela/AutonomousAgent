@@ -8,6 +8,16 @@ dependencies = [
   "jsonschema>=4.20",
   "httpx>=0.27",
   "pydantic>=2.6",
+  # Google Cloud SDKs — lazy-imported inside lib/trajectory/shipper.py and
+  # scripts/run_trajectory_shipper.py. The lazy import keeps unit tests
+  # mockable without the SDK installed, but production execution on the VM
+  # requires the wheels to be present in the resolved environment. Declared
+  # here (not under [project.optional-dependencies]) so `uv run` on the
+  # runtime host pulls them automatically and the J1 launch flip cannot
+  # silently fail with ModuleNotFoundError at first --ship-once invocation.
+  "google-cloud-secret-manager>=2.20",
+  "google-cloud-storage>=2.18",
+  "google-cloud-modelarmor>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -37,4 +47,5 @@ asyncio_mode = "auto"
 markers = [
   "integration: integration-tier tests that cross module boundaries (config, plugin, container)",
   "docker: tests that require a running docker daemon and `docker compose` CLI (auto-skipped on docker-less hosts)",
+  "persistence_trap: Persistence Trap (#12.c) contract tests for the J3 trajectory shipper. Required on every PR that touches lib/trajectory/, lib/durability/failure_matrix.py, lib/evaluators/judge_events.py, or terraform/phase-0a-gcp/model-armor/.",
 ]

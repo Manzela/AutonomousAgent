@@ -48,3 +48,8 @@ output "vm_zone" {
   value       = var.zone
   description = "Zone the VM is deployed in"
 }
+
+output "j3_trajectories_bucket_name" {
+  description = "Name of the J3 trajectory shipper destination bucket. Consumed by the autonomousagent-j3-shipper-config Secret Manager secret (see secret_manager.tf)."
+  value       = google_storage_bucket.j3_trajectories.name
+}

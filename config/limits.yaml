@@ -162,6 +162,11 @@ evaluators:
     safety: vertex_ai/claude-opus-4-7
     scope-fit: vertex_ai/claude-sonnet-4-6
     completeness: vertex_ai/gemini-3.1-pro-preview
+  judge_events:
+    # J1 (Framing #2): one JSONL line per consensus decision. Downstream
+    # RL trajectory shipper (J3) tails this file. Persistence is fail-open.
+    enabled: true
+    path: trajectories/judge-events.jsonl
 
 durability:
   checkpoint:
@@ -175,6 +180,18 @@ durability:
     interval_s: 300
   snapshot_watchdog:
     interval_s: 1800
+  # J4 (Framing #2) runtime detectors. See lib/durability/runtime_detectors.py
+  # and docs/architecture/failure-matrix.md F34/F35/F36.
+  loop_detector:
+    threshold: 5             # consecutive identical-fingerprint calls -> F34
+  stall_detector:
+    idle_timeout_s: 300      # seconds of no tool-call while in_progress -> F35
+    check_interval_s: 60     # how often the watchdog checks per session
+  # J9 (Framing #2) context-pressure detector. Upstream Hermes already compacts
+  # at 0.5 (context_compressor.threshold_percent); 0.9 is a "compaction
+  # already failed" warning surface — not a second compaction trigger.
+  context_detector:
+    warn_threshold: 0.9      # prompt_tokens / context_length ratio -> F36
 
 memory:
   rejected_md_path: /data/MEMORY/REJECTED.md

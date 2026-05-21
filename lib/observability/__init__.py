@@ -33,18 +33,27 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from typing import Any, Dict, Optional, Tuple
 
-from lib.observability.otel_setup import setup_tracing
+from lib.observability.model_context import get_model_context_length
+from lib.observability.otel_setup import setup_metrics, setup_tracing
 
 logger = logging.getLogger(__name__)
 
-# Install the global TracerProvider as a side-effect of importing the
-# module. Hermes' PluginManager loads __init__.py before calling
-# register(), so by the time register() runs every subsequent
-# tracer.start_span() in any plugin is exporting through us.
+# Install the global TracerProvider + MeterProvider as a side-effect of
+# importing the module. Hermes' PluginManager loads __init__.py before
+# calling register(), so by the time register() runs every subsequent
+# tracer.start_span() AND meter.create_gauge() call in any plugin is
+# exporting through us.
+#
+# Both are best-effort — when the SDK packages are missing locally the
+# helpers return False and dependent code (gauges, spans) degrade to
+# no-ops rather than raising. Container builds pin the SDK (see
+# deploy/Dockerfile.hermes) so the production path is always fully wired.
 _TRACING_OK = setup_tracing(service_name="hermes-agent")
+_METRICS_OK = setup_metrics(service_name="hermes-agent")
 
 # Lazy tracer handle — only used when tracing initialized.
 _tracer: Any = None
@@ -68,6 +77,23 @@ _LLM_SPANS: Dict[str, Tuple[Any, Any]] = {}  # session_id -> (span, ctx_manager)
 # tool-calling loop and each emits its own post_api_request. We sum across
 # them so the model.call span shows the full turn cost.
 _LLM_TOKEN_ACCUM: Dict[str, Tuple[int, int]] = {}  # session_id -> (in_tokens, out_tokens)
+# Per-turn model identifier captured at pre_llm_call. post_api_request needs
+# the model name to look up its context window for F-CONTEXT (F36) detection,
+# but Hermes' post_api_request kwargs only carry ``response_model`` when the
+# provider returns one — many providers do not. Storing the request model
+# from pre_llm_call gives us a deterministic fallback that survives partial
+# response envelopes. Drained in _post_llm_call.
+_LLM_MODEL_BY_SESSION: Dict[str, str] = {}  # session_id -> model id
+
+# F-CONTEXT detector singleton — lazily constructed on first record. Lives at
+# module scope so per-session F36 episode state (the detector's
+# ``self._sessions``) is shared across all post_api_request invocations for
+# the life of the process. Initialization failure (e.g. circular import in
+# certain test contexts) is cached so we don't retry on every request and
+# spam the log; cleared via _reset_context_detector_for_tests.
+_context_detector: Any = None
+_context_detector_lock = threading.Lock()
+_context_detector_init_failed = False
 
 # Attribute size cap — OTel spec allows arbitrary string lengths but exporters
 # (Phoenix, Tempo, etc.) commonly truncate at 32k. 10k is safe and keeps span
@@ -81,6 +107,44 @@ _MAX_MSG_CONTENT_LEN = 2_000
 _MAX_INPUT_MESSAGES = 20
 
 _OI_KIND = "openinference.span.kind"
+
+# ---------------------------------------------------------------------------
+# J11 — dual-emit GenAI semantic-convention attributes
+# ---------------------------------------------------------------------------
+# Phoenix consumes OpenInference (``llm.*``) attrs natively; Cloud Trace and
+# GCP "Generative AI" dashboards consume OTel GenAI semantic conventions
+# (``gen_ai.*``). Rather than pick one dialect and break the other, we
+# *additionally* emit ``gen_ai.*`` attrs on the same spans when the
+# ``HERMES_DUAL_EMIT_GEN_AI`` env var is truthy. Off by default to preserve
+# the current Phoenix-only contract; flipped on in prod once Cloud Trace
+# wiring lands. See audit/2026-05-20-architecture-research-gap-analysis/
+# audit-plan.md item J11. Spec: opentelemetry.io/docs/specs/semconv/gen-ai/
+_DUAL_EMIT_ENV = "HERMES_DUAL_EMIT_GEN_AI"
+_DUAL_EMIT_TRUTHY = {"1", "true", "yes", "on"}
+_DUAL_EMIT_ENABLED = os.getenv(_DUAL_EMIT_ENV, "").strip().lower() in _DUAL_EMIT_TRUTHY
+
+
+def _is_dual_emit_enabled() -> bool:
+    """Module-level toggle. Tests monkeypatch ``_DUAL_EMIT_ENABLED`` directly."""
+    return _DUAL_EMIT_ENABLED
+
+
+def _set_gen_ai_attrs(span: Any, attrs: Dict[str, Any]) -> None:
+    """Set every (key, value) in ``attrs`` on ``span``. No-op when dual-emit off.
+
+    Centralised so the production hot path is one branch instead of one
+    per attribute, and so tests can patch a single helper if they want to
+    assert call counts.
+    """
+    if not _is_dual_emit_enabled():
+        return
+    for k, v in attrs.items():
+        if v is None:
+            continue
+        try:
+            span.set_attribute(k, v)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("gen_ai attr %s set failed: %s", k, exc)
 
 
 def register(ctx: Any) -> None:
@@ -165,6 +229,117 @@ def _message_role_content(msg: Any) -> Tuple[Optional[str], Optional[str]]:
     role_s = str(role) if role is not None else None
     content_s = str(content) if content is not None else None
     return role_s, content_s
+
+
+# ---------------------------------------------------------------------------
+# J9 — F-CONTEXT detector wiring (wrapper-side shim)
+# ---------------------------------------------------------------------------
+# This shim sits in the observability plugin (not the wrapper-class
+# approach J13 proposes) so it works against vanilla Hermes today without
+# requiring the J13 LiteLLM wrapper refactor. The hook surface
+# (``post_api_request``) is already where the prompt-token count surfaces;
+# we add the context-length lookup + detector call here.
+#
+# Three things happen per post_api_request:
+#   1. ``in_tok`` is computed from ``usage`` (same source the OpenInference
+#      token-count enrichment uses above);
+#   2. ``model`` is resolved — prefer the provider's ``response_model``
+#      kwarg, fall back to the model captured at pre_llm_call;
+#   3. ``ContextUsageDetector.record_usage`` is called; if it returns
+#      ``"F36"`` we dispatch the failure-matrix handler so operators are
+#      paged (current handler is ``escalate_context_pressure`` — a STUB
+#      that delegates to fallback_local_log until Task #56 implements
+#      the real escalation).
+#
+# Failures inside this path are swallowed at the bottom of
+# ``_record_context_usage`` because the wrapper SHALL NOT break model
+# tracing if the detector or dispatch logic raises.
+
+
+def _get_context_detector() -> Any:
+    """Lazy-init singleton ContextUsageDetector.
+
+    Returns ``None`` when construction has previously failed (cached) or
+    when the import itself raises. Double-checked-locking so two
+    concurrent first calls don't both construct + race the assignment.
+    """
+    global _context_detector, _context_detector_init_failed
+    if _context_detector is not None:
+        return _context_detector
+    if _context_detector_init_failed:
+        return None
+    with _context_detector_lock:
+        if _context_detector is not None:
+            return _context_detector
+        if _context_detector_init_failed:
+            return None
+        try:
+            from lib.durability.runtime_detectors import ContextUsageDetector
+
+            _context_detector = ContextUsageDetector()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "ContextUsageDetector init failed (%s); F36 detection disabled",
+                exc,
+            )
+            _context_detector_init_failed = True
+            return None
+    return _context_detector
+
+
+def _record_context_usage(
+    *,
+    session_id: str,
+    prompt_tokens: int,
+    model: Optional[str],
+) -> None:
+    """Record the per-request prompt-token reading and dispatch F36 if tripped.
+
+    No-op when ``model`` is unknown (context_length == 0) — see
+    ``model_context.get_model_context_length`` docstring. Exceptions
+    are swallowed at debug level so a broken detector or dispatch
+    can't break the LLM tracing path.
+    """
+    if not session_id or prompt_tokens <= 0:
+        return None
+    context_length = get_model_context_length(model)
+    if context_length <= 0:
+        return None
+    detector = _get_context_detector()
+    if detector is None:
+        return None
+    try:
+        f_code = detector.record_usage(
+            session_id=session_id,
+            prompt_tokens=prompt_tokens,
+            context_length=context_length,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("ContextUsageDetector.record_usage failed: %s", exc)
+        return None
+    if f_code != "F36":
+        return None
+    # Threshold crossed — dispatch the failure-matrix handler. The
+    # registered handler for F36 is ``escalate_context_pressure``,
+    # currently a STUB delegating to ``fallback_local_log`` (the
+    # production implementation lands in Task #56). Import inline so
+    # the dispatch registry's side-effect import only happens when we
+    # actually need to dispatch.
+    try:
+        from lib.durability.handlers import dispatch
+
+        dispatch(
+            "F36",
+            session_id=session_id,
+            payload={
+                "model": model,
+                "prompt_tokens": prompt_tokens,
+                "context_length": context_length,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("F36 dispatch failed: %s", exc)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -345,6 +520,19 @@ def _pre_llm_call(
         if is_first_turn is not None:
             span.set_attribute("is_first_turn", bool(is_first_turn))
 
+        # J11 dual-emit — additionally tag this span with OTel GenAI
+        # semantic-convention attrs for Cloud Trace / GCP GenAI dashboards.
+        # operation.name=chat is the spec's coarse-grained classifier; we
+        # don't currently distinguish chat vs. completion at the hook layer.
+        _set_gen_ai_attrs(
+            span,
+            {
+                "gen_ai.operation.name": "chat",
+                "gen_ai.request.model": str(model) if model else None,
+                "gen_ai.system": str(platform) if platform else None,
+            },
+        )
+
         # Input messages — full conversation_history if available, else
         # fall back to the single user_message string.
         if isinstance(conversation_history, (list, tuple)) and conversation_history:
@@ -374,6 +562,14 @@ def _pre_llm_call(
             # Reset the token accumulator for the new turn so prior-turn
             # totals don't leak into this span.
             _LLM_TOKEN_ACCUM[session_id] = (0, 0)
+            # Capture the request model for F-CONTEXT detection. The
+            # downstream post_api_request handler prefers ``response_model``
+            # from the provider but falls back to this value when the
+            # provider doesn't echo a model id (Anthropic Vertex sometimes
+            # returns model only in the streaming envelope, not the unary
+            # response Hermes captures).
+            if model:
+                _LLM_MODEL_BY_SESSION[session_id] = str(model)
     except Exception as exc:  # noqa: BLE001
         logger.debug("model.call start failed: %s", exc)
     return None
@@ -395,6 +591,9 @@ def _post_llm_call(
             entry = _LLM_SPANS.pop(session_id, None)
             # Drop accumulator state now that the turn is closing.
             _LLM_TOKEN_ACCUM.pop(session_id, None)
+            # Drop the pre_llm_call-captured model so the next turn's
+            # F-CONTEXT detector lookup doesn't read stale state.
+            _LLM_MODEL_BY_SESSION.pop(session_id, None)
         if entry is None:
             return None
         span, _ = entry
@@ -487,9 +686,38 @@ def _post_api_request(
                 span.set_attribute("llm.token_count.prompt", new_in)
                 span.set_attribute("llm.token_count.completion", new_out)
                 span.set_attribute("llm.token_count.total", new_in + new_out)
+                # J11 dual-emit — running totals mirror what the OpenInference
+                # attrs above show, so accumulator semantics are identical.
+                _set_gen_ai_attrs(
+                    span,
+                    {
+                        "gen_ai.usage.input_tokens": new_in,
+                        "gen_ai.usage.output_tokens": new_out,
+                    },
+                )
+
+            # J9 wiring — feed the per-request prompt-token count into the
+            # F-CONTEXT detector. Uses ``in_tok`` (the current request's
+            # input count, NOT the running ``new_in`` total) because the
+            # detector wants the live ratio against this turn's context
+            # window, not the cumulative debt across the tool-loop.
+            # Model resolution: prefer the provider-echoed ``response_model``;
+            # fall back to the model captured at pre_llm_call.
+            if in_tok > 0:
+                with _LOCK:
+                    fallback_model = _LLM_MODEL_BY_SESSION.get(session_id)
+                _record_context_usage(
+                    session_id=session_id,
+                    prompt_tokens=in_tok,
+                    model=str(response_model) if response_model else fallback_model,
+                )
 
         if finish_reason:
             span.set_attribute("llm.finish_reason", str(finish_reason))
+            # GenAI spec uses an array of finish reasons (one per choice/
+            # candidate). We only see a single reason at the wrapper layer,
+            # so emit a length-1 tuple — tuples are OTel-attribute-safe.
+            _set_gen_ai_attrs(span, {"gen_ai.response.finish_reasons": (str(finish_reason),)})
         if api_duration is not None:
             try:
                 span.set_attribute("llm.api_duration_ms", int(float(api_duration) * 1000))
@@ -497,6 +725,7 @@ def _post_api_request(
                 pass
         if response_model:
             span.set_attribute("llm.response_model", str(response_model))
+            _set_gen_ai_attrs(span, {"gen_ai.response.model": str(response_model)})
     except Exception as exc:  # noqa: BLE001
         logger.debug("post_api_request enrich failed: %s", exc)
     return None

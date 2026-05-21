@@ -77,6 +77,9 @@ A docker-compose stack with **eleven services (10 long-running + 1 init sidecar)
 | 10 | `snapshot-watchdog` | Daily GCS upload of `/home/hermes/.hermes` for off-host DR (no-op until `GCS_SNAPSHOT_BUCKET` is set) | yes |
 | 11 | `volume-init` | One-shot volume-permissions init (`restart: no`) | no |
 
+The table above lists only **docker-compose services**. MCP servers loaded **inside the `hermes` container** (stdio subprocesses launched by Hermes, plus hosted HTTP MCPs) are not docker services and live in their own inventory:
+[`docs/mcp-inventory.md`](docs/mcp-inventory.md) — currently `github` (HTTP sidecar — also #7 above), `context7` (hosted HTTP/SSE), `fetch` (stdio via `uvx`), `time` (stdio via `uvx`).
+
 For the full design: [docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md](docs/superpowers/specs/2026-05-14-hermes-agent-architecture-design.md)
 
 ## Project layout

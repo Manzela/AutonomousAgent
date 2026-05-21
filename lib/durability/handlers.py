@@ -1,11 +1,18 @@
-"""Baseline implementations for the failure-matrix handler dispatch layer.
+"""Production implementations for the failure-matrix handler dispatch layer.
 
-Implements the three highest-frequency handlers (``retry_with_backoff``,
-``halt_alert_snapshot``, ``fallback_local_log``) and registers stubs for
-the remaining named handlers so every entry in ``failure_matrix.FAILURE_MATRIX``
-dispatches to a callable.
+Currently implemented (5 handlers):
 
-Stubs delegate to a sane default based on the F-code's trichotomy class:
+* :func:`retry_with_backoff` — SELF_HEAL baseline (exp backoff + jitter)
+* :func:`halt_alert_snapshot` — FAIL_LOUD baseline (snapshot + Telegram + BLOCKED)
+* :func:`fallback_local_log` — FAIL_SOFT baseline (JSONL forensic record)
+* :func:`interrupt_with_loop_feedback` — F34 (F-LOOP) — builds an injectable
+  loop-break message for the orchestrator + writes forensic JSONL
+* :func:`escalate_context_pressure` — F36 (F-CONTEXT) — Telegram escalation +
+  orchestrator hint to force compaction, FAIL_SOFT (NOT a BLOCKED transition)
+
+All other named handlers from ``FAILURE_MATRIX`` are auto-stubbed via
+:func:`_make_stub`. Stubs delegate to the baseline that matches the F-code's
+trichotomy class:
 
 * ``SELF_HEAL`` → :func:`retry_with_backoff`
 * ``FAIL_SOFT`` → :func:`fallback_local_log`
@@ -15,7 +22,8 @@ Each stub emits a WARNING log identifying the unimplemented handler name so
 operators can prioritize which stub to replace with real behavior.
 
 Audit reference: ``audit/2026-05-19-resume-orchestration/audit-plan.md`` P0-5,
-risk register R4 ("matrix names 16 handlers; none implemented").
+risk register R4 ("matrix names 16 handlers; none implemented") — closed.
+F34/F36 promotions from auto-stub to production: Task #56.
 """
 
 from __future__ import annotations
@@ -231,6 +239,275 @@ def fallback_local_log(
 
 
 # ----------------------------------------------------------------------
+# F34 — interrupt_with_loop_feedback (F-LOOP, FAIL_SOFT)
+# ----------------------------------------------------------------------
+
+
+# Public so tests + the orchestrator can build the same string deterministically
+# without relying on the formatted message in the HandlerResult.
+LOOP_FEEDBACK_TEMPLATE = (
+    "[Loop break] You have called `{tool_name}` {repeat_count} times in a row "
+    "with identical arguments. Repeated identical calls almost never produce "
+    "new information. Try one of: (1) materially different arguments, "
+    "(2) a different tool, (3) summarize what you have learned so far and move "
+    "to the next subtask, or (4) stop and explain why the task is blocked. If "
+    "the repetition is intentional (e.g. polling), state that intent explicitly "
+    "in your next message so this loop guard does not fire again."
+)
+
+
+def interrupt_with_loop_feedback(
+    f_code: str,
+    *,
+    session_id: Optional[str] = None,
+    tool_name: Optional[str] = None,
+    repeat_count: Optional[int] = None,
+    fingerprint: Optional[str] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    log_dir: Optional[Path] = None,
+    **_: Any,
+) -> HandlerResult:
+    """F-LOOP handler — build an injectable loop-break message + persist forensics.
+
+    Output contract (consumed by the orchestrator's per-turn loop):
+
+    * ``result.action == "continue"`` (FAIL_SOFT — never halts the session)
+    * ``result.message`` carries the human-/model-readable loop-break feedback
+      string. The orchestrator SHOULD inject this as a synthetic system or
+      user message into the next agent turn so the model has a chance to
+      change behavior before the loop guard fires again.
+    * ``result.extra["loop_break_feedback"]`` mirrors ``result.message`` so a
+      caller that only reads ``extra`` (e.g. structured logging consumers)
+      can still pick it up.
+    * ``result.extra["tool_name"]`` / ``["repeat_count"]`` / ``["fingerprint"]``
+      surface the detector's evidence so a dashboard can group repeat
+      offenders by tool.
+
+    Side effects (each isolated in its own try/except — fail-open):
+
+    1. WARNING log line identifying tool + repeat count.
+    2. JSONL forensic record via :func:`fallback_local_log` so the same
+       on-disk trail every FAIL_SOFT handler writes is preserved. The
+       payload contains the loop fingerprint + repeat count + feedback
+       text — operators auditing a session can reconstruct what the model
+       was told without re-running the orchestrator.
+
+    No Telegram alert by default — F-LOOP is FAIL_SOFT and self-correcting;
+    paging an operator on every loop is alert fatigue. The orchestrator can
+    layer an alert on top if N loop-breaks fire in a session window.
+    """
+    # Provide safe defaults for the formatter so a sparse dispatch (e.g. from a
+    # detector that doesn't yet pass tool_name) still produces a coherent
+    # message rather than crashing on a KeyError.
+    tool_display = tool_name or "<unknown tool>"
+    count_display = repeat_count if repeat_count is not None else "N"
+
+    feedback = LOOP_FEEDBACK_TEMPLATE.format(
+        tool_name=tool_display,
+        repeat_count=count_display,
+    )
+
+    logger.warning(
+        "handlers.interrupt_with_loop_feedback f_code=%s session=%s tool=%s "
+        "repeat_count=%s fingerprint=%s",
+        f_code,
+        session_id or "n/a",
+        tool_display,
+        count_display,
+        fingerprint or "n/a",
+    )
+
+    # Persist a forensic record. We deliberately reuse fallback_local_log
+    # rather than open a parallel file format so the on-disk schema stays
+    # uniform across every FAIL_SOFT handler.
+    forensic_payload = {
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "repeat_count": repeat_count,
+        "fingerprint": fingerprint,
+        "loop_break_feedback": feedback,
+    }
+    if payload:
+        forensic_payload["detector_payload"] = payload
+    try:
+        fallback_local_log(f_code, payload=forensic_payload, log_dir=log_dir)
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "handlers.interrupt_with_loop_feedback forensic log failed f_code=%s err=%s",
+            f_code,
+            exc,
+        )
+
+    return HandlerResult(
+        action="continue",
+        f_code=f_code,
+        handler="interrupt_with_loop_feedback",
+        message=feedback,
+        extra={
+            "loop_break_feedback": feedback,
+            "tool_name": tool_name,
+            "repeat_count": repeat_count,
+            "fingerprint": fingerprint,
+        },
+    )
+
+
+# ----------------------------------------------------------------------
+# F36 — escalate_context_pressure (F-CONTEXT, FAIL_SOFT)
+# ----------------------------------------------------------------------
+
+
+CONTEXT_PRESSURE_TEMPLATE = (
+    "[Context pressure] {ratio_pct:.1f}% of {model}'s {context_length:,}-token "
+    "context window is consumed by prompt tokens ({prompt_tokens:,}). Upstream "
+    "compaction is presumed ineffective (either it ran and got rolled back by "
+    "the anti-thrashing guard, or it never fired). Recommended next actions: "
+    "(1) summarize-and-discard older turns, (2) request `/new` from the "
+    "operator, (3) hard-truncate retrieval results before the next tool call."
+)
+
+
+def escalate_context_pressure(
+    f_code: str,
+    *,
+    session_id: Optional[str] = None,
+    prompt_tokens: Optional[int] = None,
+    context_length: Optional[int] = None,
+    model: Optional[str] = None,
+    card_id: Optional[Any] = None,
+    payload: Optional[Dict[str, Any]] = None,
+    log_dir: Optional[Path] = None,
+    **_: Any,
+) -> HandlerResult:
+    """F-CONTEXT handler — escalate via Telegram + forensic log + orchestrator hint.
+
+    Accepts the context measurements either as explicit kwargs or inside a
+    ``payload`` dict. The observability shim that fires this F-code
+    (:mod:`lib.observability` ``_record_context_usage``) currently dispatches
+    via ``payload={"model": ..., "prompt_tokens": ..., "context_length": ...}``
+    so both forms are first-class.
+
+    Output contract:
+
+    * ``result.action == "continue"`` (FAIL_SOFT — the model can keep running,
+      but every subsequent turn risks provider-side hard truncation).
+    * ``result.message`` carries the escalation text — suitable for both
+      operator-facing Telegram and as a synthetic system message the
+      orchestrator can inject into the next turn.
+    * ``result.extra["context_pressure"] == True`` is a stable boolean flag
+      a Hermes loop layer can check to force a compaction pass before the
+      next model call.
+    * ``result.extra["ratio"]`` carries the floating-point ratio so a
+      dashboard / alert pipeline can threshold on it without re-parsing the
+      message.
+
+    Side effects (each isolated):
+
+    1. WARNING log line.
+    2. Telegram alert via :func:`lib.kanban.telegram_bridge.send_alert` —
+       importantly NOT a halt or card-status transition (FAIL_SOFT).
+    3. JSONL forensic record via :func:`fallback_local_log`.
+    """
+    # Pull missing kwargs from the payload dict — supports both calling
+    # conventions used in production.
+    payload = payload or {}
+    if prompt_tokens is None:
+        prompt_tokens = payload.get("prompt_tokens")
+    if context_length is None:
+        context_length = payload.get("context_length")
+    if model is None:
+        model = payload.get("model")
+
+    # Compute the ratio defensively. The detector should only fire above the
+    # warn threshold so the inputs are normally well-formed, but a stray
+    # dispatch with missing/zero context_length must not crash the handler.
+    try:
+        pt = int(prompt_tokens) if prompt_tokens is not None else 0
+        cl = int(context_length) if context_length is not None else 0
+    except (TypeError, ValueError):
+        pt, cl = 0, 0
+    ratio = (pt / cl) if cl > 0 else 0.0
+
+    model_display = model or "<unknown model>"
+    if cl > 0 and pt > 0:
+        message = CONTEXT_PRESSURE_TEMPLATE.format(
+            ratio_pct=ratio * 100,
+            model=model_display,
+            context_length=cl,
+            prompt_tokens=pt,
+        )
+    else:
+        # Degenerate inputs — still emit a coherent message rather than
+        # a half-rendered template.
+        message = (
+            f"[Context pressure] F-CONTEXT escalation fired for session="
+            f"{session_id or 'n/a'} model={model_display} but inputs were "
+            f"incomplete (prompt_tokens={prompt_tokens!r}, "
+            f"context_length={context_length!r}). Investigate detector wiring."
+        )
+
+    logger.warning(
+        "handlers.escalate_context_pressure f_code=%s session=%s model=%s "
+        "prompt_tokens=%s context_length=%s ratio=%.3f",
+        f_code,
+        session_id or "n/a",
+        model_display,
+        prompt_tokens,
+        context_length,
+        ratio,
+    )
+
+    # Telegram — best-effort, fail-open. Note: no update_card_status here.
+    # F-CONTEXT is FAIL_SOFT; blocking the card on every escalation would
+    # collapse the agent into halt-loud territory.
+    try:
+        from lib.kanban.telegram_bridge import send_alert
+
+        send_alert(card_id, message)
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "handlers.escalate_context_pressure Telegram failed f_code=%s err=%s",
+            f_code,
+            exc,
+        )
+
+    # Forensic JSONL record.
+    forensic_payload = {
+        "session_id": session_id,
+        "model": model,
+        "prompt_tokens": prompt_tokens,
+        "context_length": context_length,
+        "ratio": ratio,
+        "escalation_message": message,
+    }
+    if payload:
+        forensic_payload["detector_payload"] = payload
+    try:
+        fallback_local_log(f_code, payload=forensic_payload, log_dir=log_dir)
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        logger.warning(
+            "handlers.escalate_context_pressure forensic log failed f_code=%s err=%s",
+            f_code,
+            exc,
+        )
+
+    return HandlerResult(
+        action="continue",
+        f_code=f_code,
+        handler="escalate_context_pressure",
+        message=message,
+        extra={
+            "context_pressure": True,
+            "ratio": ratio,
+            "model": model,
+            "prompt_tokens": prompt_tokens,
+            "context_length": context_length,
+            "recommended_action": "force_compaction_or_request_new_session",
+        },
+    )
+
+
+# ----------------------------------------------------------------------
 # Stub registrations for the remaining named handlers
 # ----------------------------------------------------------------------
 
@@ -271,6 +548,8 @@ HANDLER_REGISTRY: Dict[str, Callable[..., HandlerResult]] = {
     "retry_with_backoff": retry_with_backoff,
     "halt_alert_snapshot": halt_alert_snapshot,
     "fallback_local_log": fallback_local_log,
+    "interrupt_with_loop_feedback": interrupt_with_loop_feedback,
+    "escalate_context_pressure": escalate_context_pressure,
 }
 
 # Register stubs for everything else.

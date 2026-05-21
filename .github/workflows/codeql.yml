@@ -15,13 +15,28 @@ name: CodeQL
 on:
   pull_request:
     branches: [main]
+    # Research artefacts under docs/research/ are reference scaffolding
+    # (per docs/research/autonomous-agent-seed-orchestrator/README.md: must
+    # be ported into lib/ + tests before becoming production). They are
+    # not part of the runtime attack surface and CodeQL will scan them
+    # when they are promoted out of docs/research/. Negation pattern is
+    # used here in `paths` (not paths-ignore) so the trigger filter is
+    # unambiguous: workflow runs iff a non-research .py file or this
+    # workflow / its config changed. The codeql-config.yml's own
+    # paths-ignore handles the analysis step (which files get scanned)
+    # for any run that does fire.
     paths:
       - '**/*.py'
+      - '!docs/research/**'
       - '.github/workflows/codeql.yml'
+      - '.github/codeql/codeql-config.yml'
   push:
     branches: [main]
     paths:
       - '**/*.py'
+      - '!docs/research/**'
+      - '.github/workflows/codeql.yml'
+      - '.github/codeql/codeql-config.yml'
   schedule:
     # Weekly Mondays 09:00 UTC — picks up new query pack releases.
     - cron: '17 9 * * 1'
@@ -60,6 +75,11 @@ jobs:
           # security-extended adds CWE coverage beyond the default suite;
           # quality adds maintainability queries. Both are still detection-only.
           queries: security-extended,security-and-quality
+          # paths-ignore lives in the config file so it applies to the
+          # ANALYSIS step (which files get scanned), not just to workflow
+          # triggering. Workflow-level paths-ignore above only controls
+          # whether the job RUNS for a given PR.
+          config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3

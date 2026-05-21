@@ -25,6 +25,12 @@ cache invalidation between each.
 | 14 | Terraform fmt consistency | `terraform fmt -check -recursive` | PASS | Exit 0 across phase-0a-gcp tree after format-fix commit `a1f9a2d`. |
 | 15 | Persistence Trap T3 "DO NOT WEAKEN" red-test | `uv run --extra dev pytest tests/integration/test_persistence_trap.py` after every format change | PASS | 8 passed on every re-run — no semantic regression from format fixes. |
 
+## Addendum 2026-05-21: row 1 root-cause correction
+
+The "1 pre-existing local-env failure" in row 1 was originally attributed to a missing `secrets/litellm-db.env`. Re-verification this session confirmed the actual root cause: `test_shell_sandbox_no_root_fs_write` at `tests/integration/test_sandbox_isolation.py:30-48` execs into the live `deploy/docker-compose.yml` stack via `docker compose exec`, so it hard-fails when the Compose stack is not running. The `litellm-db.env` dependency is in a different test (`test_p1_2_judge_panel.py`) and degrades gracefully via "sk-test" fallback.
+
+Fix landed: skip-guard applied to `test_sandbox_isolation.py` mirroring the `_docker_available()` pattern from `tests/integration/test_hermes_plugin_loader_smoke.py:166`. Marker `docker` already registered at `pyproject.toml:39`. Affected tests now cleanly SKIP on docker-less hosts. See `docs/superpowers/plans/2026-05-21-pr-merge-and-docker-skip-guard.md` Task 1.
+
 ## Issues found and remediated during verification
 
 ### Real issues fixed (committed as `a1f9a2d`)

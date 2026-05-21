@@ -94,21 +94,46 @@ state vector built on the very next `submit()` already sees the new expert.
 
 ## Production checklist
 
+> **Builder agents:** the recommended integration pattern is **hybrid —
+> abstract interfaces in `app/core/`, GCP-native implementations in
+> `app/adapters/gcp/`, in-memory implementations in `app/adapters/inmemory/`
+> for tests.** See [`../04-gcp-native-adapter-plan.md`](../04-gcp-native-adapter-plan.md)
+> for the full adapter table, priority order (P-7..P-17), and acceptance
+> criteria. The checklist below is the higher-level summary of the same
+> intent.
+
 Before flipping `OrchestratorConfig.production=True`:
 
 1. Swap `LocalSubprocessSandbox` → `FirecrackerSandbox`
-   (INTEGRATION.md P-4). The orchestrator constructor refuses to start
-   with a non-production sandbox under `production=True`.
-2. Swap `InMemoryStore` → `PostgresStore` with HNSW pgvector
-   (INTEGRATION.md P-2; Phase 2 Postgres tier in memory `phase2_postgres_tier`).
+   (INTEGRATION.md P-4) for long-lived experts, optionally
+   `CloudRunJobSandbox` (P-8) for spawn bursts. The orchestrator
+   constructor refuses to start with a non-production sandbox under
+   `production=True`.
+2. Swap `InMemoryStore` → `CloudSqlPgvectorStore` with HNSW pgvector
+   (INTEGRATION.md P-2; Phase 2 Postgres tier in memory
+   `phase2_postgres_tier`). If memory tier exceeds ~10M vectors, add
+   `VertexVectorSearchStore` (P-7) as the billion-scale tier.
 3. Swap `HeuristicJudge` ensemble defaults: keep `HeuristicJudge` as a
-   calibration anchor, but the production deploy needs ≥3 LLM judges
-   (`AnthropicJudge` plus two alternates from a different provider family).
-4. Wire `TelemetrySink.dump_jsonl` to an OTEL exporter; the current sink
-   is bounded at 16384 events and will drop on overflow.
-5. Configure `VCM_MASTER_SECRET_PATH` from a sops-managed file or GCP
-   Secret Manager (never from `VCM_MASTER_SECRET_BYTES_DEV`).
+   calibration anchor, but the production deploy needs ≥3 LLM judges —
+   `VertexAnthropicJudge` + `VertexGeminiJudge` + a third alternate-family
+   judge (P-16).
+4. Wire `TelemetrySink` → `CloudTraceTelemetry` (P-10): OTEL spans to
+   Cloud Trace, structured logs to Cloud Logging, trajectory rows to
+   BigQuery for judge-calibration analytics. The seed's sink is bounded
+   at 16384 events and will drop on overflow.
+5. Swap `VirtualContextManager` → `CloudKmsVcm` (P-11) so the master
+   secret never materialises in app memory (HMAC ops done via Cloud KMS
+   HSM). Configure `VCM_MASTER_SECRET_PATH` from a sops-managed file or
+   GCP Secret Manager for the seed/dev path (never from
+   `VCM_MASTER_SECRET_BYTES_DEV`).
 6. Enable Model Armor on the J1 sanitisation path
-   (memory `model_armor_j1_config` + `persistence_trap_contract`).
-7. Review `OrchestratorConfig` spawn rate (`max_spawned_agents_per_hour`)
+   (memory `model_armor_j1_config` + `persistence_trap_contract`;
+   INTEGRATION.md P-5).
+7. Add `PubSubIntake` (P-12) in front of `Orchestrator.submit()` for
+   durability, and `CloudTasksScheduler` (P-13) for the three background
+   loops so they survive orchestrator restart.
+8. Review `OrchestratorConfig` spawn rate (`max_spawned_agents_per_hour`)
    and circuit breaker thresholds for the target workload.
+9. Establish Workload Identity Federation (P-14), Artifact Registry +
+   Binary Authorization (P-15), and VPC Service Controls perimeter (P-17)
+   as the deployment surface expands.

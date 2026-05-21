@@ -24,7 +24,17 @@ The deliverable was produced in three phases:
 | — | Self-correction pass (8 architectural risks + mitigations) | [`02-self-correction-pass.md`](./02-self-correction-pass.md) |
 | 2 | Production-foundation Python reference implementation (~13 modules, ~2.5K LoC, async, Pydantic v2) | [`seed/`](./seed/) |
 | 3 | Bootstrapping protocol: meta-prompts, API execution loop, hot-plug mechanism, convergence criteria | [`03-phase3-bootstrapping-protocol.md`](./03-phase3-bootstrapping-protocol.md) |
-| — | How this folds into the existing AutonomousAgent build plan | [`INTEGRATION.md`](./INTEGRATION.md) |
+| 4 | **GCP-native adapter plan (hybrid pattern: abstract interfaces + GCP-native impls)** — MUST read before lifting `seed/` into `app/` | [`04-gcp-native-adapter-plan.md`](./04-gcp-native-adapter-plan.md) |
+| — | How this folds into the existing AutonomousAgent build plan (work items P-1..P-17) | [`INTEGRATION.md`](./INTEGRATION.md) |
+
+## ⚠️ Builder agents — read this before porting any module
+
+**The recommended integration pattern is hybrid: abstract interfaces in
+`app/core/`, GCP-native implementations in `app/adapters/gcp/`, in-memory
+implementations in `app/adapters/inmemory/` for tests.** See
+[`04-gcp-native-adapter-plan.md`](./04-gcp-native-adapter-plan.md) for the
+full adapter table, priority order, and acceptance criteria. Do NOT
+collapse the abstract bases when porting.
 
 ## Provenance & fidelity notes
 

@@ -121,6 +121,135 @@ queued for prioritisation against the post-audit roadmap.
   orchestrator's breakers become local soft-limits only.
 - **Trigger:** Q4 2026 A2A traffic threshold per the strategic disposition.
 
+## GCP-native adapter work items (P-7 .. P-17)
+
+These items implement the hybrid pattern described in
+[`04-gcp-native-adapter-plan.md`](./04-gcp-native-adapter-plan.md):
+**abstract interfaces in `app/core/`, GCP-native implementations in
+`app/adapters/gcp/`, in-memory implementations in `app/adapters/inmemory/`
+for tests.** Priority order is in §"Priority order for the GCP-native
+swaps" of the adapter plan; the items are listed here in numeric order.
+
+### P-7. Vertex AI Vector Search store (billion-scale tier)
+
+- Subclass `AbstractMemoryStore` as `VertexVectorSearchStore`. Honours the
+  same contract as P-2: `search()` rejects empty scopes, `gc_expired()`
+  returns row count, tier↔namespace invariant enforced.
+- Trigger to activate: project memory tier exceeds ~10M vectors. Below
+  that, the P-2 `CloudSqlPgvectorStore` is sufficient.
+- **Acceptance.** 100M random vectors across 100 projects; 10K queries;
+  zero cross-project leakage; P95 ≤ 50ms for k=10 recall.
+
+### P-8. Cloud Run jobs sandbox tier (spawn-burst optimisation)
+
+- Subclass `AbstractSandbox` as `CloudRunJobSandbox`. Complements P-4
+  (Firecracker) — Firecracker for long-lived experts, Cloud Run jobs for
+  cheap spawn bursts.
+- Cold-start tolerant; not suitable for sub-second-deadline tasks.
+- **Acceptance.** 100 concurrent spawns complete within 60s; cold-start
+  P95 ≤ 15s; no `network_allowed=True` accepted (same hard refusal as
+  `LocalSubprocessSandbox`).
+
+### P-9. Vertex embeddings adapter
+
+- Subclass `AbstractEmbedder` as `VertexEmbeddingsEmbedder`, wrapping the
+  current Vertex `text-embedding-005` (or successor) model.
+- Batched calls; deterministic on-disk cache keyed by SHA-256 of input.
+- Replaces `HashingEmbedder` in production; `HashingEmbedder` stays in
+  `app/adapters/inmemory/` for CI.
+- **Acceptance.** Recall@10 on a domain-specific eval set improves by
+  ≥30% over `HashingEmbedder`; per-embedding cost ≤ $0.0001.
+
+### P-10. Cloud Trace + Cloud Logging + BigQuery telemetry
+
+- Replace the seed's `TelemetrySink` with `CloudTraceTelemetry` that:
+  - Emits OTEL spans to Cloud Trace
+  - Emits structured logs to Cloud Logging
+  - Sinks trajectory rows to BigQuery for judge-calibration analytics
+    and PPO trajectory replay
+- BigQuery schema: one row per `(task_id, agent_id, judge_id, score,
+  calibrated_score, reward, kl_divergence, timestamp)`.
+- **Acceptance.** A 24h burn-in run produces a complete trace for every
+  task and a queryable BigQuery table of all judge scores. No telemetry
+  drop on overflow.
+
+### P-11. Cloud KMS-backed VirtualContextManager
+
+- Subclass `VirtualContextManager` as `CloudKmsVcm`. HMAC operations use
+  `MacSign`/`MacVerify` against a KMS HSM-backed key; the master secret
+  never materialises in app memory.
+- Key rotation policy: every 90 days, dual-key window of 24h.
+- Replaces the seed's raw `hmac.new(master_secret, ...)` call.
+- **Acceptance.** Master secret is never present in a heap dump of the
+  running orchestrator; key rotation completes without dropping any
+  in-flight `VirtualContextHandle`.
+
+### P-12. Pub/Sub intake for `Orchestrator.submit()`
+
+- Add a sidecar consumer that pulls from a Pub/Sub topic and invokes
+  `orchestrator.submit(request)`. The HTTP layer above publishes to the
+  topic instead of calling `submit()` directly.
+- Durability, retries with exponential backoff, dead-letter topic after
+  N=5 attempts.
+- **Acceptance.** Kill the orchestrator mid-task; on restart, the
+  in-flight task is re-delivered and completed exactly once
+  (idempotency key on `request.task_id`).
+
+### P-13. Cloud Tasks + Cloud Scheduler for background loops
+
+- Replace the orchestrator's three `asyncio.Task` background loops
+  (`_eviction_loop`, `_ephemeral_gc_loop`, `_policy_update_loop`) with
+  Cloud Scheduler cron triggers that enqueue Cloud Tasks. The orchestrator
+  exposes three HTTP handlers; Cloud Tasks invokes them.
+- Survives orchestrator restart; no missed eviction cycles.
+- **Acceptance.** 7-day continuous operation with N=3 simulated
+  orchestrator restarts: zero missed eviction cycles, zero leaked
+  ephemeral memory records.
+
+### P-14. Workload Identity Federation
+
+- Eliminate all service-account key files from the runtime environment.
+  Pod-level identity via Workload Identity (GKE) or service identity
+  (Cloud Run).
+- Required before P-12 and P-13 — Pub/Sub and Cloud Tasks need
+  identity-bound IAM.
+- **Acceptance.** `find / -name '*.json' | xargs grep -l "service_account"`
+  inside the running container returns zero results.
+
+### P-15. Artifact Registry + Binary Authorization for sandbox images
+
+- All Firecracker rootfs images and Cloud Run job container images are
+  built and stored in Artifact Registry. Binary Authorization enforces
+  that only images signed by the project's attestor can be deployed.
+- Required for any multi-host sandbox tier (P-4 or P-8).
+- **Acceptance.** An unsigned image fails to deploy with a Binary
+  Authorization policy violation in the audit log.
+
+### P-16. Three-judge Vertex ensemble (production reward model)
+
+- Wire `VertexAnthropicJudge` (Claude Opus 4.7 via Vertex, already in
+  `seed/api_client.py`), `VertexGeminiJudge` (Gemini 3.1 Pro via Vertex
+  per `memory/gemini_3_1_pro_preview_quirks.md`), and a third
+  alternate-family judge into `JudgeEnsemble`.
+- The seed's `HeuristicJudge` stays as a calibration anchor.
+- Median aggregation over ≥3 valid responses; OLS calibration against a
+  human-labelled hold-out set.
+- **Acceptance.** Per `seed/README.md` production checklist item 3: the
+  ensemble's calibrated score on a 1K-task hold-out set has Spearman
+  rank correlation ≥0.7 with human ground-truth labels.
+
+### P-17. VPC Service Controls perimeter
+
+- VPC SC perimeter around Vertex AI, Cloud SQL, Cloud Storage, Pub/Sub,
+  Cloud Tasks, Artifact Registry, and Cloud KMS resources for the
+  `autonomous-agent-2026` project.
+- Required for production data-plane isolation; defer until the
+  data-plane spans multiple GCP resources (i.e., after P-7, P-10, P-11,
+  P-12, P-13 land).
+- **Acceptance.** An access from outside the perimeter to any in-scope
+  resource is logged as a denied request in the Access Context Manager
+  audit log.
+
 ## What is NOT changed by this seed
 
 - **CI gate set.** The audit-plan P0-P2 CI gates remain authoritative.

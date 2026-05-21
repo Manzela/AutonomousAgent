@@ -1,7 +1,12 @@
 # Model Armor Configuration for J1 Trajectory Shipper
-
-This file defines the Model Armor floor settings and SDP templates for project i-for-ai.
-It follows the conventions of terraform/phase-0a-gcp/.
+#
+# SUPERSEDED 2026-05-21: this draft is preserved for audit history only.
+# The authoritative module lives at `terraform/phase-0a-gcp/model-armor/`
+# (carved into a sub-module to isolate the google-beta ~> 6.43 provider pin).
+# Do NOT terraform apply from this directory — it has no backend + no state.
+#
+# This file defines the Model Armor floor settings and SDP templates for project i-for-ai.
+# It follows the conventions of terraform/phase-0a-gcp/.
 
 resource "google_project_service" "model_armor_apis" {
   for_each = toset([
@@ -22,7 +27,9 @@ resource "google_data_loss_prevention_inspect_template" "j1_inspect_template" {
   display_name = "j1-inspect-and-redact"
 
   inspect_config {
-    min_likelihood = "LIKELIHOOD_LOW"
+    # Terraform provider enum (NOT the REST API's LIKELIHOOD_LOW): UNLIKELY
+    # errs aggressively toward redaction without VERY_UNLIKELY's noise floor.
+    min_likelihood = "UNLIKELY"
 
     dynamic "info_types" {
       for_each = [

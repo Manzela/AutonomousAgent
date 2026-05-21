@@ -36,12 +36,16 @@ If Terraform is unavailable, execute the following commands:
 gcloud services enable modelarmor.googleapis.com dlp.googleapis.com --project i-for-ai
 
 # 2. Create DLP Inspect Template
-# This defines the specific InfoTypes and LIKELIHOOD_LOW threshold
+# This defines the specific InfoTypes and the UNLIKELY threshold (aggressive
+# redaction). Enum naming differs across surfaces: gcloud uses hyphenated
+# lowercase (--min-likelihood=unlikely); terraform provider uses
+# SCREAMING_SNAKE (UNLIKELY); REST API uses LIKELIHOOD_UNSPECIFIED etc. The
+# value LIKELIHOOD_LOW does not exist in any of these surfaces.
 gcloud dlp templates create j1-inspect-and-redact \
     --project=i-for-ai \
     --display-name="j1-inspect-and-redact" \
     --info-types=EMAIL_ADDRESS,CREDIT_CARD_NUMBER,PHONE_NUMBER,US_SOCIAL_SECURITY_NUMBER \
-    --min-likelihood=LOW
+    --min-likelihood=unlikely
 
 # 3. Configure Project Floor Settings
 # Reference the created DLP template (extract name from previous step)

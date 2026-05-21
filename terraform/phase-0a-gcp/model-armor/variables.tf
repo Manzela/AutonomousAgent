@@ -28,7 +28,12 @@ variable "info_types" {
 }
 
 variable "min_likelihood" {
-  description = "Minimum likelihood threshold for InfoType matches. LIKELIHOOD_LOW errs aggressively toward redaction; acceptable here because J1 trajectories feed offline training (over-redaction is harmless, leakage is a compliance time-bomb)."
+  description = "Minimum likelihood threshold for InfoType matches. Valid values per the google_data_loss_prevention_inspect_template provider: VERY_UNLIKELY, UNLIKELY, POSSIBLE, LIKELY, VERY_LIKELY. UNLIKELY errs aggressively toward redaction without the high false-positive rate of VERY_UNLIKELY; acceptable here because J1 trajectories feed offline training (over-redaction is harmless, leakage is a compliance time-bomb)."
   type        = string
-  default     = "LIKELIHOOD_LOW"
+  default     = "UNLIKELY"
+
+  validation {
+    condition     = contains(["VERY_UNLIKELY", "UNLIKELY", "POSSIBLE", "LIKELY", "VERY_LIKELY"], var.min_likelihood)
+    error_message = "min_likelihood must be one of: VERY_UNLIKELY, UNLIKELY, POSSIBLE, LIKELY, VERY_LIKELY (the google_data_loss_prevention_inspect_template provider's accepted values — note: not the REST API's LIKELIHOOD_LOW prefix style)."
+  }
 }

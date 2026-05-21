@@ -58,3 +58,12 @@ docker-compose.override.yml
 
 # Terraform plan files (binary, contain sensitive data)
 *.tfplan
+# Bare tfplan filename (terraform's default `-out=tfplan`)
+**/tfplan
+# Terraform local state + crash logs
+.terraform/
+.terraform.tfstate.lock.info
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log

@@ -30,7 +30,10 @@ folded back in by moving the resources + state.
 2. Creates a project + global `google_data_loss_prevention_inspect_template`
    named `j1-inspect-and-redact` covering `EMAIL_ADDRESS`,
    `CREDIT_CARD_NUMBER`, `PHONE_NUMBER`, `US_SOCIAL_SECURITY_NUMBER` at
-   `LIKELIHOOD_LOW` (aggressive redaction acceptable for offline training data).
+   `UNLIKELY` (aggressive redaction acceptable for offline training data).
+   Note: the terraform provider's accepted values are
+   `{VERY_UNLIKELY, UNLIKELY, POSSIBLE, LIKELY, VERY_LIKELY}` — *not* the
+   REST API's `LIKELIHOOD_*` prefix style.
 3. Creates a project-level `google_model_armor_floorsetting` that enforces
    the InspectTemplate on every Model Armor call against the project.
 4. Creates a regional `google_model_armor_template` named

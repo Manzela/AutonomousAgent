@@ -345,3 +345,126 @@ def test_context_detector_reset_clears_state():
     assert det.snapshot("s") == (0.0, False)
     # After reset, first crossing fires fresh
     assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"
+
+
+# ---------- gauge emission (J9 follow-up) ---------------------------------
+#
+# The gauge instrument is created lazily on first ``record_usage`` call.
+# Tests patch ``_get_context_usage_gauge`` directly with a MagicMock so we
+# can assert the contract end-to-end without requiring the OTel metrics
+# SDK to be installed in the unit-test venv. The production wiring
+# (lib/observability/otel_setup.setup_metrics) is exercised by the
+# integration suite — see tests/integration/test_otel_metrics_setup.py.
+
+
+def test_context_detector_emits_gauge_on_every_record(monkeypatch):
+    """Every record_usage call sets the gauge — including below-threshold
+    readings — because dashboards need a continuous view of context pressure."""
+    from unittest.mock import MagicMock
+
+    from lib.durability import runtime_detectors as rd
+
+    fake_gauge = MagicMock()
+    monkeypatch.setattr(rd, "_get_context_usage_gauge", lambda: fake_gauge)
+
+    det = ContextUsageDetector(warn_threshold=0.9)
+    det.record_usage(session_id="s1", prompt_tokens=100, context_length=1000)  # 0.10
+    det.record_usage(session_id="s1", prompt_tokens=500, context_length=1000)  # 0.50
+    det.record_usage(session_id="s1", prompt_tokens=950, context_length=1000)  # 0.95 (fires F36)
+
+    # All three readings emit the gauge.
+    assert fake_gauge.set.call_count == 3
+    expected_ratios = [0.10, 0.50, 0.95]
+    for call, expected in zip(fake_gauge.set.call_args_list, expected_ratios):
+        # Positional arg 0 is the value.
+        assert call.args[0] == pytest.approx(expected)
+        # Attributes kwargs must carry session.id (lower-case OTel convention).
+        assert call.kwargs.get("attributes", {}).get("session.id") == "s1"
+
+
+def test_context_detector_emits_gauge_even_after_firing(monkeypatch):
+    """Once F36 fires the detector stays silent on the dispatch path, but
+    the gauge must KEEP recording so operators see whether the pressure
+    is climbing further or being relieved."""
+    from unittest.mock import MagicMock
+
+    from lib.durability import runtime_detectors as rd
+
+    fake_gauge = MagicMock()
+    monkeypatch.setattr(rd, "_get_context_usage_gauge", lambda: fake_gauge)
+
+    det = ContextUsageDetector(warn_threshold=0.9)
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"
+    # Subsequent over-threshold readings — F36 stays silent (already fired)
+    # but the gauge MUST still record the new ratio.
+    assert det.record_usage(session_id="s", prompt_tokens=970, context_length=1000) is None
+    assert det.record_usage(session_id="s", prompt_tokens=990, context_length=1000) is None
+    assert fake_gauge.set.call_count == 3
+
+
+def test_context_detector_gauge_emission_swallows_exceptions(monkeypatch, caplog):
+    """A broken exporter must NOT propagate up and break the detector
+    (the gauge is observability, not control)."""
+    from unittest.mock import MagicMock
+
+    from lib.durability import runtime_detectors as rd
+
+    broken_gauge = MagicMock()
+    broken_gauge.set.side_effect = RuntimeError("exporter offline")
+    monkeypatch.setattr(rd, "_get_context_usage_gauge", lambda: broken_gauge)
+
+    det = ContextUsageDetector(warn_threshold=0.9)
+    # Must not raise.
+    result = det.record_usage(session_id="s", prompt_tokens=950, context_length=1000)
+    # F36 still fires correctly — gauge failure is decoupled.
+    assert result == "F36"
+
+
+def test_context_detector_no_gauge_when_sdk_unavailable(monkeypatch):
+    """When _get_context_usage_gauge returns None (SDK missing) the detector
+    must continue to work as a pure in-memory state machine."""
+    from lib.durability import runtime_detectors as rd
+
+    monkeypatch.setattr(rd, "_get_context_usage_gauge", lambda: None)
+
+    det = ContextUsageDetector(warn_threshold=0.9)
+    # Below threshold — no fire
+    assert det.record_usage(session_id="s", prompt_tokens=100, context_length=1000) is None
+    # Crossing threshold — F36
+    assert det.record_usage(session_id="s", prompt_tokens=950, context_length=1000) == "F36"
+    ratio, fired = det.snapshot("s")
+    assert ratio == pytest.approx(0.95)
+    assert fired is True
+
+
+def test_get_context_usage_gauge_caches_failure(monkeypatch):
+    """If the first attempt to create the gauge fails, subsequent calls
+    must return None without re-attempting (and re-logging) the import."""
+    from lib.durability import runtime_detectors as rd
+
+    # Reset module-level cache so the test starts from a clean slate.
+    monkeypatch.setattr(rd, "_context_usage_gauge", None)
+    monkeypatch.setattr(rd, "_gauge_init_failed", False)
+
+    call_count = {"n": 0}
+
+    def fake_meter_factory(*_args, **_kwargs):
+        call_count["n"] += 1
+        raise ImportError("opentelemetry not available in this venv")
+
+    # Patch the module-level import path by injecting a fake metrics module.
+    import sys
+
+    fake_metrics_module = type(sys)("opentelemetry_fake")
+    fake_metrics_module.get_meter = fake_meter_factory  # type: ignore[attr-defined]
+    fake_opentelemetry = type(sys)("opentelemetry_fake_pkg")
+    fake_opentelemetry.metrics = fake_metrics_module  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "opentelemetry", fake_opentelemetry)
+    monkeypatch.setitem(sys.modules, "opentelemetry.metrics", fake_metrics_module)
+
+    g1 = rd._get_context_usage_gauge()
+    g2 = rd._get_context_usage_gauge()
+    g3 = rd._get_context_usage_gauge()
+    assert g1 is None and g2 is None and g3 is None
+    # The factory ran exactly once — subsequent calls short-circuited on the failure cache.
+    assert call_count["n"] == 1

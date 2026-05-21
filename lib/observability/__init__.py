@@ -37,15 +37,22 @@ import os
 import threading
 from typing import Any, Dict, Optional, Tuple
 
-from lib.observability.otel_setup import setup_tracing
+from lib.observability.otel_setup import setup_metrics, setup_tracing
 
 logger = logging.getLogger(__name__)
 
-# Install the global TracerProvider as a side-effect of importing the
-# module. Hermes' PluginManager loads __init__.py before calling
-# register(), so by the time register() runs every subsequent
-# tracer.start_span() in any plugin is exporting through us.
+# Install the global TracerProvider + MeterProvider as a side-effect of
+# importing the module. Hermes' PluginManager loads __init__.py before
+# calling register(), so by the time register() runs every subsequent
+# tracer.start_span() AND meter.create_gauge() call in any plugin is
+# exporting through us.
+#
+# Both are best-effort — when the SDK packages are missing locally the
+# helpers return False and dependent code (gauges, spans) degrade to
+# no-ops rather than raising. Container builds pin the SDK (see
+# deploy/Dockerfile.hermes) so the production path is always fully wired.
 _TRACING_OK = setup_tracing(service_name="hermes-agent")
+_METRICS_OK = setup_metrics(service_name="hermes-agent")
 
 # Lazy tracer handle — only used when tracing initialized.
 _tracer: Any = None

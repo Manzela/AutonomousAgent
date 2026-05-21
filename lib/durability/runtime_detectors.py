@@ -30,7 +30,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +39,105 @@ DEFAULT_STALL_IDLE_TIMEOUT_S = 300
 # F-CONTEXT default warn threshold (prompt_tokens / context_length).
 # Above this ratio compaction is presumed ineffective — see module docstring.
 DEFAULT_CONTEXT_WARN_THRESHOLD = 0.9
+
+# OTel metric instrument for context-window pressure. Name + unit defined
+# by the audit-plan (J9) and the gap-analysis source:
+#     audit/2026-05-20-architecture-research-gap-analysis/source.md:800
+# Lazily created on first ``record_usage`` so importing this module does
+# NOT require the OTel metrics SDK to be present (the unit test suite
+# runs without it). The setter is module-level + guarded by a lock so
+# the first record_usage call wins the race even under concurrent
+# threads.
+_GAUGE_NAME = "agent.memory.context_usage_pct"
+_GAUGE_UNIT = "1"
+_GAUGE_DESCRIPTION = (
+    "Ratio of prompt_tokens to model context_length per session "
+    "(0.0–1.0). Source: ContextUsageDetector.record_usage."
+)
+_context_usage_gauge: Any = None
+_gauge_init_lock = threading.Lock()
+# Cached "tried and failed" flag — if the SDK isn't importable we don't
+# want to retry on every record_usage call (would spam the logger).
+_gauge_init_failed = False
+
+
+def _get_context_usage_gauge() -> Any:
+    """Lazy initializer for the ``agent.memory.context_usage_pct`` Gauge.
+
+    Returns the cached instrument on subsequent calls. Returns ``None``
+    when the OpenTelemetry metrics SDK is unavailable — callers MUST
+    null-check before calling ``.set(...)``.
+
+    Why sync ``Gauge`` (not ``ObservableGauge``)? Values arrive event-
+    driven from ``ContextUsageDetector.record_usage``, so a sync gauge
+    lets us record the moment new data is available. ``ObservableGauge``
+    would force a polling callback that re-reads ``self._sessions`` and
+    add a collection-interval delay.
+
+    Requires opentelemetry-api >= 1.27 (sync ``Gauge`` was added there).
+    Container builds pin >= 1.27 in ``deploy/Dockerfile.hermes``.
+    """
+    global _context_usage_gauge, _gauge_init_failed
+
+    if _context_usage_gauge is not None:
+        return _context_usage_gauge
+    if _gauge_init_failed:
+        return None
+
+    with _gauge_init_lock:
+        # Re-check under the lock (someone else may have just succeeded).
+        if _context_usage_gauge is not None:
+            return _context_usage_gauge
+        if _gauge_init_failed:
+            return None
+
+        try:
+            from opentelemetry import metrics
+
+            meter = metrics.get_meter("hermes.durability.runtime_detectors")
+            _context_usage_gauge = meter.create_gauge(
+                name=_GAUGE_NAME,
+                unit=_GAUGE_UNIT,
+                description=_GAUGE_DESCRIPTION,
+            )
+            return _context_usage_gauge
+        except Exception as exc:  # noqa: BLE001 — defensive; never let gauge wiring break the detector
+            logger.warning(
+                "runtime_detectors: gauge %s init failed (%s); F36 detector "
+                "still active but metric emission disabled.",
+                _GAUGE_NAME,
+                exc,
+            )
+            _gauge_init_failed = True
+            return None
+
+
+def _record_context_usage_gauge(*, ratio: float, session_id: str) -> None:
+    """Emit one ``agent.memory.context_usage_pct`` reading to the OTel gauge.
+
+    Wraps the gauge call so the metric emission can never break the
+    detector — any exception (gauge unavailable, exporter error, attr
+    coercion failure) is caught and logged at debug level. The gauge
+    instrument itself is null-safely handled by :func:`_get_context_usage_gauge`.
+
+    Attributes:
+        ``session.id`` — string. Dashboards aggregate or filter by this
+        key. We do NOT emit prompt_tokens or context_length as attrs to
+        avoid cardinality explosion (those are span attributes; gauge
+        cardinality is bounded by session count).
+    """
+    gauge = _get_context_usage_gauge()
+    if gauge is None:
+        return
+    try:
+        gauge.set(float(ratio), attributes={"session.id": str(session_id)})
+    except Exception as exc:  # noqa: BLE001 — defensive; detector path stays alive
+        logger.debug(
+            "runtime_detectors: gauge %s emission failed for session=%s: %s",
+            _GAUGE_NAME,
+            session_id,
+            exc,
+        )
 
 
 def _fingerprint(tool_name: str, args: dict | None) -> str:
@@ -244,10 +343,10 @@ class ContextUsageDetector:
     that pathological state to the orchestrator/operator, not to call
     compaction a second time.
 
-    TODO(J9 follow-up): expose ``last_ratio`` as an OTel ``Gauge`` instrument
-    via ``opentelemetry.metrics`` once the MeterProvider is wired into
-    ``lib.observability.otel_setup`` (today: trace-only). The gauge name
-    targeted by the audit-plan is ``agent.memory.context_usage_pct``.
+    OTel gauge ``agent.memory.context_usage_pct`` is emitted on every
+    ``record_usage`` call (independent of whether F36 fires) so
+    dashboards see continuous ratio data, not just threshold-crossings.
+    See ``_get_context_usage_gauge`` above for the lazy-init rationale.
     """
 
     def __init__(self, warn_threshold: float = DEFAULT_CONTEXT_WARN_THRESHOLD):
@@ -264,11 +363,28 @@ class ContextUsageDetector:
         prompt_tokens: int,
         context_length: int,
     ) -> Optional[str]:
-        """Record one usage reading; return ``"F36"`` if warn threshold tripped."""
+        """Record one usage reading; return ``"F36"`` if warn threshold tripped.
+
+        Side effect: emits the ratio to the
+        ``agent.memory.context_usage_pct`` OTel gauge (tagged with
+        ``session.id``) on every call — even when the threshold is not
+        crossed and even when the detector has already fired in this
+        episode. The gauge feeds dashboards that want a continuous
+        view of context pressure; F36 is the discrete escalation signal.
+
+        When the OTel metrics SDK is unavailable the gauge degrades to
+        a no-op; F36 detection still works.
+        """
         if context_length <= 0:
             # Defensive — should never happen, but avoid div-by-zero gracefully.
             return None
         ratio = prompt_tokens / context_length
+
+        # Emit the gauge unconditionally — see docstring rationale.
+        # Failures inside _record_gauge are swallowed there so a broken
+        # exporter can't break F36 detection.
+        _record_context_usage_gauge(ratio=ratio, session_id=session_id)
+
         with self._lock:
             state = self._sessions.setdefault(session_id, _ContextState())
             state.last_ratio = ratio

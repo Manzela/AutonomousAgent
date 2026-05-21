@@ -65,7 +65,7 @@ ssh autonomousagent-vm -- bash -lc '
   cd /opt/autonomousagent
   export HERMES_J3_SHIPPER_CONFIG_SECRET="projects/i-for-ai/secrets/autonomousagent-j3-shipper-config/versions/2"  # pragma: allowlist secret
   export HERMES_LOG_LEVEL=DEBUG
-  uv run --extra dev python scripts/run_trajectory_shipper.py --dry-run
+  uv run python scripts/run_trajectory_shipper.py --dry-run
 '
 ```
 
@@ -127,7 +127,7 @@ Type=oneshot
 User=autonomousagent
 WorkingDirectory=/opt/autonomousagent
 Environment=HERMES_LOG_LEVEL=INFO
-ExecStart=/usr/bin/env uv run --extra prod python scripts/run_trajectory_shipper.py --ship-once
+ExecStart=/usr/bin/env uv run python scripts/run_trajectory_shipper.py --ship-once
 UNIT
 
 sudo tee /etc/systemd/system/autonomousagent-trajectory-shipper.timer <<TIMER

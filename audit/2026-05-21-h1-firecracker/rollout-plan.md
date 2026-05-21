@@ -15,12 +15,12 @@
 
 | Deliverable | Owner | Exit gate |
 |---|---|---|
-| ADR-0009: "Add Firecracker sandbox tier" | Architect | Merged to `docs/decisions/` |
+| ADR-0010: "Add Firecracker sandbox tier" | Architect | Merged to `docs/decisions/` as `0010-firecracker-sandbox-tier.md` (recorded 2026-05-21; ADR-0010 was taken by `0009-judge-panel-as-rlaif.md` first) |
 | Cost model spreadsheet (updates `architecture.md` §6 numbers against real GCP pricing as of decision date) | Operator | Numbers approved by budget owner |
 | Decision: separate tier vs replace `cloud_sandbox` | Architect | Recorded in ADR (recommendation: separate, per `architecture.md` §2) |
 | Decision: pool size at P1 | Operator | Recorded in ADR (recommendation: 4 warm) |
 
-**Exit:** ADR-0009 merged. **No code or terraform yet.**
+**Exit:** ADR-0010 merged. **No code or terraform yet.**
 
 **Rollback:** Trivial — un-merge the ADR.
 
@@ -62,7 +62,7 @@
 
 ### P1.4 — fc-control service (3–5 days)
 
-- [ ] Implement minimal `services/fc-control/` (Go or Python — language choice in ADR-0009)
+- [ ] Implement minimal `services/fc-control/` (Go or Python — language choice in ADR-0010)
 - [ ] gRPC API: `Invoke`, `PoolStatus`, `Drain`
 - [ ] Pool manager: maintains N warm VMs, replaces on use
 - [ ] Deploy to Cloud Run with IAP

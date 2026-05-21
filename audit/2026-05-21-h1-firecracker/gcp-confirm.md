@@ -243,11 +243,11 @@ These items require manual operator action, not infrastructure-as-code:
 
 ## 11. Pre-P0 gate
 
-Before ADR-0009 is merged, the operator must have confirmed:
+Before ADR-0010 is merged, the operator must have confirmed:
 
 - [ ] `kvm-ok` returns positive on a test N2 instance in `us-central1-a`
 - [ ] All seven APIs (§4) are enabled or can be enabled without manual GCP support escalation
 - [ ] Quota headroom (§3) is sufficient
 - [ ] Phase 0a's `terraform/phase-0a-gcp/providers.tf` does NOT need a version bump to support `advanced_machine_features.enable_nested_virtualization` (it doesn't — this attribute exists in `google ~> 5.x` already)
 
-If any of these is false, ADR-0009 cannot be merged.
+If any of these is false, ADR-0010 cannot be merged.

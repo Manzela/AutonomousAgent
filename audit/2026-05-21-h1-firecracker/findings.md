@@ -71,7 +71,7 @@ Candidate 3 (A2A subagent code execution) is **already on the horizon** per the 
 | Tier routing tests (`tests/unit/test_toolset_router.py` already covers shape — needs new case) | One-test addition | `tests/unit/test_toolset_router.py` |
 | GCP nested-virt enablement on the Phase 0a VM | Blocks live invocation | `terraform/phase-0a-gcp/main.tf` (advanced_machine_features.enable_nested_virtualization) |
 | Operator runbook (boot, drain, kill-switch) | Blocks H1 P2 | `audit/2026-05-21-h1-firecracker/runbook.md` (future) |
-| ADR-0009 (formal decision to add Firecracker tier) | Should land before code | `docs/decisions/0009-firecracker-sandbox.md` (future) |
+| ADR-0010 (formal decision to add Firecracker tier) | Should land before code | `docs/decisions/0010-firecracker-sandbox-tier.md` (recorded 2026-05-21) |
 
 ## 5. What's already correct and does NOT need re-doing
 

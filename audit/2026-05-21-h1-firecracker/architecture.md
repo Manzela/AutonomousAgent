@@ -2,7 +2,7 @@
 
 **Purpose:** Concrete deployment design for a self-hosted Firecracker microVM pool on GCP that backs the `firecracker_sandbox` tier.
 **Scope:** Hot path (invocation → boot → exec → teardown), pool management, kernel/rootfs build, jailer config, network posture, observability.
-**Non-goals:** ADR drafting (that's `docs/decisions/0009-firecracker-sandbox.md`, future); runbook authoring (future, `audit/2026-05-21-h1-firecracker/runbook.md`).
+**Non-goals:** ADR drafting (recorded in `docs/decisions/0010-firecracker-sandbox-tier.md` — ADR-0009 was taken by `0009-judge-panel-as-rlaif.md` first); runbook authoring (future, `audit/2026-05-21-h1-firecracker/runbook.md`).
 
 ---
 

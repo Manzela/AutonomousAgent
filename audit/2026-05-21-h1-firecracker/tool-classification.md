@@ -91,7 +91,7 @@ Adds one route after the existing `cloud_sandbox` route, *and* changes the exist
      evaluate_after: true
 ```
 
-`cloud_sandbox` stays defined in the tier preamble (for back-compat), but is no longer referenced by any active route. ADR-0009 documents the move; a future cleanup can remove the unused tier definition.
+`cloud_sandbox` stays defined in the tier preamble (for back-compat), but is no longer referenced by any active route. ADR-0010 documents the move; a future cleanup can remove the unused tier definition.
 
 ## 5. New `firecracker_sandbox` tier definition
 

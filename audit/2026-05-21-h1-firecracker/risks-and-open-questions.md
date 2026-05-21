@@ -63,7 +63,7 @@
 - fc-control gRPC API is intentionally generic (`Invoke(tool, args)` — no microVM-specific fields exposed)
 - Firecracker-specific config (jailer, vmlinux, ext4 rootfs) is in `deploy/sandboxes/firecracker/`, not in the gRPC interface
 
-**Disposition.** Document the abstraction discipline in ADR-0009. Re-evaluate at P3.
+**Disposition.** Document the abstraction discipline in ADR-0010. Re-evaluate at P3.
 
 ### R5 — Operator skill gap on KVM/Firecracker [MED × HIGH]
 
@@ -128,9 +128,9 @@
 
 ### Q1 — Separate `firecracker_sandbox` tier vs. replace `cloud_sandbox` in place?
 
-**Recommendation:** Separate tier. See `architecture.md` §2 + ADR-0009. Reason: backward-compatibility for any future Modal-callers, plus honest test naming.
+**Recommendation:** Separate tier. See `architecture.md` §2 + ADR-0010. Reason: backward-compatibility for any future Modal-callers, plus honest test naming.
 
-**Decision needed by:** P0 (ADR-0009 merge).
+**Decision needed by:** P0 (ADR-0010 merge).
 
 ### Q2 — Language for fc-control: Go vs Python?
 
@@ -138,7 +138,7 @@
 
 **Recommendation:** Go. The firecracker-go-sdk is upstream's reference SDK; Python alternatives are community projects with patchy maintenance. The team is small enough that one Go service is acceptable; the alternative (Python + community SDK) carries multi-year maintenance risk.
 
-**Decision needed by:** P0 (ADR-0009).
+**Decision needed by:** P0 (ADR-0010).
 
 ### Q3 — Per-peer rootfs (R2 mitigation) vs single rootfs?
 
@@ -154,7 +154,7 @@
 
 **Recommendation:** Cloud Run. Separation is worth the $5/mo. Operator complexity is low.
 
-**Decision needed by:** P0 (ADR-0009).
+**Decision needed by:** P0 (ADR-0010).
 
 ### Q5 — Peer-vetting process: required before any A2A peer is whitelisted?
 
@@ -184,7 +184,7 @@
 
 **Recommendation:** Pinned with a quarterly review + ad-hoc updates for security advisories (the P3.2 runbook).
 
-**Decision needed by:** P0 (ADR-0009).
+**Decision needed by:** P0 (ADR-0010).
 
 ### Q9 — How do we handle long-running invocations (>60s)?
 

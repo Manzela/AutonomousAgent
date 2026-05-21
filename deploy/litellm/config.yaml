@@ -2,17 +2,17 @@ model_list:
   - model_name: vertex_ai/claude-opus-4-7
     litellm_params:
       model: vertex_ai/claude-opus-4-7
-      vertex_project: i-for-ai
-      vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
+      vertex_project: autonomous-agent-2026
+      vertex_location: global   # Use the GLOBAL endpoint — org-wide quota pools across all regions for headroom.
   - model_name: vertex_ai/claude-sonnet-4-6
     litellm_params:
       model: vertex_ai/claude-sonnet-4-6
-      vertex_project: i-for-ai
-      vertex_location: global   # Use the GLOBAL endpoint — i-for-AI has a 24M tokens/min Opus 4.7 global quota at 0.35% utilization. Per-region Opus quota in europe-west1 was 0 (sales-managed; not self-serve increasable). Global endpoint pools across all regions for headroom.
+      vertex_project: autonomous-agent-2026
+      vertex_location: global   # Use the GLOBAL endpoint — org-wide quota pools across all regions for headroom.
   - model_name: vertex_ai/gemini-3.1-pro-preview
     litellm_params:
       model: vertex_ai/gemini-3.1-pro-preview
-      vertex_project: i-for-ai
+      vertex_project: autonomous-agent-2026
       vertex_location: global   # Gemini 3.1 Pro Preview is only served via the global endpoint (verified 2026-05-15: us-central1 returns 404, global returns 200). 1M ctx, thinking model — judges using this axis must allow generous max_output_tokens.
 
   # ---- OpenRouter fallback providers (R3 single-provider risk) ----

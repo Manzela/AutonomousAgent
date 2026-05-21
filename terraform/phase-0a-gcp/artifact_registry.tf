@@ -1,9 +1,7 @@
 # Phase 0a — Container image registry.
 #
-# Naming: autonomousagent-images (renamed from generic `hermes` to avoid
-# collision and to be self-describing on the shared i-for-ai project,
-# which already hosts cloud-run-source-deploy, gcf-artifacts,
-# mcp-cloud-run-deployments, and vertex-serving repos).
+# Naming: autonomousagent-images — self-describing for the dedicated
+# autonomous-agent-2026 project.
 #
 # Cleanup policies:
 #   - keep-30-most-recent: retain the 30 newest image versions per package

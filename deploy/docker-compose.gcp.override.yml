@@ -13,7 +13,7 @@ x-gcplogs: &gcplogs
   options:
     gcp-log-cmd: "true"
 
-x-ar-hermes: &ar-hermes us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/hermes:0.1.0
+x-ar-hermes: &ar-hermes us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes:0.1.0
 
 services:
   hermes:
@@ -44,7 +44,7 @@ services:
     logging: *gcplogs
 
   shell-sandbox:
-    image: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images/shell-sandbox:0.1.0
+    image: us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/shell-sandbox:0.1.0
     logging: *gcplogs
 
   otel-collector:

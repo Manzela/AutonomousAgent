@@ -27,10 +27,10 @@ check "git"             "git --version"
 
 echo
 echo "Checking GCP authentication..."
-if gcloud config get-value project 2>/dev/null | grep -q i-for-ai; then
-  echo "✓ gcloud project is i-for-ai"
+if gcloud config get-value project 2>/dev/null | grep -q autonomous-agent-2026; then
+  echo "✓ gcloud project is autonomous-agent-2026"
 else
-  echo "✗ gcloud project is not i-for-ai (run: gcloud config set project i-for-ai)"
+  echo "✗ gcloud project is not autonomous-agent-2026 (run: gcloud config set project autonomous-agent-2026)"
   errors=$((errors+1))
 fi
 

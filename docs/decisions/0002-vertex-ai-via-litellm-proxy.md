@@ -6,7 +6,7 @@
 
 ## Context
 
-Hermes Agent expects an OpenAI-format chat completions endpoint. Our existing GCP project (`i-for-ai`) is configured for Anthropic Claude 4.7 via Vertex AI, which is a Google IAM–authenticated endpoint, not an OpenAI-compatible one. We want to consume Vertex AI without modifying Hermes' provider code.
+Hermes Agent expects an OpenAI-format chat completions endpoint. Our GCP project (`autonomous-agent-2026`, formerly `i-for-ai`) is configured for Anthropic Claude 4.7 via Vertex AI, which is a Google IAM–authenticated endpoint, not an OpenAI-compatible one. We want to consume Vertex AI without modifying Hermes' provider code.
 
 ## Decision
 
@@ -40,7 +40,7 @@ LiteLLM also handles: per-day budget cap enforcement, exponential-backoff retrie
 
 ### Option B: Use Anthropic API key directly (skip Vertex AI)
 - Pros: Simplest; Hermes supports Anthropic out of the box
-- Cons: No reuse of `i-for-ai` GCP project; data residency / billing fragmented; we already use Vertex AI for Claude Code
+- Cons: No reuse of GCP project; data residency / billing fragmented; we already use Vertex AI for Claude Code
 - Why rejected: User explicitly asked for Vertex AI consistency
 
 ### Option C: AI Gateway (Cloudflare AI Gateway, Portkey, etc.)

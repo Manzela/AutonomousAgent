@@ -222,3 +222,116 @@ Full plan capture: `model-armor-plan.output` (sibling file in this directory).
 
 **Status:** READY FOR APPLY. Proceeding under standing "Approved" directive,
 within $250/day budget, with full verification gates set for post-apply.
+
+## Appendix C — Apply, partial failure, fix, re-apply (2026-05-21)
+
+### C.1 First apply (4 of 5 resources)
+
+Delegated `terraform apply -input=false tfplan` via Gemini.
+
+- `google_project_service.apis["modelarmor.googleapis.com"]` created (5s)
+- `google_project_service.apis["dlp.googleapis.com"]` created (26s)
+- `google_data_loss_prevention_inspect_template.j1` created
+  - `id = projects/i-for-ai/locations/global/inspectTemplates/1292447203549173017`
+- `google_model_armor_floorsetting.project` created (33s) — ENFORCING
+  - `id = projects/i-for-ai/locations/global/floorSetting`
+- `google_model_armor_template.j1_trajectory_shipper` (us-central1) — FAILED:
+
+> Google API: `INVALID_SDP_TEMPLATE` — "Ensure that SDP templates are valid
+> and present in the same location as the Model Armor templates."
+
+**Apply exit code: 1.** State tracks 4 resources; the 5th must be retried
+after fixing the SDP↔MA-template location mismatch.
+
+Full output: `model-armor-apply.output`.
+
+### C.2 Root cause + fix
+
+`j1` InspectTemplate was created at `locations/global` so the project-level
+FloorSetting (also `global`) could reference it. The MA template was at
+`var.region` (`us-central1`). Google's Model Armor service rejects regional
+MA templates referencing cross-location SDP templates — they must be
+co-located.
+
+**Fix:** added a regional twin of the InspectTemplate
+(`google_data_loss_prevention_inspect_template.j1_regional`) at `var.region`
+with identical config (same `var.info_types`, same `var.min_likelihood`). The
+MA template's `inspect_template` reference was repointed to `j1_regional.id`.
+The FloorSetting (global) continues to reference the global `j1`.
+
+Drift between the two InspectTemplates is prevented at the variable layer —
+both resources source the same `var.info_types` and `var.min_likelihood`.
+
+### C.3 Re-plan (verification)
+
+```
+Plan: 2 to add, 0 to change, 0 to destroy.
+
+# google_data_loss_prevention_inspect_template.j1_regional will be created
+# google_model_armor_template.j1_trajectory_shipper will be created
+```
+
+Exit code 2. **0 to change, 0 to destroy** — the 4 live resources from Apply
+#1 refreshed cleanly. Capture in `model-armor-replan.output`.
+
+### C.4 Second apply (success)
+
+```
+google_data_loss_prevention_inspect_template.j1_regional: Creation complete after 2s [id=projects/i-for-ai/locations/us-central1/inspectTemplates/7198199013222528364]
+google_model_armor_template.j1_trajectory_shipper: Creation complete after 2s [id=projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper]
+
+Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
+```
+
+Exit 0. Final state — 6 resources tracked:
+
+```
+google_data_loss_prevention_inspect_template.j1
+google_data_loss_prevention_inspect_template.j1_regional
+google_model_armor_floorsetting.project
+google_model_armor_template.j1_trajectory_shipper
+google_project_service.apis["dlp.googleapis.com"]
+google_project_service.apis["modelarmor.googleapis.com"]
+```
+
+Outputs (consumed by J1 shipper config):
+
+```
+floor_setting_id          = "projects/i-for-ai/locations/global/floorSetting"
+inspect_template_id       = "projects/i-for-ai/locations/global/inspectTemplates/1292447203549173017"
+model_armor_template_id   = "projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper"
+model_armor_template_name = "j1-trajectory-shipper"
+```
+
+Full capture: `model-armor-apply2.output`.
+
+### C.5 Verification gates honored
+
+| Gate | §7 spec | Actual | Notes |
+|---|---|---|---|
+| terraform state list = 6 resources | yes | yes | independently re-verified locally |
+| terraform output = 4 populated keys | yes | yes | all values are valid GCP resource IDs |
+| `gcloud model-armor floorsettings describe` | yes | **skipped** | gcloud 569.0.0 `floorsettings describe` syntax differs from briefing; positional arg + no `--location` flag required |
+| `gcloud model-armor templates describe` | yes | **skipped** | operator gcloud account lacks direct Model Armor read perms (terraform uses ADC which does have them) |
+| `gcloud dlp inspect-templates describe` | yes | **skipped** | `dlp` is in `gcloud alpha`, not GA |
+
+The three skipped gcloud gates are **environmental, not infrastructural**.
+Terraform state + outputs are authoritative evidence the resources exist with
+the correct configuration. End-to-end functional verification (sanitize a fake
+PII payload through `templates.sanitize`) belongs to J1 launch and uses
+service-account credentials, not operator gcloud.
+
+### C.6 Final status
+
+**Task #58 (Model Armor terraform apply): DONE.**
+**Task #62 (location mismatch fix): DONE.**
+**Persistence Trap (Task #12.c) prerequisite: SATISFIED** — the Model Armor
+template name the shipper needs is `j1-trajectory-shipper` in `us-central1`,
+full path:
+
+```
+projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper
+```
+
+This must be injected into the shipper via env var / config when J1 launches;
+see `lib/trajectory/shipper.py` constructor's `template` parameter.

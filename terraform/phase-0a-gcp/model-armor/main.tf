@@ -19,11 +19,36 @@ resource "google_project_service" "apis" {
   disable_on_destroy = false
 }
 
-# DLP/SDP InspectTemplate at project + global so it is reachable by both the
-# project-level FloorSetting and the regional google_model_armor_template.
+# DLP/SDP InspectTemplate — Model Armor requires the SDP template to live in
+# the SAME location as the Model Armor resource that references it (Google
+# returns INVALID_SDP_TEMPLATE on cross-location pairing). We therefore
+# materialize the SAME inspect_config in two locations:
+#   - "global"     → referenced by the project-level FloorSetting
+#   - var.region   → referenced by the regional google_model_armor_template
+# Drift between the two is prevented by sourcing the InfoTypes + likelihood
+# threshold from variables (var.info_types, var.min_likelihood).
 resource "google_data_loss_prevention_inspect_template" "j1" {
   parent       = "projects/${var.project_id}/locations/global"
   description  = "Inspect and redact PII in J1 judge verdicts before they reach GCS (RLAIF substrate)."
+  display_name = var.inspect_template_display_name
+
+  inspect_config {
+    min_likelihood = var.min_likelihood
+
+    dynamic "info_types" {
+      for_each = var.info_types
+      content {
+        name = info_types.value
+      }
+    }
+  }
+
+  depends_on = [google_project_service.apis]
+}
+
+resource "google_data_loss_prevention_inspect_template" "j1_regional" {
+  parent       = "projects/${var.project_id}/locations/${var.region}"
+  description  = "Regional twin of j1 (same InfoTypes + likelihood) required by the regional google_model_armor_template — Model Armor rejects cross-location SDP references."
   display_name = var.inspect_template_display_name
 
   inspect_config {
@@ -74,7 +99,9 @@ resource "google_model_armor_template" "j1_trajectory_shipper" {
   filter_config {
     sdp_settings {
       advanced_config {
-        inspect_template = google_data_loss_prevention_inspect_template.j1.id
+        # Must reference the SAME-LOCATION InspectTemplate (j1_regional) —
+        # see the j1_regional resource comment above for the API constraint.
+        inspect_template = google_data_loss_prevention_inspect_template.j1_regional.id
       }
     }
   }

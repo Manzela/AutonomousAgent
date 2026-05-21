@@ -99,17 +99,20 @@ def main(argv: list[str] | None = None) -> int:
         bucket=config["bucket_name"],
         template=config["model_armor_template_resource"],
     )
-    logger.info(
-        "j3-shipper constructed (bucket=%s, template=%s)",
-        config["bucket_name"],
-        config["model_armor_template_resource"],
-    )
+    # Log construction confirmation only — config values originate from
+    # Secret Manager. Even though bucket_name + template resource path are
+    # operational identifiers (not credentials), CodeQL's taint analysis
+    # conservatively flags any field of a secret-sourced dict in logs
+    # (rule: py/clear-text-logging-sensitive-data). Operator visibility into
+    # which bucket/template is active lives in docs/runbooks/j1-launch-flip.md
+    # and the Secret Manager UI; the shipper itself (lib/trajectory/shipper.py)
+    # emits per-batch diagnostics where they're operationally required.
+    logger.info("j3-shipper constructed from secret config (feature_flag_enabled=true)")
 
     if args.dry_run:
-        print(
-            f"j3-shipper: dry-run OK — bucket={config['bucket_name']}, "
-            f"template={config['model_armor_template_resource']}"
-        )
+        # Same rationale as the logger.info above — confirmation only, no
+        # secret-dict field exposure to stdout.
+        print("j3-shipper: dry-run OK — secret config loaded, shipper constructed")
         return 0
 
     if args.ship_once:

@@ -72,3 +72,7 @@ These are scope-bound — they were never claimed complete in the original Task 
 This verification covered only the 33 audit-closure commits from this sprint plus the 1 format-fix commit it introduced. It did **not** re-verify the Phase 0a deploy CI changes (`dcdc5b4`), the terraform billing budget changes (`099bad8`), or any prior wave of work that landed before this session began. Those claims stand on their own prior verification records.
 
 The Iron Law was applied: every PASS verdict above corresponds to a command run in the current verification session with fresh evidence. No claim was carried over from prior runs without re-execution.
+
+## PR #112 disposition (recorded 2026-05-21)
+
+PR #112 ("feat(phase-0a): gcp always-online migration — vm live, 10/10 containers, chaos test passed") was squash-merged to `main` on 2026-05-20T17:20:36Z. Verified via `gh pr view 112 --json state` → `"state":"MERGED"`. No further action required for this PR. Plan A Task 4 (conditional squash-merge) is deleted as obsolete.

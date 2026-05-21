@@ -85,3 +85,53 @@ resource "google_secret_manager_secret" "individual" {
 
   depends_on = [google_project_service.enabled]
 }
+
+# Phase 0a — J3 trajectory shipper runtime config secret.
+#
+# Holds the small JSON blob the shipper reads to know:
+#  - which bucket to upload to (filled in by terraform output)
+#  - which Model Armor template to call (filled in via the model-armor sub-module output)
+#  - the feature flag (HERMES_J3_SHIPPER_ENABLED — read by scripts/run_trajectory_shipper.py)
+#
+# Stored as a secret (not env vars baked into the VM image) so that the
+# launch flip is a single Secret Manager version write, not an image
+# redeploy. Atomic flip semantics — see docs/runbooks/j1-launch-flip.md.
+#
+# IMPORTANT: the initial secret_data sets feature_flag_enabled=false.
+# The atomic flip in docs/runbooks/j1-launch-flip.md adds a NEW secret
+# version with true, NOT an in-place edit. Old version remains readable
+# for instant rollback.
+
+resource "google_secret_manager_secret" "j3_shipper_config" {
+  project   = var.project_id
+  secret_id = "autonomousagent-j3-shipper-config"
+
+  replication {
+    auto {}
+  }
+
+  labels = {
+    phase     = "0a"
+    component = "autonomousagent"
+    tier      = "shipper"
+  }
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_secret_manager_secret_version" "j3_shipper_config_v1" {
+  secret = google_secret_manager_secret.j3_shipper_config.id
+
+  secret_data = jsonencode({
+    bucket_name                   = google_storage_bucket.j3_trajectories.name
+    model_armor_template_resource = "projects/${var.project_id}/locations/${var.region}/templates/j1-trajectory-shipper"
+    feature_flag_enabled          = false
+  })
+}
+
+resource "google_secret_manager_secret_iam_member" "j3_shipper_config_vm_reader" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.j3_shipper_config.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.vm_runtime.email}"
+}

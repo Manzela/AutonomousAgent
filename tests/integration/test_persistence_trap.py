@@ -412,10 +412,9 @@ def test_persistence_trap_sanitize_unavailable_fails_loud(
         shipper.ship_batch([canary])
 
     # Exactly one F37 dispatch with the failing record's tool_call_id.
-    assert len(mock_dispatch.calls) == 1, (
-        f"expected exactly 1 F37 dispatch, got {len(mock_dispatch.calls)}: "
-        f"{mock_dispatch.calls!r}"
-    )
+    assert (
+        len(mock_dispatch.calls) == 1
+    ), f"expected exactly 1 F37 dispatch, got {len(mock_dispatch.calls)}: {mock_dispatch.calls!r}"
     f_code, kwargs = mock_dispatch.calls[0]
     assert f_code == "F37", f"expected F37, got {f_code!r}"
     assert (

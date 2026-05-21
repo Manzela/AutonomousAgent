@@ -1,0 +1,24 @@
+# CodeQL configuration for AutonomousAgent.
+#
+# Referenced from .github/workflows/codeql.yml via the `config-file` input
+# on the `init` step. Paths excluded here are not analysed; alerts are not
+# created for them and existing alerts are auto-dismissed on next run.
+#
+# Keep the query suite in sync with the workflow (security-extended +
+# security-and-quality). Suite selection stays in the workflow to keep
+# the audit trail visible from a single file when reviewing scope changes.
+
+name: "AutonomousAgent CodeQL config"
+
+paths-ignore:
+  # Research artefacts under docs/research/ are reference scaffolding,
+  # not application code. The seed orchestrator README
+  # (docs/research/autonomous-agent-seed-orchestrator/README.md) explicitly
+  # marks the code as "must be ported into lib/seed_orchestrator/ + tests
+  # before this leaves research status." These modules are never imported
+  # by any runtime path; they exist to be lifted into app/ with
+  # appropriate tests + CodeQL coverage attached at that point. Scanning
+  # them in place produces noise (idiomatic `def foo(): ...` abstract
+  # stubs, defensive bare-pass blocks) without protecting any deployed
+  # surface.
+  - 'docs/research/**'

@@ -1,7 +1,18 @@
 # Terraform Integration Note
 
-**Status**: Staging area (NOT yet merged into phase-0a-gcp/)
-**Destination**: `terraform/phase-0a-gcp/` (after user approval)
+> **SUPERSEDED 2026-05-21:** the staging files in this directory are preserved
+> for audit history. The authoritative module lives at
+> `terraform/phase-0a-gcp/postgres/` — carved into a sub-module (mirroring
+> Model Armor) for state isolation and additional `prevent_destroy` safety
+> on the $1,580/mo HA instance. The sub-module ALSO closes a gap in the
+> original staging packet: Cloud SQL with `ipv4_enabled = false` requires a
+> `google_service_networking_connection` + `google_compute_global_address`
+> for VPC peering, which the staging cloud_sql.tf did not declare (apply
+> would have failed with `INVALID_ARGUMENT: no service networking connection`).
+> See `terraform/phase-0a-gcp/postgres/README.md` for operator procedure.
+
+**Status (historical)**: Staging area (NOT yet merged into phase-0a-gcp/)
+**Destination (historical)**: `terraform/phase-0a-gcp/` (after user approval)
 
 ## Pre-Integration Checklist
 

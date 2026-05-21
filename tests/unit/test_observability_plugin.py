@@ -646,3 +646,346 @@ def test_dual_emit_env_var_parsing():
         assert v.strip().lower() in obs._DUAL_EMIT_TRUTHY, f"{v!r} should be truthy"
     for v in falsy:
         assert v.strip().lower() not in obs._DUAL_EMIT_TRUTHY, f"{v!r} should be falsy"
+
+
+# ---------------------------------------------------------------------------
+# J9 — F-CONTEXT detector wiring (Task #55)
+# ---------------------------------------------------------------------------
+# Covers the wrapper-side shim that feeds ``post_api_request``'s
+# prompt-token count into ``ContextUsageDetector.record_usage`` and
+# dispatches F36 on threshold crossings. These tests never touch the real
+# OTel SDK — they monkeypatch the module-level singletons so behavior is
+# verifiable without the production exporter pipeline.
+
+
+def test_get_model_context_length_known_models():
+    """The registry returns the published context window for known models,
+    in both bare and LiteLLM-prefixed forms."""
+    from lib.observability.model_context import get_model_context_length
+
+    assert get_model_context_length("claude-opus-4-7") == 200_000
+    assert get_model_context_length("vertex_ai/claude-opus-4-7") == 200_000
+    assert get_model_context_length("anthropic/claude-sonnet-4-6") == 200_000
+    assert get_model_context_length("gpt-4o") == 128_000
+    assert get_model_context_length("gpt-4") == 8_192
+    assert get_model_context_length("vertex_ai/gemini-2.5-pro") == 1_048_576
+
+
+def test_get_model_context_length_unknown_or_empty_returns_zero():
+    """Unknown / empty model strings return 0 — the documented "skip
+    F-CONTEXT recording" sentinel."""
+    from lib.observability.model_context import get_model_context_length
+
+    assert get_model_context_length(None) == 0
+    assert get_model_context_length("") == 0
+    assert get_model_context_length("not-a-real-model") == 0
+    # No prefix/suffix matching by design — exact match only.
+    assert get_model_context_length("claude-opus-4-7-20251022") == 0
+    assert get_model_context_length("gpt-4o-2024-08-06") == 0
+
+
+def test_record_context_usage_skips_when_session_id_missing(monkeypatch):
+    """Empty / None session_id is a no-op (matches detector's contract:
+    session_id keys the per-episode state, so a blank session would
+    collide across callers)."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    obs._record_context_usage(session_id="", prompt_tokens=100, model="claude-opus-4-7")
+    obs._record_context_usage(session_id=None, prompt_tokens=100, model="claude-opus-4-7")  # type: ignore[arg-type]
+    assert fake_detector.record_usage.call_count == 0
+
+
+def test_record_context_usage_skips_when_prompt_tokens_zero(monkeypatch):
+    """Zero / negative prompt_tokens — the caller already filtered, but be
+    defensive (record_usage with prompt_tokens=0 would emit a 0.0 ratio
+    that pollutes dashboards without signal)."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    obs._record_context_usage(session_id="s1", prompt_tokens=0, model="claude-opus-4-7")
+    obs._record_context_usage(session_id="s1", prompt_tokens=-5, model="claude-opus-4-7")
+    assert fake_detector.record_usage.call_count == 0
+
+
+def test_record_context_usage_skips_when_model_unknown(monkeypatch):
+    """Unknown model -> context_length 0 -> no record_usage call. F36 can't
+    fire because the detector needs a non-zero divisor; the shim short-
+    circuits before calling rather than relying on detector's own guard."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    obs._record_context_usage(session_id="s1", prompt_tokens=100, model="unknown-model-xyz")
+    obs._record_context_usage(session_id="s1", prompt_tokens=100, model=None)
+    assert fake_detector.record_usage.call_count == 0
+
+
+def test_record_context_usage_invokes_detector_with_correct_args(monkeypatch):
+    """Known model + valid prompt_tokens -> detector.record_usage called
+    with session_id, prompt_tokens, and the looked-up context_length."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    fake_detector.record_usage.return_value = None  # below threshold
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    obs._record_context_usage(session_id="s1", prompt_tokens=42, model="claude-opus-4-7")
+
+    fake_detector.record_usage.assert_called_once_with(
+        session_id="s1",
+        prompt_tokens=42,
+        context_length=200_000,
+    )
+
+
+def test_record_context_usage_dispatches_f36_on_threshold(monkeypatch):
+    """When detector returns 'F36', the shim dispatches via the failure-
+    matrix handler with model + token + context_length payload. This
+    exercises the lib.durability.handlers.dispatch indirection."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    fake_detector.record_usage.return_value = "F36"
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    fake_dispatch = MagicMock()
+    # Inline import inside _record_context_usage targets
+    # lib.durability.handlers; patch via sys.modules so the inline
+    # ``from lib.durability.handlers import dispatch`` resolves to our mock.
+    import sys
+    import types
+
+    fake_handlers = types.ModuleType("lib.durability.handlers")
+    fake_handlers.dispatch = fake_dispatch  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lib.durability.handlers", fake_handlers)
+
+    obs._record_context_usage(session_id="s1", prompt_tokens=190_000, model="claude-opus-4-7")
+
+    fake_dispatch.assert_called_once()
+    args, kwargs = fake_dispatch.call_args
+    assert args == ("F36",)
+    assert kwargs["session_id"] == "s1"
+    assert kwargs["payload"] == {
+        "model": "claude-opus-4-7",
+        "prompt_tokens": 190_000,
+        "context_length": 200_000,
+    }
+
+
+def test_record_context_usage_does_not_dispatch_below_threshold(monkeypatch):
+    """Detector returning None must not trigger dispatch."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    fake_detector.record_usage.return_value = None
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    import sys
+    import types
+
+    fake_handlers = types.ModuleType("lib.durability.handlers")
+    fake_handlers.dispatch = MagicMock()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lib.durability.handlers", fake_handlers)
+
+    obs._record_context_usage(session_id="s1", prompt_tokens=100, model="claude-opus-4-7")
+
+    assert fake_handlers.dispatch.call_count == 0  # type: ignore[attr-defined]
+
+
+def test_record_context_usage_swallows_detector_exceptions(monkeypatch):
+    """A broken detector must not break the LLM tracing pipeline."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    fake_detector.record_usage.side_effect = RuntimeError("detector exploded")
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    # Should not raise.
+    obs._record_context_usage(session_id="s1", prompt_tokens=100, model="claude-opus-4-7")
+
+
+def test_record_context_usage_swallows_dispatch_exceptions(monkeypatch):
+    """A broken dispatch must not break the LLM tracing pipeline either."""
+    import lib.observability as obs
+
+    fake_detector = MagicMock()
+    fake_detector.record_usage.return_value = "F36"
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: fake_detector)
+
+    import sys
+    import types
+
+    fake_handlers = types.ModuleType("lib.durability.handlers")
+    fake_handlers.dispatch = MagicMock(side_effect=RuntimeError("dispatch exploded"))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lib.durability.handlers", fake_handlers)
+
+    # Should not raise.
+    obs._record_context_usage(session_id="s1", prompt_tokens=100, model="claude-opus-4-7")
+
+
+def test_record_context_usage_is_noop_when_detector_init_failed(monkeypatch):
+    """_get_context_detector returning None (init failure cache) must
+    short-circuit cleanly."""
+    import lib.observability as obs
+
+    monkeypatch.setattr(obs, "_get_context_detector", lambda: None)
+    # Should not raise; nothing to assert beyond non-failure.
+    obs._record_context_usage(session_id="s1", prompt_tokens=100, model="claude-opus-4-7")
+
+
+def test_get_context_detector_caches_failure(monkeypatch):
+    """A failing ContextUsageDetector import is cached — the second call
+    returns None without re-attempting + logging."""
+    import sys
+
+    import lib.observability as obs
+
+    # Wipe any cached state.
+    monkeypatch.setattr(obs, "_context_detector", None)
+    monkeypatch.setattr(obs, "_context_detector_init_failed", False)
+
+    # Force the inline import to fail by removing the module from sys.modules
+    # AND inserting a fake that raises on attribute access.
+    import types
+
+    broken = types.ModuleType("lib.durability.runtime_detectors")
+
+    def _raising_getattr(name):
+        raise ImportError(f"simulated import failure: {name}")
+
+    broken.__getattr__ = _raising_getattr  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "lib.durability.runtime_detectors", broken)
+
+    first = obs._get_context_detector()
+    second = obs._get_context_detector()
+    assert first is None
+    assert second is None
+    assert obs._context_detector_init_failed is True
+
+
+def test_pre_llm_call_captures_model_for_session(monkeypatch):
+    """pre_llm_call writes the model into _LLM_MODEL_BY_SESSION so
+    post_api_request can fall back to it when response_model is absent."""
+    import lib.observability as obs
+
+    # Wipe any leftover state from prior tests.
+    obs._LLM_MODEL_BY_SESSION.clear()
+
+    # _tracer must be present for the body of _pre_llm_call to execute the
+    # state-capture block; patch with a stub that returns a MagicMock span.
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-pre-1", user_message="hi", model="claude-opus-4-7")
+
+    assert obs._LLM_MODEL_BY_SESSION.get("sess-pre-1") == "claude-opus-4-7"
+
+
+def test_post_llm_call_drains_model_side_table(monkeypatch):
+    """post_llm_call must remove the entry so a long-running process
+    doesn't leak per-turn model state across thousands of turns."""
+    import lib.observability as obs
+
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-drain-1", user_message="hi", model="claude-opus-4-7")
+    assert "sess-drain-1" in obs._LLM_MODEL_BY_SESSION
+
+    obs._post_llm_call(session_id="sess-drain-1", assistant_response="ok")
+    assert "sess-drain-1" not in obs._LLM_MODEL_BY_SESSION
+
+
+def test_post_api_request_uses_response_model_when_provided(monkeypatch):
+    """When response_model is present, it wins over the pre_llm_call
+    fallback (so a model swap mid-turn — e.g. provider routing — is
+    honored)."""
+    import lib.observability as obs
+
+    captured: dict = {}
+
+    def fake_record(*, session_id, prompt_tokens, model):
+        captured["session_id"] = session_id
+        captured["prompt_tokens"] = prompt_tokens
+        captured["model"] = model
+
+    monkeypatch.setattr(obs, "_record_context_usage", fake_record)
+
+    # Set a fallback model so we know which path was taken.
+    obs._LLM_MODEL_BY_SESSION["sess-resp-1"] = "claude-sonnet-4-6"
+
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-resp-1", user_message="x", model="claude-sonnet-4-6")
+    obs._post_api_request(
+        session_id="sess-resp-1",
+        usage={"input_tokens": 1000, "output_tokens": 5},
+        response_model="claude-opus-4-7",
+    )
+
+    assert captured["model"] == "claude-opus-4-7"
+    assert captured["prompt_tokens"] == 1000
+    obs._LLM_MODEL_BY_SESSION.pop("sess-resp-1", None)
+
+
+def test_post_api_request_falls_back_to_captured_model(monkeypatch):
+    """When response_model is None / empty, the shim falls back to the
+    model captured at pre_llm_call."""
+    import lib.observability as obs
+
+    captured: dict = {}
+
+    def fake_record(*, session_id, prompt_tokens, model):
+        captured["model"] = model
+
+    monkeypatch.setattr(obs, "_record_context_usage", fake_record)
+
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-fb-1", user_message="x", model="claude-sonnet-4-6")
+    obs._post_api_request(
+        session_id="sess-fb-1",
+        usage={"input_tokens": 500},
+        # response_model omitted -> None
+    )
+
+    assert captured["model"] == "claude-sonnet-4-6"
+    obs._LLM_MODEL_BY_SESSION.pop("sess-fb-1", None)
+
+
+def test_post_api_request_skips_record_when_no_input_tokens(monkeypatch):
+    """Zero input_tokens (e.g. a streaming envelope without usage) — the
+    shim short-circuits before calling _record_context_usage."""
+    import lib.observability as obs
+
+    call_count = {"n": 0}
+
+    def fake_record(**_):
+        call_count["n"] += 1
+
+    monkeypatch.setattr(obs, "_record_context_usage", fake_record)
+
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-zero-tok", user_message="x", model="claude-opus-4-7")
+    obs._post_api_request(
+        session_id="sess-zero-tok",
+        usage={"input_tokens": 0, "output_tokens": 5},
+    )
+
+    assert call_count["n"] == 0
+    obs._LLM_MODEL_BY_SESSION.pop("sess-zero-tok", None)

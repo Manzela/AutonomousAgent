@@ -6,7 +6,7 @@ set -euo pipefail
 
 VM_NAME="${1:?vm-name required}"
 ZONE="${2:?zone required}"
-PROJECT_ID="i-for-ai"
+PROJECT_ID="${PROJECT_ID:-autonomous-agent-2026}"
 
 PASS=0; FAIL=0; DEFER=0
 pass() { echo "PASS  #$1: $2"; PASS=$((PASS+1)); }

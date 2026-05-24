@@ -34,7 +34,7 @@ logging.basicConfig(
 
 _SECRET_RESOURCE = os.getenv(
     "HERMES_J3_SHIPPER_CONFIG_SECRET",
-    "projects/i-for-ai/secrets/autonomousagent-j3-shipper-config/versions/latest",
+    "projects/autonomous-agent-2026/secrets/autonomousagent-j3-shipper-config/versions/latest",
 )
 
 _REQUIRED_CONFIG_KEYS = (

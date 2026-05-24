@@ -8,7 +8,7 @@
 
 The contract — stated for the record so this file is interpretable without chasing links:
 
-1. **Per-record sanitize.** Every judge-event record handed to `TrajectoryShipper.ship_batch` must be routed through the Model Armor `sanitizeUserPrompt` API (template `projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper`, configured for `INSPECT_AND_REDACT` over PII categories: email, SSN, PAN, US phone) BEFORE any byte is written to `gs://i-for-ai-autonomousagent-j3-trajectories`. There is no batch-level shortcut, no "sample only the first N", no client-side regex bypass.
+1. **Per-record sanitize.** Every judge-event record handed to `TrajectoryShipper.ship_batch` must be routed through the Model Armor `sanitizeUserPrompt` API (template `projects/autonomous-agent-2026/locations/us-central1/templates/j1-trajectory-shipper`, configured for `INSPECT_AND_REDACT` over PII categories: email, SSN, PAN, US phone) BEFORE any byte is written to `gs://autonomous-agent-2026-j3-trajectories`. There is no batch-level shortcut, no "sample only the first N", no client-side regex bypass.
 2. **Strict response parsing.** A response missing `sanitizationResult.findings` or whose `sanitizedText` is absent counts as an unavailability event, not as "clean". The shipper must NOT fall back to the raw input.
 3. **Halt-LOUD on unavailability.** When sanitize is unavailable for any reason (transport error, missing field, regional template drift, IAM denial), the shipper dispatches a Hermes Failure Matrix `F37` event AND re-raises `ModelArmorSanitizeUnavailable`. The systemd unit's oneshot exit propagates the failure to journald; the timer's next tick re-tries; nothing is uploaded with un-redacted PII.
 4. **Canary-token verification.** Before the J1 flip writes secret v2 with `feature_flag_enabled=true`, the operator runs Stage B of the runbook with the four canary tokens (`canary+persistencetrap@example.test`, `999-88-7777`, `4111-1111-1111-1111`, `(555) 010-1234`) and verifies all four are absent in the uploaded GCS object. Any survival = HALT IMMEDIATELY + disable v2 + P0 incident.
@@ -48,7 +48,7 @@ Both quotes are preserved verbatim. There is no separate "verbatim launch phrase
 Revoking this approval = deleting this file AND disabling the J3 shipper secret v2 in Secret Manager:
 
 ```bash
-gcloud secrets versions disable 2 --secret=autonomousagent-j3-shipper-config --project=i-for-ai
+gcloud secrets versions disable 2 --secret=autonomousagent-j3-shipper-config --project=autonomous-agent-2026
 ```
 
 The systemd timer's next tick will then see `feature_flag_enabled=false` (from v1) and no-op. This file is the spec-side of that rollback; the gcloud command is the runtime side. Both must be inverted to re-enable.

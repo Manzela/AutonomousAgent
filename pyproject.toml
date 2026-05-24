@@ -27,6 +27,24 @@ dev = [
   "pytest-mock>=3.14",
   "ruff>=0.6.9",
 ]
+# A2A spike extra — Day 1 scaffolding pulls the runtime deps the Day 2-10
+# build-out will use (FastAPI/uvicorn for the JSON-RPC server, httpx + httpx-sse
+# for the client + streaming, pyjwt[crypto] + cryptography for JWT mint/verify
+# per the auth-design.md GCP-only federation choice, cachetools for TTL caches,
+# python-ulid for trace-friendly task IDs, python-multipart for FastAPI's
+# multipart form support). Install with: `uv sync --extra a2a` on the spike
+# branch; this extra is feature-flag gated and does NOT pull into production.
+a2a = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "httpx-sse>=0.4",
+  "pyjwt[crypto]>=2.9",
+  "cachetools>=5.5",
+  "python-ulid>=3.0",
+  "cryptography>=43.0",
+  "python-multipart>=0.0.20",
+]
 
 [tool.setuptools.packages.find]
 include = ["lib*"]

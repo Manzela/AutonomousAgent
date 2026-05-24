@@ -37,8 +37,8 @@ def test_feature_flag_off_is_noop(capsys):
     and without making any Model Armor or GCS call.
     """
     config = {
-        "bucket_name": "i-for-ai-autonomousagent-j3-trajectories",
-        "model_armor_template_resource": "projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper",
+        "bucket_name": "autonomous-agent-2026-j3-trajectories",
+        "model_armor_template_resource": "projects/autonomous-agent-2026/locations/us-central1/templates/j1-trajectory-shipper",
         "feature_flag_enabled": False,
     }
     mod = _import_script_module()
@@ -58,8 +58,8 @@ def test_feature_flag_on_constructs_shipper(capsys):
     MUST construct TrajectoryShipper with the secret-supplied bucket +
     template arguments, then exit 0 without invoking ship_batch."""
     config = {
-        "bucket_name": "i-for-ai-autonomousagent-j3-trajectories",
-        "model_armor_template_resource": "projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper",
+        "bucket_name": "autonomous-agent-2026-j3-trajectories",
+        "model_armor_template_resource": "projects/autonomous-agent-2026/locations/us-central1/templates/j1-trajectory-shipper",
         "feature_flag_enabled": True,
     }
     mod = _import_script_module()
@@ -80,7 +80,7 @@ def test_missing_required_config_keys_exits_nonzero(capsys):
     exit nonzero with a clear message — silently defaulting would be a
     Persistence Trap regression vector."""
     config = {
-        "bucket_name": "i-for-ai-autonomousagent-j3-trajectories",
+        "bucket_name": "autonomous-agent-2026-j3-trajectories",
         # missing model_armor_template_resource
         "feature_flag_enabled": True,
     }

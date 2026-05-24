@@ -45,9 +45,9 @@ resource "google_storage_bucket" "snapshots" {
 # payloads MUST NEVER reach it (enforced by application-layer
 # Persistence Trap test contract at tests/integration/test_persistence_trap.py).
 #
-# Naming: i-for-ai-autonomousagent-j3-trajectories — matches the
-# i-for-ai-autonomousagent-* convention. Hyphenated to avoid the
-# underscore-vs-dash mismatch that previously surfaced in
+# Naming: autonomous-agent-2026-j3-trajectories — project-namespaced,
+# consistent with the autonomous-agent-2026-* convention. Hyphenated
+# to avoid the underscore-vs-dash mismatch surfaced in
 # audit/2026-05-21-gemini-delegation/model-armor-apply.output.
 #
 # Location: us-central1 (regional) — co-located with the VM, the Cloud SQL
@@ -63,7 +63,7 @@ resource "google_storage_bucket" "snapshots" {
 
 resource "google_storage_bucket" "j3_trajectories" {
   project                     = var.project_id
-  name                        = "i-for-ai-autonomousagent-j3-trajectories"
+  name                        = "autonomous-agent-2026-j3-trajectories"
   location                    = upper(var.region) # GCS API expects "US-CENTRAL1"
   storage_class               = "STANDARD"
   uniform_bucket_level_access = true

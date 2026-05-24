@@ -1,0 +1,4 @@
+- [Task 31] Implement tests/phase_0a/smoke.sh — IAP reachable + containers up + health 200 — commit 51875b0, fixed in 283feed
+- [Task 32] Implement tests/phase_0a/chaos.sh — kill hermes, verify watchdog restart <=90s — commit 8a3e45a, fixed in 283feed
+- [Task 33] Implement tests/phase_0a/acceptance.sh — runs all 10 spec criteria (PASS/FAIL/DEFER) — commit 2d03b4c, fixed in 283feed
+- [Task 35-37] Extract phase-0a cutover, rollback, and recovery runbooks — commit d232071

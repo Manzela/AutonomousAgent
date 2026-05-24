@@ -318,6 +318,15 @@ services:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
     command: ["gateway", "run"]
+    # A2A spike Day 2: expose the JSON-RPC receiver on 127.0.0.1:9001.
+    # NOT wired into Hermes' gateway lifecycle yet — Day 2 operator manually
+    # runs `uvicorn lib.a2a.server:app --host 0.0.0.0 --port 9001` inside
+    # this container alongside the gateway. The port mapping below lets the
+    # acceptance-gate curl from the host (localhost:9001) reach it.
+    # Day 5 lands the auth middleware that makes this safe to expose more
+    # broadly; until then the bind is loopback-only on the host side.
+    ports:
+      - "127.0.0.1:9001:9001"
     # Docker CIS 5.x baseline (P2 #20). Mirrors shell-sandbox's hardening:
     #   - cap_drop: [ALL]                  → drop every Linux capability
     #   - security_opt: no-new-privileges  → block setuid escalation
@@ -412,6 +421,10 @@ services:
       # the app-level spans the Phase 1 acceptance runbook step 4 expects:
       # turn.start, tool.dispatch, model.call at service.name=hermes-agent.
       - ../lib/observability:/home/hermes/.hermes/plugins/observability:ro
+      # A2A (Agent-to-Agent) protocol plugin — Day 1 scaffolding shell.
+      # Spec-pinned to e997516 per audit/2026-05-21-a2a-spike-plan/SPEC-VERSION.md.
+      # Feature-flag gated: NOT in plugins.enabled until Day 5 (auth land).
+      - ../lib/a2a:/home/hermes/.hermes/plugins/a2a:ro
       # The plugins above declare `from lib.X import Y` for cross-module
       # imports inside their own __init__.py. Mount the full lib/ as a
       # PYTHONPATH-rooted package at /app/lib so those imports resolve.

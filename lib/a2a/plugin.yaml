@@ -1,0 +1,5 @@
+name: a2a
+version: 0.1.0-spike-day1
+description: "A2A (Agent-to-Agent) protocol plugin — Day 1 scaffolding shell. Pinned to spec SHA e997516 (see audit/2026-05-21-a2a-spike-plan/SPEC-VERSION.md)."
+kind: standalone
+provides_hooks: [on_session_start]

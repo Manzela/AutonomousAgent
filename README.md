@@ -9,6 +9,9 @@
 [![Secret Scan](https://github.com/Manzela/AutonomousAgent/actions/workflows/secret-scan.yml/badge.svg?branch=main)](https://github.com/Manzela/AutonomousAgent/actions/workflows/secret-scan.yml)
 [![Built with Hermes Agent](https://img.shields.io/badge/Built%20on-Hermes%20Agent-blueviolet.svg)](https://github.com/NousResearch/hermes-agent)
 
+> [!IMPORTANT]
+> **GCP Project Migration**: All AutonomousAgent infrastructure is migrating from the shared `i-for-ai` project to a dedicated `autonomous-agent-2026` project. **Do not create new resources in `i-for-ai`**. See [migration plan](docs/architecture/gcp-migration-i-for-ai-to-autonomous-agent-2026.md) for details.
+
 ## What this is
 
 A complete deployment wrapper around the upstream Hermes Agent. The agent runs in Docker on your Mac, connects to Anthropic Claude 4.7 via Vertex AI through a LiteLLM proxy, persists state across restarts, talks to you via Telegram, and continuously improves itself by curating its own memory, autonomously creating skills from successful task completions, and (eventually, in Phase 4) fine-tuning its own model on captured trajectories.

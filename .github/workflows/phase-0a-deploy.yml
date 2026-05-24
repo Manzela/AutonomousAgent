@@ -59,13 +59,13 @@ permissions:
   contents: read
 
 env:
-  GCP_PROJECT: i-for-ai
+  GCP_PROJECT: autonomous-agent-2026
   GCP_REGION: us-central1
   GCP_ZONE: us-central1-a
   VM_NAME: autonomousagent-vm
   AR_REGISTRY: us-central1-docker.pkg.dev
-  AR_REPO: us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images
-  BOOTSTRAP_TARBALL: gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz
+  AR_REPO: us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images
+  BOOTSTRAP_TARBALL: gs://autonomous-agent-2026-snapshots/bootstrap/hermes-bootstrap.tar.gz
   # Target container count for smoke-check (matches the compose stack)
   EXPECTED_CONTAINER_COUNT: 10
 
@@ -256,7 +256,7 @@ jobs:
           BOOTSTRAP_DIR="/opt/hermes/bootstrap"
           COMPOSE_BASE="${BOOTSTRAP_DIR}/docker-compose.yml"
           COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
-          BOOTSTRAP_TARBALL="gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz"
+          BOOTSTRAP_TARBALL="gs://autonomous-agent-2026-snapshots/bootstrap/hermes-bootstrap.tar.gz"
           EXPECTED_CONTAINERS=10
 
           echo "[deploy] Refreshing bootstrap tarball from GCS..."

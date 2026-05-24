@@ -1,18 +1,11 @@
-# Phase 0a — API enablement on the existing i-for-ai project.
+# Phase 0a — API enablement on the autonomous-agent-2026 project.
 #
-# The project itself is assumed pre-created (i-for-ai, project number 85113401879,
-# billing 01FABE-89B1B2-4C704D — already wired). Pre-flight discovery
-# confirmed all 11 APIs below are already enabled, so the initial apply is
-# a state-only import (no GCP-side mutation). The resources are still
-# declared so that:
-#   1. The dependency graph (depends_on = [google_project_service.enabled])
-#      in later resources is honored.
-#   2. Re-apply from a fresh state file (e.g. disaster recovery) re-enables
-#      anything that was disabled out-of-band.
+# The project (autonomous-agent-2026, project number 870615250682,
+# billing 01FABE-89B1B2-4C704D) is a dedicated project for the
+# AutonomousAgent workload, migrated from the shared i-for-ai project.
 #
 # disable_on_destroy = false: prevents `terraform destroy` from disabling
-# APIs that other workloads on i-for-ai (Vertex AI, image-cache, lora-*)
-# depend on.
+# APIs while the project is in active use.
 
 locals {
   required_apis = [

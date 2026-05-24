@@ -54,9 +54,9 @@ check "litellm-proxy healthy" bash -c '
 echo "Smoke test 3/8: real LLM round-trip via litellm → Vertex AI"
 # Use Sonnet (claude-sonnet-4-6) for the smoke check — it shares the same
 # integration path as Opus but has more headroom under the per-minute quota
-# on the i-for-ai project. The smoke goal is "the chain works", not "Opus is
-# unthrottled at this exact second". Opus is still wired and will be used by
-# default by the agent for actual user turns.
+# on the autonomous-agent-2026 project. The smoke goal is "the chain works",
+# not "Opus is unthrottled at this exact second". Opus is still wired and
+# will be used by default by the agent for actual user turns.
 check "real LLM call (vertex_ai/claude-sonnet-4-6)" bash -c '
   master_key=$(cat "'"$ROOT"'/secrets/litellm-master-key" 2>/dev/null)
   resp=$(curl -fsS -X POST http://localhost:4000/v1/chat/completions \

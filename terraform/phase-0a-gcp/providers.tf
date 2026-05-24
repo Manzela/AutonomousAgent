@@ -6,7 +6,7 @@ terraform {
   }
   # Backend bucket name is literal: Terraform forbids variable interpolation in backend blocks.
   backend "gcs" {
-    bucket = "i-for-ai-autonomousagent-tfstate"
+    bucket = "autonomous-agent-2026-tfstate"
     prefix = "phase-0a"
   }
 }
@@ -16,7 +16,7 @@ provider "google" {
   region  = var.region
   zone    = var.zone
   # Required for billingbudgets.googleapis.com with local ADC: sets the quota
-  # project so the billing API uses i-for-ai instead of the ADC default project.
+  # project so the billing API uses the correct project instead of the ADC default.
   billing_project       = var.project_id
   user_project_override = true
 }

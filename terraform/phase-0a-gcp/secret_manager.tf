@@ -13,8 +13,8 @@
 # loads at runtime. SM secret_id = "autonomousagent-<basename>", value
 # (when populated) = the entire decrypted env-file contents.
 #
-# Naming: autonomousagent-* prefix to avoid colliding with secrets
-# owned by sibling workloads on i-for-ai.
+# Naming: autonomousagent-* prefix for namespace isolation within the
+# dedicated autonomous-agent-2026 project.
 #
 # replication.auto: GCP picks replication policy; sufficient for these
 # non-critical secrets (we have IaC + SOPS as source of truth).
@@ -64,9 +64,9 @@ locals {
 # IMPORT REQUIRED for existing environments:
 # These secrets were bootstrapped via gcloud. Import before first apply:
 #   terraform import 'google_secret_manager_secret.individual["github-pat"]' \
-#     projects/i-for-ai/secrets/autonomousagent-github-pat
+#     projects/autonomous-agent-2026/secrets/autonomousagent-github-pat
 #   terraform import 'google_secret_manager_secret.individual["litellm-master-key"]' \
-#     projects/i-for-ai/secrets/autonomousagent-litellm-master-key
+#     projects/autonomous-agent-2026/secrets/autonomousagent-litellm-master-key
 resource "google_secret_manager_secret" "individual" {
   for_each = toset(local.individual_secrets)
   project  = var.project_id

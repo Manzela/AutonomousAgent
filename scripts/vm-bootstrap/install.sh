@@ -52,7 +52,7 @@ fi
 
 # 4. Fetch bootstrap tarball from GCS
 mkdir -p /opt/hermes/bootstrap
-gsutil cp "gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz" \
+gsutil cp "gs://autonomous-agent-2026-snapshots/bootstrap/hermes-bootstrap.tar.gz" \
   /opt/hermes/bootstrap/hermes-bootstrap.tar.gz
 tar -xzf /opt/hermes/bootstrap/hermes-bootstrap.tar.gz -C /opt/hermes/bootstrap/
 

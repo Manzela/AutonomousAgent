@@ -10,12 +10,11 @@
 #     → impersonates google_service_account.github_ci
 #     → uses scoped roles to deploy
 #
-# Naming (Resolves OQ-2 with i-for-ai-collision-safe overrides):
+# Naming:
 #   pool      = autonomousagent-github
 #   provider  = autonomousagent-actions
-# Plan originally specified pool=github-actions / provider=manzela-autonomousagent;
-# renamed to keep the autonomousagent-* prefix consistent on the shared
-# i-for-ai project.
+# These are in the dedicated autonomous-agent-2026 project — no
+# collision risk with sibling workloads.
 #
 # attribute_condition restricts the federation to one repo only — even
 # if another GitHub repo somehow obtains an OIDC token signed by the

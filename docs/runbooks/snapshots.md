@@ -22,7 +22,7 @@ all one-time per environment.
 ## Step 1 — create the bucket
 
 ```bash
-PROJECT=i-for-ai
+PROJECT=autonomous-agent-2026
 BUCKET=autonomous-agent-snapshots-${PROJECT}
 LOCATION=US                                   # multi-region, cheapest for write-heavy DR
 gcloud storage buckets create gs://${BUCKET} \

@@ -13,7 +13,7 @@ terraform {
     google-beta = { source = "hashicorp/google-beta", version = "~> 6.43" }
   }
   backend "gcs" {
-    bucket = "i-for-ai-autonomousagent-tfstate"
+    bucket = "autonomous-agent-2026-tfstate"
     prefix = "phase-0a-model-armor"
   }
 }

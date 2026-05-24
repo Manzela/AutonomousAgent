@@ -1,8 +1,7 @@
 # Phase 0a — Persistent storage + daily snapshot policy.
 #
-# The VM resource itself lands in Task 16; this file owns the disks and
-# the snapshot schedule because they have an independent lifecycle
-# (the data disk MUST survive VM rebuilds).
+# The VM resource itself and disks are co-located here because they
+# share the same lifecycle and dependency graph.
 #
 # Architecture:
 #   - boot disk:  50GB pd-balanced, Debian 12, ephemeral-equivalent
@@ -18,7 +17,7 @@
 #   deletion does not also nuke the recovery snapshots
 #
 # Naming: autonomousagent-* prefix for consistency with the rest of
-# the Phase 0a module on shared i-for-ai.
+# the Phase 0a module on dedicated autonomous-agent-2026 project.
 
 resource "google_compute_resource_policy" "daily_snapshot" {
   project = var.project_id
@@ -111,7 +110,7 @@ resource "google_compute_instance" "autonomousagent" {
 
   metadata = {
     enable-oslogin     = "TRUE"
-    startup-script-url = "gs://i-for-ai-autonomousagent-snapshots/bootstrap/install.sh"
+    startup-script-url = "gs://autonomous-agent-2026-snapshots/bootstrap/install.sh"
     hermes-image-repo  = "us-central1-docker.pkg.dev/${var.project_id}/autonomousagent-images"
   }
 

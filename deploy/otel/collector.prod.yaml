@@ -36,7 +36,7 @@ processors:
 
 exporters:
   googlecloud:
-    project: i-for-ai
+    project: autonomous-agent-2026
     log:
       default_log_name: "opentelemetry.io/collector-exported-log"
 

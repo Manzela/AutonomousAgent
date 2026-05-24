@@ -1,8 +1,7 @@
 # Phase 0a — VPC + subnet for the AutonomousAgent GCE VM.
 #
-# Naming: `autonomousagent-*` prefix to avoid collision with sibling
-# workloads on the shared i-for-ai project (the only existing network is
-# `default`, which we leave untouched).
+# Naming: `autonomousagent-*` prefix for consistency in the
+# dedicated autonomous-agent-2026 project.
 #
 # CIDR: 10.10.0.0/24 is RFC-1918 private space; deliberately disjoint
 # from GCP's default auto-mode subnets (10.128.0.0/9) so dual-VPC
@@ -39,7 +38,7 @@ resource "google_compute_subnetwork" "autonomousagent" {
 #
 # target_tags = ["autonomousagent-vm"]: rules only apply to instances
 # tagged this way (the GCE VM in compute.tf will carry this tag), so the
-# rules cannot accidentally bleed onto sibling workloads on this VPC.
+# rules cannot accidentally bleed onto other instances in this VPC.
 
 resource "google_compute_firewall" "deny_all_ingress" {
   name      = "autonomousagent-deny-all-ingress"

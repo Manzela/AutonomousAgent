@@ -1,14 +1,14 @@
-# Phase 0a — Billing budget alert for project i-for-ai (AC-10).
+# Phase 0a — Billing budget alert for project autonomous-agent-2026 (AC-10).
 #
 # Budget: $7,750/mo (~$250/day × 31 days).
 # GCP billing budgets are calendar-month scoped — no native daily period.
 # $250/day cap is approximated as a monthly ceiling.
 # Alert thresholds: 25% (~$63/day), 50% (~$125/day), 75%, 100%.
 #
-# Scoped to project i-for-ai to avoid cross-project noise on this shared
-# billing account. Notification emails go to the same channel as monitoring.
+# Scoped to project autonomous-agent-2026 (dedicated project).
+# Notification emails go to the same channel as monitoring.
 #
-# billing_account: hardcoded for i-for-ai — changes only if billing is
+# billing_account: hardcoded — changes only if billing is
 # restructured across projects, which is an operator action, not IaC.
 
 resource "google_billing_budget" "autonomousagent" {
@@ -16,7 +16,7 @@ resource "google_billing_budget" "autonomousagent" {
   display_name    = "autonomousagent-phase-0a"
 
   budget_filter {
-    projects = ["projects/85113401879"]
+    projects = ["projects/870615250682"]
   }
 
   amount {

@@ -83,6 +83,35 @@ mcp_servers:
   context7:
     type: http
     url: https://mcp.context7.com/sse
+  # ---- Official Anthropic MCPs (stdio subprocesses, J5) ----
+  #
+  # Both run as stdio subprocesses of Hermes via `uvx` (already in the image:
+  # deploy/Dockerfile.hermes:23-24). No docker-compose sidecar needed — that
+  # pattern fits HTTP MCPs (github, context7) but not these. See
+  # docs/mcp-inventory.md §"stdio vs HTTP MCPs" for the divergence rationale.
+  #
+  # The two siblings from the audit-plan's J5 triple — `filesystem` (npm-only,
+  # would require adding nodejs to Hermes image) and `git` (needs a workspace
+  # mount that the read-only hermes container doesn't have) — are deliberately
+  # deferred. See docs/mcp-inventory.md "Deferred entries" for status.
+  fetch:
+    # Fetches a URL and converts HTML→markdown for the model. Respects
+    # robots.txt by default; we keep the default (no --ignore-robots-txt).
+    # User-agent identifies us as the autonomous agent for upstream rate
+    # limiting / abuse reports. PyPI: mcp-server-fetch.
+    command: uvx
+    args:
+      - mcp-server-fetch
+      - --user-agent=AutonomousAgent-Hermes/0.1 (+https://github.com/Manzela/AutonomousAgent)
+  time:
+    # Timezone-aware datetime utilities. Hermes container clock is UTC; we
+    # set the server's default tz to UTC so all "now" calls produce a
+    # reliable absolute reference. The model can request other zones per call.
+    # PyPI: mcp-server-time.
+    command: uvx
+    args:
+      - mcp-server-time
+      - --local-timezone=UTC
   # playwright: deferred from Phase 1 — see compose-level note for details.
 
 terminal_backend: docker

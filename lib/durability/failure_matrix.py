@@ -1,7 +1,10 @@
-"""33-mode failure matrix mapping F-codes to trichotomy class + handler reference.
+"""Failure matrix mapping F-codes to trichotomy class + handler reference.
 
-Source of truth: docs/architecture/failure-matrix.md (extended in this PR
-from the initial 16-mode draft to 33 modes per the AA-Atelier sweep).
+Source of truth: docs/architecture/failure-matrix.md.
+
+Codes F1-F33 are the original AA-Atelier sweep (self-heal F1-F11, fail-soft
+F12-F20, fail-loud F21-F33). Codes F34+ are runtime-detector additions tracked
+in audit/2026-05-20-architecture-research-gap-analysis/audit-plan.md.
 """
 
 from enum import Enum
@@ -181,6 +184,49 @@ FAILURE_MATRIX: Dict[str, Dict[str, Any]] = {
     "F33": {
         "class": TrichotomyClass.FAIL_LOUD,
         "description": "F-code lookup failed (unclassified exception)",
+        "handler": "halt_alert_snapshot",
+    },
+    # === Runtime detectors F34-F35 (J4 — Framing #2) ===
+    # F-LOOP: N consecutive identical-fingerprint tool calls. Fail-soft so
+    # the orchestrator can inject loop-break feedback rather than halt.
+    "F34": {
+        "class": TrichotomyClass.FAIL_SOFT,
+        "description": "F-LOOP: agent repeated same tool-call fingerprint N times without progress",
+        "handler": "interrupt_with_loop_feedback",
+    },
+    # F-STALL: no tool-call activity for idle_timeout_s while task in_progress.
+    # Fail-loud — an idle agent on an open task is usually an upstream hang.
+    "F35": {
+        "class": TrichotomyClass.FAIL_LOUD,
+        "description": "F-STALL: no tool-call activity for idle_timeout_s while task in_progress",
+        "handler": "halt_alert_snapshot",
+    },
+    # F-CONTEXT (J9 — Framing #2): prompt-tokens / context_length exceeded
+    # warning threshold (default 0.9). Fail-soft because upstream Hermes already
+    # compacts at 0.5 (`context_compressor.threshold_percent`); a 0.9 reading
+    # means compaction either failed or was suppressed by anti-thrashing. The
+    # handler escalates (forced compaction / Telegram / `/new` request) rather
+    # than halting — the model can keep running, but every subsequent turn is
+    # at risk of provider-side hard truncation.
+    "F36": {
+        "class": TrichotomyClass.FAIL_SOFT,
+        "description": "F-CONTEXT: prompt-token usage exceeded warning threshold (compaction may be ineffective)",
+        "handler": "escalate_context_pressure",
+    },
+    # F37 (Stream B — Framing #2, ADR-0008 Q6): Model Armor templates.sanitize
+    # call failed or timed out while the J1 trajectory shipper was preparing a
+    # judge verdict for GCS persistence. Fail-loud is the correct posture even
+    # though sanitize APIs being down is a "transient infra" condition: the
+    # shipper writes to the RLAIF training substrate, and an un-redacted PII
+    # leak there is functionally unrecallable (Phase 4 training will memorize
+    # the leak). Fail-soft (e.g. fallback_local_log of the redacted intent
+    # WITHOUT the payload) would defer the failure mode but not eliminate it.
+    # The shipper code MUST raise F37 rather than catch+continue when sanitize
+    # is unavailable. See model-armor-j1-config memory and
+    # audit/2026-05-20-model-armor-j1-runbook/runbook.md for context.
+    "F37": {
+        "class": TrichotomyClass.FAIL_LOUD,
+        "description": "Model Armor templates.sanitize unavailable (J1 trajectory shipper PII redaction)",
         "handler": "halt_alert_snapshot",
     },
 }

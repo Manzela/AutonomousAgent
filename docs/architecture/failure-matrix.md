@@ -1,11 +1,19 @@
-# Hermes Failure Matrix (33 Modes)
+# Hermes Failure Matrix (37 Modes)
 
 The system enforces a **Fail-Loud / Fail-Soft / Self-Heal** trichotomy. Every tool and system error must be explicitly classified and handled according to this matrix.
 
 > **Source of truth:** the codified F-code → trichotomy class + handler mapping lives in
-> `lib/durability/failure_matrix.py`. This document mirrors that table for human readers and
-> must be kept in lockstep with it (the `test_all_33_codes_present` unit test enforces the
-> code-side; doc parity is enforced via `grep -cE "^\| F[0-9]+ \|" docs/architecture/failure-matrix.md == 33` in CI as the row-count guard).
+> `lib/durability/failure_matrix.py`. This document mirrors that table for human readers and must be kept in lockstep with it.
+>
+> Lockstep enforcement (all in `tests/unit/test_failure_matrix.py`):
+>
+> - `test_baseline_codes_f1_to_f33_present` — locks the F1-F33 AA-Atelier baseline; any future deletion regresses.
+> - `test_loop_and_stall_codes_present` — locks F34 (F-LOOP) and F35 (F-STALL) added by J4 (Framing #2).
+> - `test_context_code_present` — locks F36 (F-CONTEXT) added by J9 (Framing #2).
+> - `test_model_armor_sanitize_code_present` — locks F37 (Model Armor sanitize unavailable) added by Stream B (ADR-0008 Q6).
+> - `test_every_code_maps_to_valid_class` + `test_no_duplicate_codes` — invariant guards over every row.
+>
+> **Current count: 37** (F1-F33 baseline + F34-F36 runtime detectors + F37 Model Armor PII gate). Adding a new F-code requires (1) a row in `FAILURE_MATRIX` in code, (2) a row in §2 below, and (3) a new `test_*_code_present` assertion mirroring the J4/J9 pattern.
 
 ## 1. The Trichotomy Definition
 
@@ -62,6 +70,48 @@ The system enforces a **Fail-Loud / Fail-Soft / Self-Heal** trichotomy. Every to
 | F31 | Egress allowlist violation attempt | **Fail-Loud** | `halt_alert_snapshot` |
 | F32 | 24h Telegram silence on blocked card → escalate to triage | **Fail-Loud** | `alert_user_escalate_kanban` |
 | F33 | F-code lookup failed (unclassified exception) | **Fail-Loud** | `halt_alert_snapshot` |
+
+### Runtime detectors (F34-F36)
+
+Added by Framing #2 audit. Unlike F1-F33 (which are *classifications of
+raised exceptions*), these fire from active detectors running in the
+orchestrator's hooks/watchdog. See `lib/durability/runtime_detectors.py`.
+
+| Code | Description | Class | Handler |
+|---|---|---|---|
+| F34 | **F-LOOP** — agent repeated same tool-call fingerprint N times without progress | **Fail-Soft** | `interrupt_with_loop_feedback` |
+| F35 | **F-STALL** — no tool-call activity for `idle_timeout_s` while task in_progress | **Fail-Loud** | `halt_alert_snapshot` |
+| F36 | **F-CONTEXT** — prompt-token usage exceeded warn threshold (compaction may be ineffective) | **Fail-Soft** | `escalate_context_pressure` |
+
+**F36 / F-CONTEXT semantics.** Upstream Hermes' `context_compressor` already
+triggers compaction at 0.5 of the model's context window
+(`threshold_percent`). A reading at 0.9 (`config/limits.yaml →
+durability.context_detector.warn_threshold`) means compaction either failed,
+got suppressed by the anti-thrashing guard, or never ran — the detector
+surfaces that pathological state to the orchestrator/operator. Re-arms
+when the next observed ratio drops below threshold, so a single session
+can fire F36 multiple times if it keeps bouncing across the warn line.
+
+### Stream B PII gate (F37)
+
+| Code | Description | Class | Handler |
+|---|---|---|---|
+| F37 | **Model Armor sanitize unavailable** — `templates.sanitize` failed or timed out while the J1 trajectory shipper was preparing a judge verdict for GCS persistence | **Fail-Loud** | `halt_alert_snapshot` |
+
+**F37 / Model Armor PII gate semantics.** When the trajectory shipper cannot
+sanitize a verdict via Model Armor, the only safe action is to halt the
+shipper, snapshot, and alert. Writing un-redacted verdicts to GCS would
+persist PII into the RLAIF training substrate; Phase 4 RL will memorize the
+leak, and we cannot delete training-time PII from a model after the fact.
+Fail-soft (`fallback_local_log` of the redacted intent without the payload)
+would defer the failure mode but not eliminate it — the shipper backlog
+would build up and operators would be tempted to drain it with redaction
+disabled. The shipper code MUST `dispatch("F37", ...)` rather than
+`try: sanitize() except: continue`. See
+`audit/2026-05-20-model-armor-j1-runbook/runbook.md` for the runtime
+sanitize contract and
+`audit/2026-05-21-persistence-trap-12c/test-contract.md` for the
+regression test that proves a broken-sanitize path fails loud.
 
 ## 3. Classifier behavior
 

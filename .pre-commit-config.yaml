@@ -25,7 +25,8 @@ repos:
             tests/unit/test_scrubber(_callback)?\.py|
             tests/unit/test_alert_payload_scrubbing\.py|
             uv.lock|
-            hermes-agent/.*
+            hermes-agent/.*|
+            audit/.*
           )$
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.6.9

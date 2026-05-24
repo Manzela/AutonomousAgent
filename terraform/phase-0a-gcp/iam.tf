@@ -11,9 +11,8 @@
 # CI service account + Workload Identity Federation live in wif.tf
 # (Task 11) — distinct identity, distinct trust boundary.
 #
-# Naming: autonomousagent-vm-runtime to avoid collision with the
-# pre-existing `github@i-for-ai` SA (which serves a different purpose
-# on this shared project).
+# Naming: autonomousagent-vm-runtime — dedicated SA in the
+# autonomous-agent-2026 project.
 
 resource "google_service_account" "vm_runtime" {
   project      = var.project_id
@@ -49,8 +48,8 @@ resource "google_project_iam_member" "vm_runtime_roles" {
 #                                    when (re)attaching to the VM
 #   - iap.tunnelResourceAccessor   — open IAP TCP tunnels for SSH
 #
-# Naming: autonomousagent-github-ci avoids collision with the
-# pre-existing `github@i-for-ai` and `github-dev-stg@i-for-ai` SAs.
+# Naming: autonomousagent-github-ci — dedicated SA in
+# autonomous-agent-2026 project.
 
 resource "google_service_account" "github_ci" {
   project      = var.project_id

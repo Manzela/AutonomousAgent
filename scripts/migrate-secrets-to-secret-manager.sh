@@ -8,11 +8,11 @@
 # Run with DRY_RUN=true to preview without creating versions.
 #
 # Prerequisites: sops binary, gcloud authed as an account with
-#   roles/secretmanager.secretVersionAdder on project i-for-ai.
+#   roles/secretmanager.secretVersionAdder on project autonomous-agent-2026.
 
 set -euo pipefail
 
-PROJECT_ID="${PROJECT_ID:-i-for-ai}"
+PROJECT_ID="${PROJECT_ID:-autonomous-agent-2026}"
 DRY_RUN="${DRY_RUN:-false}"
 SECRETS_DIR="${SECRETS_DIR:-secrets}"
 # Ensure sops can find the Age private key regardless of XDG config resolution

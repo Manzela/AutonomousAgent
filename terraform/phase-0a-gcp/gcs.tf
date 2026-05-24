@@ -5,9 +5,8 @@
 # the responsibility of the existing PR #108 spend-log GCS bucket, which
 # is structured for that purpose; this bucket is deliberately narrow.
 #
-# Naming: i-for-ai-autonomousagent-snapshots — `i-for-ai-` prefix is the
-# project-namespace convention; `-snapshots` to keep distinct from the
-# already-existing i-for-ai-autonomousagent-tfstate bucket.
+# Naming: autonomous-agent-2026-snapshots — project-prefixed to keep
+# globally unique and distinct from the tfstate bucket.
 #
 # Location: us-central1 (regional, NOT multi-region) — co-located with
 # the VM and PDs for fast snapshot operations; cross-region is the other
@@ -19,7 +18,7 @@
 
 resource "google_storage_bucket" "snapshots" {
   project                     = var.project_id
-  name                        = "i-for-ai-autonomousagent-snapshots"
+  name                        = "autonomous-agent-2026-snapshots"
   location                    = upper(var.region) # GCS API expects "US-CENTRAL1"
   storage_class               = "STANDARD"
   uniform_bucket_level_access = true

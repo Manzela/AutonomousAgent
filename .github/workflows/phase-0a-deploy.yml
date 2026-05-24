@@ -211,15 +211,19 @@ jobs:
           # credentials_file is used by gcloud for subsequent calls (SSH, gsutil)
           create_credentials_file: true
 
+      # Install a current gcloud SDK — the runner's pre-installed gcloud has a
+      # bug (quote_from_bytes() TypeError) when calling gcloud compute ssh via
+      # IAP on some runner image versions.
+      - name: Install gcloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+
       - name: Set up gcloud CLI
-        # The auth action installs gcloud automatically when create_credentials_file
-        # is true. Explicitly activate the service account credentials so all
-        # subsequent gcloud/gsutil calls use the CI SA, not ADC from the runner.
         run: |
           gcloud config set project "$GCP_PROJECT"
           gcloud config set compute/zone "$GCP_ZONE"
           gcloud config set compute/region "$GCP_REGION"
-          # Verify auth is working before attempting SSH
           gcloud auth list
 
       # ------------------------------------------------------------------
@@ -247,16 +251,17 @@ jobs:
             << 'REMOTE_SCRIPT'
           set -euo pipefail
 
-          DEPLOY_DIR="/opt/autonomousagent"
-          COMPOSE_FILE="${DEPLOY_DIR}/deploy/docker-compose.yml"
-          AR_REPO="us-central1-docker.pkg.dev/i-for-ai/autonomousagent-images"
+          # Bootstrap lives at /opt/hermes/bootstrap/ on the VM.
+          # Compose files: docker-compose.yml + docker-compose.gcp.override.yml
+          BOOTSTRAP_DIR="/opt/hermes/bootstrap"
+          COMPOSE_BASE="${BOOTSTRAP_DIR}/docker-compose.yml"
+          COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
           BOOTSTRAP_TARBALL="gs://i-for-ai-autonomousagent-snapshots/bootstrap/hermes-bootstrap.tar.gz"
           EXPECTED_CONTAINERS=10
 
           echo "[deploy] Refreshing bootstrap tarball from GCS..."
           gsutil -q cp "${BOOTSTRAP_TARBALL}" /tmp/hermes-bootstrap.tar.gz
-          tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${DEPLOY_DIR}" --strip-components=1 || \
-            tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${DEPLOY_DIR}"
+          tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${BOOTSTRAP_DIR}" 2>/dev/null
           rm -f /tmp/hermes-bootstrap.tar.gz
           echo "[deploy] Bootstrap tarball extracted."
 
@@ -264,24 +269,41 @@ jobs:
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
           echo "[deploy] Pulling new images..."
-          docker compose -f "${COMPOSE_FILE}" pull --quiet
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
 
-          echo "[deploy] Restarting compose stack..."
-          docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans --quiet-pull
+          echo "[deploy] Pruning stopped containers (clears stale references)..."
+          # Stopped/killed containers from prior chaos tests or failed deploys
+          # leave stale IDs that docker compose tries to reference during
+          # --force-recreate. Prune removes them without touching running ones.
+          docker container prune -f
 
-          echo "[deploy] Waiting 15 s for containers to initialise..."
-          sleep 15
+          echo "[deploy] Starting compose stack..."
+          # || true: docker compose up can emit "No such container" for stale
+          # references from prior kills (e.g., chaos tests). These are cleanup
+          # errors — the container still starts. The smoke check is authoritative.
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+            up -d --quiet-pull || true
 
-          echo "[deploy] Smoke check — counting running containers..."
-          running=$(docker compose -f "${COMPOSE_FILE}" ps --status running --format json \
-            | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
-          echo "[deploy] Running containers: ${running} (expected: ${EXPECTED_CONTAINERS})"
-          if [ "${running}" -ne "${EXPECTED_CONTAINERS}" ]; then
-            echo "[deploy] ERROR: expected ${EXPECTED_CONTAINERS} containers, got ${running}." >&2
-            docker compose -f "${COMPOSE_FILE}" ps >&2
-            exit 1
-          fi
-          echo "[deploy] Smoke check passed."
+          echo "[deploy] Smoke check — polling up to 120 s for ${EXPECTED_CONTAINERS} containers..."
+          # snapshot-watchdog depends_on hermes which depends_on litellm-proxy
+          # (healthy) which depends_on litellm-db (healthy). The full chain
+          # takes 60-90 s; a retry loop is more reliable than a fixed sleep.
+          for attempt in $(seq 1 12); do
+            running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+              ps --status running --format json \
+              | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
+            echo "[deploy] t+${attempt}0s: running=${running}/${EXPECTED_CONTAINERS}"
+            if [ "${running}" -ge "${EXPECTED_CONTAINERS}" ]; then
+              echo "[deploy] Smoke check passed."
+              break
+            fi
+            if [ "${attempt}" -eq 12 ]; then
+              echo "[deploy] ERROR: timeout — only ${running}/${EXPECTED_CONTAINERS} containers running." >&2
+              docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" ps >&2
+              exit 1
+            fi
+            sleep 10
+          done
           REMOTE_SCRIPT
 
       - name: Deploy summary

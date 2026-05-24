@@ -1,0 +1,122 @@
+"""
+Embedder ABC + a deterministic hashing implementation.
+
+The hashing embedder is adequate for hundreds of agents and for CI tests.
+For production-scale fleets (>500 active agents) swap to
+SentenceTransformerEmbedder — the swap is a one-constructor change because
+both honour the same `embed()` contract.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from abc import ABC, abstractmethod
+from typing import Iterable
+
+import numpy as np
+
+
+class AbstractEmbedder(ABC):
+    """Map text (or batches of text) to fixed-dim L2-normalised float vectors."""
+
+    @property
+    @abstractmethod
+    def dim(self) -> int: ...
+
+    @abstractmethod
+    def embed(self, text: str) -> np.ndarray: ...
+
+    def embed_many(self, texts: Iterable[str]) -> np.ndarray:
+        return np.stack([self.embed(t) for t in texts], axis=0)
+
+
+class HashingEmbedder(AbstractEmbedder):
+    """Token-hashing embedder: deterministic, dependency-free, fast.
+
+    Pipeline:
+      1. lowercase + word-split the text (very simple tokeniser; fine for
+         capability descriptions and short summaries)
+      2. for each token, hash it with SHA-256 and use the digest bytes to
+         derive a (bucket_index, sign) pair
+      3. accumulate ±1 contributions in the bucket vector
+      4. L2-normalise
+
+    Collisions exist but cancel on average; for the 256-dim default this
+    gives stable cosine similarities for vocab up to a few thousand tokens,
+    which is sufficient for capability vectors and task summaries.
+    """
+
+    def __init__(self, dim: int = 256) -> None:
+        if dim <= 0 or (dim & (dim - 1)) != 0:
+            # Power-of-two helps the bucket modulo distribute uniformly.
+            raise ValueError(f"dim must be a positive power of two, got {dim}")
+        self._dim = dim
+        self._mask = dim - 1
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed(self, text: str) -> np.ndarray:
+        vec = np.zeros(self._dim, dtype=np.float32)
+        if not text:
+            return vec
+        tokens = text.lower().split()
+        for tok in tokens:
+            h = hashlib.sha256(tok.encode("utf-8")).digest()
+            bucket = int.from_bytes(h[:4], "little") & self._mask
+            sign = 1.0 if (h[4] & 0x01) else -1.0
+            vec[bucket] += sign
+        norm = float(np.linalg.norm(vec))
+        if norm > 0.0:
+            vec /= norm
+        return vec
+
+
+class SentenceTransformerEmbedder(AbstractEmbedder):
+    """Stub: model-backed embedder. Production-grade replacement for HashingEmbedder.
+
+    Deferred until the active fleet exceeds ~500 agents (see R4 residual risk
+    in `02-self-correction-pass.md`). Construction raises until the sentence-
+    transformers dependency is added to the project's `pyproject.toml`.
+    """
+
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2", dim: int = 384) -> None:
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+        except ImportError as e:  # pragma: no cover
+            raise RuntimeError(
+                "sentence-transformers is not installed. "
+                "Add it to your pyproject.toml when you swap embedders."
+            ) from e
+        self._model = SentenceTransformer(model_name)
+        self._dim = dim
+
+    @property
+    def dim(self) -> int:
+        return self._dim
+
+    def embed(self, text: str) -> np.ndarray:  # pragma: no cover - exercised only when SDK present
+        vec = self._model.encode([text], normalize_embeddings=True)[0]
+        return np.asarray(vec, dtype=np.float32)
+
+
+def project_dim(vec: np.ndarray, target_dim: int) -> np.ndarray:
+    """Trivial projection: truncate or zero-pad to target_dim, then renormalise.
+
+    Used by the state-vector builder when an embedder's native dim doesn't
+    match the router's expected `capability_dim`. A learned projection
+    would be better; this keeps the seed dependency-free.
+    """
+    src = vec.astype(np.float32)
+    if src.shape[0] == target_dim:
+        out = src
+    elif src.shape[0] > target_dim:
+        out = src[:target_dim]
+    else:
+        out = np.zeros(target_dim, dtype=np.float32)
+        out[: src.shape[0]] = src
+    norm = float(np.linalg.norm(out))
+    if norm > 0.0:
+        out = out / norm
+    return out

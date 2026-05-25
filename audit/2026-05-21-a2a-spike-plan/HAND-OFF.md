@@ -25,7 +25,7 @@
 
 | Gap | Location | Production fix |
 |-----|----------|----------------|
-| jti replay cache is per-process | `lib/a2a/auth.py` | Redis-backed `TTLCache` shared across replicas |
+| jti replay cache is per-process | `lib/a2a/auth.py` | Redis-backed `TTLCache` shared across replicas — **Memorystore provisioned** (`autonomousagent-jti-replay`, `10.184.94.28:6378`, STANDARD_HA 1GB); auth.py wiring pending (`lib/a2a/auth.py` → redis spec) |
 | SSE events are synthetic (3 hardcoded frames) | `lib/a2a/server.py` | Wire to `lib.anchors` event bus |
 | `tasks/get`, `tasks/cancel` → `-32004` | `lib/a2a/server.py` | Implement via `lib.anchors` queries |
 | Peer discovery out-of-band | `config/a2a/peers.yaml` | AgentCard discovery feed |
@@ -35,7 +35,8 @@
 ## What is broken on purpose
 
 - **Allow-unauthenticated transport**: Cloud Run set to allow-all so we can iterate without IAM churn. JWT guard at the application layer + HIPAA audit log are the compensating controls. mTLS at the transport layer is deferred to v2 per auth-design.md §7.3.
-- **Single-instance JWT replay cache**: OOM-proof at spike load but replays across replicas. Documented as `TODO(replay-cache-distributed)` in `auth.py`.
+- **Single-instance JWT replay cache**: OOM-proof at spike load but replays across replicas. Memorystore STANDARD_HA provisioned (`autonomousagent-jti-replay`, `10.184.94.28:6378`). `lib/a2a/auth.py` wiring pending — see `docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md`.
+- **PostgresStore not wired**: Cloud SQL provisioned (`autonomousagent-postgres-vector`, `10.120.0.2`, `db-custom-16-64000`). `CloudSqlPgvectorStore` implemented in `app/adapters/gcp/memory.py` (PR #150); migration script at `scripts/migrate_cloud_sql.py`; HNSW index build at `scripts/build-hnsw-index.sh`.
 
 ---
 

@@ -61,15 +61,16 @@
 - [ ] Security review: assess mTLS overlay requirement for HIPAA posture
 - [ ] Load test: JWT mint/verify at 100 RPS sustained; SSE hold-open at 50 concurrent
 - [ ] Tag spike commit: `spike/a2a-v0.1`
-- [ ] `HERMES_A2A_ENABLED` feature flag: missing — A2A always active when module imported; add env var (default false)
+- [x] `HERMES_A2A_ENABLED` feature flag: gates `register()` in `lib/a2a/__init__.py`; default=true with deprecation warn (flips to false next release) — PR fix/a2a-audit-h6-h10-l3-l4; **operator: set explicitly to suppress warning**
 - [ ] Body size limits: add ASGI middleware to reject requests >1MB on `POST /`, `/stream`, `/subscribe`
 - [ ] Negative JWKS caching: cache failed JWKS fetches (429/503) for 30s with jitter
 - [ ] `_call_sign_blob` async: convert from `httpx.post` (sync) to `AsyncClient.post` (async)
-- [ ] `HERMES_A2A_SA` validation: validate env var at startup against ADC identity
+- [x] `HERMES_A2A_SA` validation: format-only validation at startup (GCP SA email regex `^[a-z][a-z0-9-]{4,28}[a-z0-9]@...\.iam\.gserviceaccount\.com$`); raises RuntimeError on bad/missing value — PR fix/a2a-audit-h6-h10-l3-l4; **ADC live-check deferred (breaks CI/test envs)**
 - [ ] Redis jti replay cache: replace per-process `TTLCache` with Redis atomic `SET NX`
 - [ ] Remove unsigned AgentCard fallback: return 503 on signBlob error, not unsigned card
 - [ ] PHI scrubber on SSE routes: wired in PR #139 — verify and mark done after PR #139 CI
 - [ ] JWT auth on SSE routes: wired in PR #139 — verify and mark done after PR #139 CI
+- [x] `a2a.audit` logger: `_emit_audit_log` now emits via `logging.getLogger("a2a.audit")` (NullHandler, propagate=True); **operator: ensure root handler routes INFO to Cloud Logging, or attach dedicated handler to `a2a.audit`** — PR fix/a2a-audit-h6-h10-l3-l4
 
 ---
 

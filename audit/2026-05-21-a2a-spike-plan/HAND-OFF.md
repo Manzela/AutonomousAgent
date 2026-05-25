@@ -28,7 +28,6 @@
 | jti replay cache is per-process | `lib/a2a/auth.py` | Redis-backed `TTLCache` shared across replicas |
 | SSE events are synthetic (3 hardcoded frames) | `lib/a2a/server.py` | Wire to `lib.anchors` event bus |
 | `tasks/get`, `tasks/cancel` → `-32004` | `lib/a2a/server.py` | Implement via `lib.anchors` queries |
-| Unsigned AgentCard fallback | `lib/a2a/server.py` | Return 503 on GCP signBlob error (AG-3) |
 | Peer discovery out-of-band | `config/a2a/peers.yaml` | AgentCard discovery feed |
 
 ---
@@ -37,7 +36,6 @@
 
 - **Allow-unauthenticated transport**: Cloud Run set to allow-all so we can iterate without IAM churn. JWT guard at the application layer + HIPAA audit log are the compensating controls. mTLS at the transport layer is deferred to v2 per auth-design.md §7.3.
 - **Single-instance JWT replay cache**: OOM-proof at spike load but replays across replicas. Documented as `TODO(replay-cache-distributed)` in `auth.py`.
-- **Unsigned card fallback**: intentional for dev/CI where GCP signBlob is unavailable. Logs `WARNING` but does not break the server.
 
 ---
 
@@ -61,7 +59,7 @@
 - [x] Negative JWKS caching: cache failed JWKS fetches (429/503) for 30s with jitter — done PR #142 (M6), `lib/a2a/auth.py:_JWKS_FAIL_CACHE`
 - [x] `_call_sign_blob` async: convert from `httpx.post` (sync) to `AsyncClient.post` (async) — done: `lib/a2a/agent_card.py:69`
 - [x] `HERMES_A2A_SA` validation: format-only validation at startup (GCP SA email regex `^[a-z][a-z0-9-]{4,28}[a-z0-9]@...\.iam\.gserviceaccount\.com$`); raises RuntimeError on bad/missing value — PR fix/a2a-audit-h6-h10-l3-l4; **ADC live-check deferred (breaks CI/test envs)**
-- [ ] Remove unsigned AgentCard fallback: return 503 on signBlob error, not unsigned card
+- [x] Remove unsigned AgentCard fallback: return 503 on signBlob error, not unsigned card — done PR #147
 - [x] PHI scrubber on SSE routes: wired in PR #139 — confirmed: `server.py:349,377`
 - [x] JWT auth on SSE routes: wired in PR #139 — confirmed: `_jwt_guard` Depends on both SSE route handlers
 - [x] `a2a.audit` logger: `_emit_audit_log` now emits via `logging.getLogger("a2a.audit")` (NullHandler, propagate=True); **operator: ensure root handler routes INFO to Cloud Logging, or attach dedicated handler to `a2a.audit`** — PR fix/a2a-audit-h6-h10-l3-l4

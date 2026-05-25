@@ -59,7 +59,8 @@ async def test_store_put_and_get():
 @pytest.mark.asyncio
 async def test_store_get_missing():
     store = InMemoryStore(dim=8)
-    assert await store.get("nonexistent") is None
+    result = await store.get("nonexistent")
+    assert result is None
 
 
 @pytest.mark.asyncio
@@ -116,8 +117,9 @@ async def test_store_delete():
     result = await store.delete("rec-1")
     assert result is True
     assert store.size == 0
-    # Double-delete returns False
-    assert await store.delete("rec-1") is False
+    # Double-delete returns False — assign before assert to avoid py/assert-with-side-effects
+    result2 = await store.delete("rec-1")
+    assert result2 is False
 
 
 @pytest.mark.asyncio
@@ -133,8 +135,10 @@ async def test_store_gc_expired():
     count = await store.gc_expired(MemoryTier.EPHEMERAL, before_ts=time.time())
     assert count == 1
     assert store.size == 1
-    assert await store.get("alive") is not None
-    assert await store.get("expired") is None
+    alive_rec = await store.get("alive")
+    assert alive_rec is not None
+    expired_rec = await store.get("expired")
+    assert expired_rec is None
 
 
 @pytest.mark.asyncio

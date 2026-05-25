@@ -2,7 +2,7 @@
 
 **Spike:** Days 1-10 — A2A bidirectional canary integration
 **Date completed:** 2026-05-25
-**Waves:** Wave 1 (PRs #126/#127), Wave 2 (PR #130), Wave 3 (PR TBD)
+**Waves:** Wave 1 (PRs #126/#127), Wave 2 (PR #130), Wave 3 (PRs #139/#142/#145/#147)
 
 ---
 

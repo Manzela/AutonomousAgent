@@ -189,6 +189,8 @@ def test_well_known_agent_card_returns_503_on_sign_failure() -> None:
     body = resp.json()
     assert body["error"] == "agent_card_signing_unavailable"
     assert "detail" in body
+    # RFC 7231 §6.6.4: Retry-After SHOULD be present on 503
+    assert resp.headers.get("retry-after") == "30"
     # Verify unsigned card is NOT served (no capabilities/id in error response)
     assert "capabilities" not in body
     assert "signature" not in body

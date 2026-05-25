@@ -321,6 +321,7 @@ async def agent_card_endpoint() -> JSONResponse:
         return JSONResponse(
             status_code=503,
             content={"error": "agent_card_signing_unavailable", "detail": type(exc).__name__},
+            headers={"Retry-After": "30"},
         )
     return JSONResponse(content=signed)
 

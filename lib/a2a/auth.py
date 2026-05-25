@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os as _os
 import time
 import uuid
 from dataclasses import dataclass
@@ -22,6 +23,19 @@ from typing import Any
 import cachetools
 import httpx
 import jwt
+
+# Graceful degradation: if the `redis` package is not installed (e.g. a
+# stripped-down dev install without the `[a2a]` extra), auth must still
+# import and fall back to L1-only mode. See spec §5 / CRITICAL constraints.
+try:
+    import redis.asyncio as redis_async
+    import redis.exceptions as _redis_exc
+
+    _REDIS_AVAILABLE = True
+except ImportError:  # pragma: no cover — defensive only; CI installs `redis`
+    redis_async = None  # type: ignore[assignment]
+    _redis_exc = None  # type: ignore[assignment]
+    _REDIS_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 _audit_logger = logging.getLogger("a2a.audit")
@@ -33,14 +47,35 @@ _MINT_CACHE: cachetools.TTLCache[tuple[str, str], str] = cachetools.TTLCache(
 _MINT_LOCK: asyncio.Lock | None = (
     None  # initialized lazily (avoids event-loop-before-creation error)
 )
-_JTI_CACHE: cachetools.TTLCache[tuple[str, str], bool] = cachetools.TTLCache(
-    maxsize=100_000,
-    ttl=600,  # 2× the token lifetime (tokens expire in 300s) — ensures jti is tracked
-    # for the full replay window even if the entry was added near token exp
+
+# ---------------------------------------------------------------------------
+# Redis-backed jti replay cache
+# Spec: docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md
+#
+# The old per-process `_JTI_CACHE` (100K maxsize, 600s TTL) has been
+# DELETED — it was unsafe in production because each Cloud Run replica
+# held its own copy, breaking the replay-detection guarantee. It is
+# replaced by:
+#   - Redis (primary) via `_get_redis_pool` + `_jti_set_redis`
+#     (atomic SET NX EX 600 — distributed, cross-replica).
+#   - `_JTI_L1_FALLBACK` (in-process TTLCache, 60s TTL, 300K maxsize)
+#     used only when Redis is unreachable. The 60s TTL bounds the
+#     cross-replica replay window during a Memorystore outage.
+# ---------------------------------------------------------------------------
+
+_REDIS_POOL: Any = None  # redis.asyncio.ConnectionPool | None when redis is installed
+# Created eagerly at import time — asyncio.Lock() does not require a
+# running event loop to instantiate in Python 3.10+. See spec §3 for why
+# eager creation avoids the double-init race the old lazy _JTI_LOCK had.
+_REDIS_POOL_LOCK: asyncio.Lock = asyncio.Lock()
+
+_L1_FALLBACK_TTL_SECS: int = 60
+_JTI_L1_FALLBACK: cachetools.TTLCache[tuple[str, str], bool] = cachetools.TTLCache(
+    maxsize=300_000,  # 5K/sec burst × 60s = 300K — covers full L1 TTL window
+    ttl=_L1_FALLBACK_TTL_SECS,
 )
-_JTI_LOCK: asyncio.Lock | None = (
-    None  # initialized lazily (avoids event-loop-before-creation error)
-)
+_JTI_L1_LOCK: asyncio.Lock = asyncio.Lock()  # eager — safe in Python 3.12
+
 _JWKS_CACHE: cachetools.TTLCache[str, list[dict]] = cachetools.TTLCache(
     maxsize=1_000,
     ttl=900,  # 15 min — matches Google JWKS Cache-Control: max-age=900
@@ -59,18 +94,87 @@ def _get_jwks_lock() -> asyncio.Lock:
     return _JWKS_LOCK
 
 
-def _get_jti_lock() -> asyncio.Lock:
-    global _JTI_LOCK
-    if _JTI_LOCK is None:
-        _JTI_LOCK = asyncio.Lock()
-    return _JTI_LOCK
-
-
 def _get_mint_lock() -> asyncio.Lock:
     global _MINT_LOCK
     if _MINT_LOCK is None:
         _MINT_LOCK = asyncio.Lock()
     return _MINT_LOCK
+
+
+def _safe_url(url: str) -> str:
+    """Redact password from REDIS_URL for safe logging."""
+    if "://" not in url or "@" not in url:
+        return url
+    scheme, rest = url.split("://", 1)
+    if "@" not in rest:
+        return url
+    _creds, host = rest.rsplit("@", 1)
+    return f"{scheme}://***@{host}"
+
+
+async def _get_redis_pool() -> Any:
+    """Return the shared Redis connection pool, or None if not configured.
+
+    Returns None (does not raise) when `REDIS_URL` is unset OR the `redis`
+    package is not installed — callers fall through to L1-only mode.
+
+    Lazy pool init (needs REDIS_URL + running event loop); eager lock
+    (safe in Python 3.10+, avoids the double-init race a lazy lock has).
+    """
+    global _REDIS_POOL
+    if not _REDIS_AVAILABLE:
+        return None
+    if _REDIS_POOL is not None:
+        return _REDIS_POOL
+    url = _os.environ.get("REDIS_URL")
+    if not url:
+        return None
+    async with _REDIS_POOL_LOCK:
+        if _REDIS_POOL is not None:  # double-checked locking
+            return _REDIS_POOL
+        timeout = float(_os.environ.get("REDIS_CONNECT_TIMEOUT_SECS", "2.0"))
+        _REDIS_POOL = redis_async.ConnectionPool.from_url(
+            url,
+            max_connections=20,
+            decode_responses=True,
+            socket_connect_timeout=timeout,
+            socket_timeout=timeout,
+            health_check_interval=30,
+        )
+        logger.info(
+            "a2a.auth: initialised Redis pool for jti replay cache (%s)",
+            _safe_url(url),
+        )
+        return _REDIS_POOL
+
+
+async def _jti_set_redis(replay_key: tuple[str, str], pool: Any) -> bool:
+    """Atomically claim (issuer, jti) in Redis via SET NX EX 600.
+
+    Returns:
+        True  — key was newly created; this is the first time we have
+                seen this jti; **accept** the token.
+        False — NX condition failed; key already existed; this is a
+                replay; **reject** the token.
+
+    Raises:
+        redis.exceptions.ConnectionError / TimeoutError — Redis
+            unreachable; caller decides L1 fallback vs fail-closed per
+            A2A_JTI_FAIL_MODE. Other RedisError subclasses (ResponseError,
+            DataError, AuthenticationError) propagate as-is so they
+            surface real bugs instead of silently degrading to L1.
+
+    The `Redis` client is constructed per-call as a thin wrapper around
+    the pool — `async with` returns the connection to the pool on exit.
+    Bare `Redis(connection_pool=pool)` without the context manager would
+    leak pool slots because CPython GC of async coroutines is not
+    deterministic.
+    """
+    issuer, jti = replay_key
+    key = f"jti:{issuer}:{jti}"
+    async with redis_async.Redis(connection_pool=pool) as client:
+        result = await client.set(key, "1", nx=True, ex=600)
+    return result is True
 
 
 @dataclass(frozen=True)
@@ -182,12 +286,75 @@ async def verify_token(
         _emit_audit_log("rejected_missing_jti", None, None, None, None, peer_sa=issuer)
         raise ValueError("jti required in JWT payload")
     replay_key = (issuer, jti)
-    lock = _get_jti_lock()
-    async with lock:
-        if _JTI_CACHE.get(replay_key):
-            _emit_audit_log("rejected_replay", None, None, None, None, peer_sa=issuer)
-            raise ValueError("jti replay")
-        _JTI_CACHE[replay_key] = True
+
+    # --- Distributed jti replay check (Redis primary, L1 fallback) ---
+    # Per spec §1: default fail-OPEN with 60s L1 bounded-replay window.
+    # Operator override: A2A_JTI_FAIL_MODE=closed. Read per-call (not
+    # captured at module import) so tests + revisions can flip the knob
+    # without re-importing the module.
+    fail_closed = _os.getenv("A2A_JTI_FAIL_MODE", "open").lower() == "closed"
+    redis_pool = await _get_redis_pool()
+
+    if redis_pool is not None:
+        try:
+            is_first = await _jti_set_redis(replay_key, redis_pool)
+            if not is_first:
+                _emit_audit_log("rejected_replay", None, None, None, None, peer_sa=issuer)
+                raise ValueError("jti replay")
+        except (
+            _redis_exc.ConnectionError,
+            _redis_exc.TimeoutError,
+        ) as exc:
+            # Narrow except: only availability failures fall through to
+            # L1 / fail-closed. ResponseError, DataError, AuthenticationError
+            # propagate so deploy bugs surface immediately (spec §5.5).
+            if fail_closed:
+                _emit_audit_log(
+                    "rejected_redis_unavailable",
+                    None,
+                    None,
+                    None,
+                    None,
+                    peer_sa=issuer,
+                )
+                raise ValueError("jti check unavailable (fail-closed mode)") from exc
+            logger.warning(
+                "a2a.auth: Redis jti cache unreachable (%s) — falling back "
+                "to L1 (fail-open, 60s TTL)",
+                type(exc).__name__,
+            )
+            _emit_audit_log(
+                "accepted_redis_unavailable",
+                None,
+                None,
+                None,
+                None,
+                peer_sa=issuer,
+            )
+            async with _JTI_L1_LOCK:
+                if _JTI_L1_FALLBACK.get(replay_key):
+                    _emit_audit_log(
+                        "rejected_replay_l1",
+                        None,
+                        None,
+                        None,
+                        None,
+                        peer_sa=issuer,
+                    )
+                    raise ValueError("jti replay (L1 fallback)")
+                _JTI_L1_FALLBACK[replay_key] = True
+    elif fail_closed:
+        # Redis not configured / not installed + fail-closed mode:
+        # reject everything. (Operator misconfiguration alert.)
+        _emit_audit_log("rejected_redis_unavailable", None, None, None, None, peer_sa=issuer)
+        raise ValueError("jti check unavailable (Redis not configured, fail-closed mode)")
+    else:
+        # No Redis configured — L1-only mode (dev / CI / pre-prod).
+        async with _JTI_L1_LOCK:
+            if _JTI_L1_FALLBACK.get(replay_key):
+                _emit_audit_log("rejected_replay_l1", None, None, None, None, peer_sa=issuer)
+                raise ValueError("jti replay (L1 only)")
+            _JTI_L1_FALLBACK[replay_key] = True
 
     acting_for: dict = payload.get("acting_for", {})
     identity = AgentIdentity(

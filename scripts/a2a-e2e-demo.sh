@@ -144,7 +144,7 @@ else
     if [[ "${TRACE_COUNT}" -gt 0 ]]; then
         pass "Cloud Trace: ${TRACE_COUNT} traces found"
     else
-        warn "No Cloud Trace entries found (check Cloud Console manually)"
+        fail "No Cloud Trace entries found (Cloud Trace propagation broken)"
     fi
 fi
 

@@ -101,7 +101,19 @@ async def verify_token(
     if not jwk_entries:
         _emit_audit_log("rejected_invalid_sig", None, None, None, None, peer_sa=issuer)
         raise ValueError(f"JWKS empty for {issuer}")
-    public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk_entries[0]))
+
+    # Match the JWT header's kid to the correct JWKS entry — avoids silent
+    # breakage when Google rotates keys and keys[0] is no longer the signer.
+    try:
+        header = jwt.get_unverified_header(jwt_str)
+        kid = header.get("kid")
+    except jwt.DecodeError:
+        kid = None
+    if kid:
+        candidates = [k for k in jwk_entries if k.get("kid") == kid] or jwk_entries
+    else:
+        candidates = jwk_entries
+    public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(candidates[0]))
 
     try:
         payload = jwt.decode(

@@ -94,7 +94,13 @@ def _fetch_public_key_for_sa(sa_email: str):
         timeout=10.0,
     )
     resp.raise_for_status()
-    jwk = resp.json()["keys"][0]
+    # Use the first key — agent cards don't carry a kid header to match against.
+    # In production, pick the key whose kid matches the signature header.
+    # For the spike a single-key SA is the norm; add kid matching in v2.
+    keys = resp.json().get("keys", [])
+    if not keys:
+        raise ValueError(f"JWKS empty for {sa_email}")
+    jwk = keys[0]
 
     def _b64url_int(s: str) -> int:
         s += "=" * ((4 - len(s) % 4) % 4)

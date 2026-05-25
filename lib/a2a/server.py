@@ -229,10 +229,6 @@ app = FastAPI(
 )
 
 
-_AGENT_SA = os.environ.get("A2A_AGENT_SA", "agent-a@autonomous-agent-2026.iam.gserviceaccount.com")
-_A2A_BASE_URL = os.environ.get("A2A_BASE_URL", "http://localhost:9001")
-
-
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -240,10 +236,18 @@ async def health() -> dict[str, str]:
 
 @app.get("/.well-known/agent-card.json")
 async def agent_card_endpoint() -> JSONResponse:
-    """Serve signed AgentCard (Day 8). Falls back to unsigned card in dev."""
-    card = _build_agent_card(_AGENT_SA, _A2A_BASE_URL)
+    """Serve signed AgentCard (Day 8). Falls back to unsigned card in dev.
+
+    Env vars are read lazily inside the handler so test fixtures can set them
+    after module import without triggering stale-capture surprises.
+    """
+    agent_sa = os.environ.get(
+        "A2A_AGENT_SA", "agent-a@autonomous-agent-2026.iam.gserviceaccount.com"
+    )
+    base_url = os.environ.get("A2A_BASE_URL", "http://localhost:9001")
+    card = _build_agent_card(agent_sa, base_url)
     try:
-        signed = _sign_card(card, _AGENT_SA)
+        signed = _sign_card(card, agent_sa)
     except Exception as exc:
         logger.warning("a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", exc)
         signed = card

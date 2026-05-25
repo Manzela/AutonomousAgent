@@ -41,7 +41,7 @@ trail.
 
 | Option | Behaviour during Redis outage | Security risk | Availability risk |
 |--------|-------------------------------|---------------|-------------------|
-| A — Fail-closed | Reject every token | None (no replay window) | A2A goes completely offline |
+| A — Fail-closed | Reject every token. Note: when `closed`, L1 fallback is also disabled — the fail-mode check precedes the L1 path. Tokens are rejected immediately if Redis is unreachable. | None (no replay window) | A2A goes completely offline |
 | B — Fail-open with L1 fallback (60s TTL) | Use in-process `_JTI_CACHE` with shortened TTL | Bounded: cross-replica replays succeed for ≤ 60s | A2A stays up |
 | C — Fail-open, no fallback | Skip replay check entirely | Unbounded: any captured jti is replayable for the full 300s token life | A2A stays up |
 
@@ -227,12 +227,15 @@ Pin major only; minor/patch updates are picked up automatically.
 `redis[asyncio]` pulls in `hiredis` which gives a ~10× parse speedup
 and is the recommended production install.
 
-### Connection pool — module-level lazy singleton
+### Connection pool — module-level singleton with eager lock
 
-Mirrors the existing `_JTI_LOCK` / `_get_jti_lock()` pattern in
-`auth.py`. Initialising the pool at module import time would fail in
-test collection (no event loop) and would crash if `REDIS_URL` is
-unset; a lazy getter avoids both.
+The connection pool itself is initialised lazily (it requires
+`REDIS_URL` and a running event loop), but the `asyncio.Lock`
+protecting that initialisation is created **eagerly at module import
+time**. `asyncio.Lock()` does not require a running event loop to
+instantiate in Python 3.10+ — only `.acquire()` does. Eager creation
+eliminates the (admittedly small) race window that a lazy lock-getter
+would re-introduce.
 
 ```python
 import os
@@ -240,14 +243,9 @@ from redis.asyncio import ConnectionPool, Redis
 from redis.exceptions import RedisError
 
 _REDIS_POOL: ConnectionPool | None = None
-_REDIS_POOL_LOCK: asyncio.Lock | None = None
-
-
-def _get_redis_pool_lock() -> asyncio.Lock:
-    global _REDIS_POOL_LOCK
-    if _REDIS_POOL_LOCK is None:
-        _REDIS_POOL_LOCK = asyncio.Lock()
-    return _REDIS_POOL_LOCK
+# Created eagerly at import time — asyncio.Lock() does not require a
+# running event loop to instantiate.
+_REDIS_POOL_LOCK: asyncio.Lock = asyncio.Lock()
 
 
 async def _get_redis_pool() -> ConnectionPool | None:
@@ -262,8 +260,7 @@ async def _get_redis_pool() -> ConnectionPool | None:
     url = os.environ.get("REDIS_URL")
     if not url:
         return None
-    lock = _get_redis_pool_lock()
-    async with lock:
+    async with _REDIS_POOL_LOCK:
         if _REDIS_POOL is not None:  # double-checked locking
             return _REDIS_POOL
         timeout = float(os.environ.get("REDIS_CONNECT_TIMEOUT_SECS", "2.0"))
@@ -292,6 +289,15 @@ def _safe_url(url: str) -> str:
     _creds, host = rest.rsplit("@", 1)
     return f"{scheme}://***@{host}"
 ```
+
+**Why eager lock creation is safe here.** Unlike the existing
+`_JTI_LOCK` pattern in `auth.py` (which lazily creates the lock to
+avoid event-loop-before-creation errors in Python <3.10),
+`asyncio.Lock()` can be safely constructed at module import time in
+Python 3.10+ when the event loop is created on first `asyncio.run()`.
+Since this project targets Python 3.12 (per `.venv/bin/python3.12`),
+eager creation is safe and avoids the double-init race that a lazy
+`_get_redis_pool_lock()` helper would re-introduce.
 
 **Pool sizing rationale.** `max_connections=20` matches the typical
 Cloud Run concurrency (`--concurrency=80` default) divided by 4
@@ -373,20 +379,27 @@ resource "google_redis_instance" "jti_replay_cache" {
 }
 
 # Allow Cloud Run service identities to reach Memorystore over the VPC.
+#
+# IMPORTANT: Cloud Memorystore managed instances do NOT accept network
+# tags — there is no underlying VM the operator can tag. The firewall
+# must therefore scope the destination by IP range, not target_tags.
+# We use the Memorystore authorized-network CIDR (the /29 reserved
+# block GCP allocates for the instance) as `destination_ranges`. The
+# source is the Cloud Run Direct VPC Egress /28 subnet — Cloud Run is
+# not a tagged VM either, so source is scoped by CIDR as well.
 resource "google_compute_firewall" "allow_cloudrun_to_redis" {
   name    = "autonomousagent-allow-cloudrun-redis"
   project = var.project_id
   network = data.google_compute_network.vpc.name
 
-  direction     = "INGRESS"
-  source_ranges = [var.cloudrun_vpc_egress_cidr]   # /28 reserved for Direct VPC Egress
+  direction          = "INGRESS"
+  source_ranges      = [var.cloudrun_vpc_egress_cidr]      # /28 reserved for Direct VPC Egress
+  destination_ranges = [var.memorystore_authorized_cidr]   # /29 GCP allocates for the Memorystore instance
 
   allow {
     protocol = "tcp"
     ports    = ["6379", "6380"]
   }
-
-  target_tags = ["memorystore-jti-replay"]
 }
 
 output "redis_jti_replay_host" {
@@ -428,8 +441,7 @@ spec:
       annotations:
         run.googleapis.com/network-interfaces: '[{
           "network": "default",
-          "subnetwork": "autonomousagent-cloudrun-egress",
-          "tags": ["memorystore-jti-replay-client"]
+          "subnetwork": "autonomousagent-cloudrun-egress"
         }]'
         run.googleapis.com/vpc-access-egress: private-ranges-only
 ```
@@ -441,6 +453,18 @@ referenced in the firewall above.
 ---
 
 ## Section 5 — Code changes to `lib/a2a/auth.py`
+
+### Stale state removal
+
+The existing `_JTI_CACHE` module-level variable in `auth.py` is
+**DELETED** — it is replaced entirely by the Redis-primary +
+`_JTI_L1_FALLBACK` L1 cache combination introduced in Step 5.4. Any
+existing tests that call `auth_mod._JTI_CACHE.clear()` must be updated
+to `auth_mod._JTI_L1_FALLBACK.clear()` instead. The `_JTI_CACHE`
+symbol must not remain in the module — leaving it would create a
+dead-code path that tests could silently keep populating while the
+production verify path no longer reads it, masking a regression where
+`_JTI_L1_FALLBACK` is accidentally bypassed.
 
 ### Step 5.1 — New imports and module-level state
 
@@ -455,7 +479,9 @@ from redis.exceptions import RedisError
 # --- Redis-backed jti replay cache -----------------------------------------
 
 _REDIS_POOL: ConnectionPool | None = None
-_REDIS_POOL_LOCK: asyncio.Lock | None = None
+# Created eagerly at import time — asyncio.Lock() does not require a
+# running event loop to instantiate in Python 3.10+. See Section 3.
+_REDIS_POOL_LOCK: asyncio.Lock = asyncio.Lock()
 
 # When Redis is unreachable, L1 fallback uses a SHORTER ttl than the
 # Redis path (60s vs 600s) to bound the cross-replica replay window.
@@ -465,20 +491,18 @@ _L1_FALLBACK_TTL_SECS = 60
 _FAIL_MODE = os.environ.get("A2A_JTI_FAIL_MODE", "open").lower()
 ```
 
-### Step 5.2 — `_get_redis_pool` (lazy singleton)
+### Step 5.2 — `_get_redis_pool` (singleton with eager lock)
 
 ```python
-def _get_redis_pool_lock() -> asyncio.Lock:
-    global _REDIS_POOL_LOCK
-    if _REDIS_POOL_LOCK is None:
-        _REDIS_POOL_LOCK = asyncio.Lock()
-    return _REDIS_POOL_LOCK
-
-
 async def _get_redis_pool() -> ConnectionPool | None:
     """Return the shared Redis connection pool, or None if REDIS_URL is unset.
 
-    Lazy: initialised on first use to avoid event-loop-at-import errors.
+    The pool itself is lazily initialised on first use (avoids
+    event-loop-at-import errors and crashes when REDIS_URL is unset),
+    but the lock protecting initialisation is created eagerly at module
+    import — see Section 3 for why eager lock creation is race-safe in
+    Python 3.10+.
+
     Returns None (does not raise) when REDIS_URL is missing so that the
     caller can transparently fall back to L1-only mode (with a WARNING
     logged once at startup).
@@ -489,8 +513,7 @@ async def _get_redis_pool() -> ConnectionPool | None:
     url = os.environ.get("REDIS_URL")
     if not url:
         return None
-    lock = _get_redis_pool_lock()
-    async with lock:
+    async with _REDIS_POOL_LOCK:
         if _REDIS_POOL is not None:
             return _REDIS_POOL
         timeout = float(os.environ.get("REDIS_CONNECT_TIMEOUT_SECS", "2.0"))
@@ -546,33 +569,45 @@ async def _jti_set_redis(replay_key: tuple[str, str]) -> bool:
         raise RedisError("REDIS_URL not configured")
     issuer, jti = replay_key
     key = f"jti:{issuer}:{jti}"
-    client = Redis(connection_pool=pool)
     # SET key 1 NX EX 600 — atomic claim with TTL.
     # Returns True on success (key did not exist and was created),
     # None when NX condition failed (key already existed = replay).
-    result = await client.set(key, "1", nx=True, ex=600)
+    async with Redis(connection_pool=pool) as client:
+        result = await client.set(key, "1", nx=True, ex=600)
     return result is True
 ```
 
-Note: we do **not** close the `Redis` client; it borrows from the pool
-and returns the connection on garbage collection. The pool itself is
-the singleton.
+Note: the `Redis` client is constructed per-call as a thin wrapper
+around the pool. The `async with` context manager calls `aclose()` on
+exit, which returns the connection to the pool. The pool itself is the
+singleton — creating multiple `Redis` wrappers is zero-cost. Relying on
+garbage collection to return the connection (the naive
+`client = Redis(...)` pattern) leaks pool slots under load because GC
+in CPython is not deterministic in async code paths and can leave the
+pool exhausted long before `max_connections=20` is recycled.
 
 ### Step 5.4 — `_jti_set_l1` (L1 fallback, shortened TTL)
 
-The L1 path uses a separate TTLCache instance with the shortened
-`_L1_FALLBACK_TTL_SECS` so we can keep the original `_JTI_CACHE`
-constant for any code paths that might still reference it directly
-(tests do, per existing `test_auth.py`).
+The L1 path uses a dedicated TTLCache instance with the shortened
+`_L1_FALLBACK_TTL_SECS`.
 
-Actually: we **reuse** `_JTI_CACHE` to avoid splitting the dataset,
-but override the per-entry TTL to 60s in fallback mode. `cachetools`
-does not support per-entry TTL on a single `TTLCache`, so we maintain
-a parallel `_JTI_L1_FALLBACK` cache with the 60s TTL and check both.
+`cachetools` does not support per-entry TTL on a single `TTLCache`, so
+the L1 fallback lives in its own `_JTI_L1_FALLBACK` instance with the
+60s TTL. The original `_JTI_CACHE` is deleted (see "Stale state
+removal" at the top of Section 5); the fallback cache is the only L1
+store in the new design.
+
+**Sizing for the burst case.** `maxsize=300_000` is calibrated for the
+design's 5,000 verify/sec burst sustained for 60s (the L1 TTL). At
+steady-state (1,000/sec) cardinality is 60,000 entries — well under
+the cap. During a Memorystore outage at burst rate, the LRU eviction
+would otherwise shrink the effective replay-detection window;
+`300_000` eliminates that risk. Memory cost: ~300K × 120 bytes ≈ 36 MB
+per replica — acceptable next to the ~512 MB container budget.
 
 ```python
 _JTI_L1_FALLBACK: cachetools.TTLCache[tuple[str, str], bool] = cachetools.TTLCache(
-    maxsize=100_000,
+    maxsize=300_000,
     ttl=_L1_FALLBACK_TTL_SECS,
 )
 
@@ -611,14 +646,18 @@ With:
 
 ```python
 # --- NEW ---
+import redis.exceptions
+
 replay_key = (issuer, jti)
 try:
     fresh = await _jti_set_redis(replay_key)
     if not fresh:
         _emit_audit_log("rejected_replay", None, None, None, None, peer_sa=issuer)
         raise ValueError("jti replay")
-except RedisError as exc:
-    # Redis unreachable: fail-closed or fall back to L1, per operator policy.
+except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as exc:
+    # Memorystore unavailable — fall back to L1 or reject, per A2A_JTI_FAIL_MODE.
+    # We intentionally do NOT catch ResponseError, DataError, or
+    # AuthenticationError — see note below.
     if _FAIL_MODE == "closed":
         _emit_audit_log(
             "rejected_redis_unavailable", None, None, None, None, peer_sa=issuer
@@ -637,6 +676,24 @@ except RedisError as exc:
         "accepted_redis_unavailable", None, None, None, None, peer_sa=issuer
     )
 ```
+
+**Exception scope rationale.** We intentionally do NOT catch
+`ResponseError`, `DataError`, or `AuthenticationError` — these signal
+code bugs or misconfiguration (malformed command, wrong data type,
+wrong AUTH credential) and must propagate as unhandled exceptions
+(resulting in a 500 response) to trigger immediate operator attention.
+Silently falling back to L1 on a misconfiguration would mask a real
+deployment defect behind a degraded-mode log line and let bad config
+ship to prod undetected. `RedisError` is the common base class; the
+narrower `(ConnectionError, TimeoutError)` tuple matches exactly the
+availability failures the fail-mode policy is designed for.
+
+Also update `_jti_set_redis` itself so it does not wrap its own body
+in a broad `except RedisError`. The function should raise
+`ConnectionError` / `TimeoutError` directly from the underlying
+`client.set(...)` call (these are subclasses of `RedisError` and
+propagate naturally), and let the caller's narrow `except` clause
+above handle them.
 
 Note the two new audit decision strings:
 
@@ -684,8 +741,9 @@ import lib.a2a.auth as auth_mod
 async def fake_redis_pool(monkeypatch):
     """Replace _get_redis_pool() with a fakeredis-backed pool.
 
-    The fixture also resets _JTI_L1_FALLBACK and the original
-    _JTI_CACHE between tests for isolation.
+    The fixture also resets _JTI_L1_FALLBACK between tests for
+    isolation. (Note: _JTI_CACHE has been deleted — see the "Stale
+    state removal" note at the top of Section 5.)
     """
     fake_pool = fakeredis.aioredis.FakeConnectionPool.from_url(
         "redis://localhost", decode_responses=True
@@ -695,7 +753,6 @@ async def fake_redis_pool(monkeypatch):
         return fake_pool
 
     monkeypatch.setattr(auth_mod, "_get_redis_pool", _fake_get_pool)
-    auth_mod._JTI_CACHE.clear()
     auth_mod._JTI_L1_FALLBACK.clear()
     yield fake_pool
     await fake_pool.disconnect()
@@ -703,14 +760,13 @@ async def fake_redis_pool(monkeypatch):
 
 @pytest.fixture
 async def redis_down(monkeypatch):
-    """Force _jti_set_redis to raise RedisError, simulating Memorystore outage."""
+    """Force _jti_set_redis to raise ConnectionError, simulating Memorystore outage."""
     from redis.exceptions import ConnectionError as RedisConnectionError
 
     async def _raise(*_args, **_kwargs):
         raise RedisConnectionError("simulated: Memorystore unreachable")
 
     monkeypatch.setattr(auth_mod, "_jti_set_redis", _raise)
-    auth_mod._JTI_CACHE.clear()
     auth_mod._JTI_L1_FALLBACK.clear()
     yield
 ```
@@ -844,7 +900,21 @@ selection.
 |----------|----------|---------|--------|---------|
 | `REDIS_URL` | Yes (prod) | — | `rediss://10.x.x.x:6380/0` (TLS) or `redis://10.x.x.x:6379/0` (plaintext) | Cloud Memorystore endpoint. Unset = L1-only with WARNING. |
 | `REDIS_CONNECT_TIMEOUT_SECS` | No | `2.0` | float | Socket connect + per-op timeout. Fail fast to avoid stretching verify latency. |
-| `A2A_JTI_FAIL_MODE` | No | `open` | `open` or `closed` | When Redis is down: `open` = L1 fallback (60s bounded-replay window); `closed` = reject all tokens. |
+| `A2A_JTI_FAIL_MODE` | No | `open` | `open` or `closed` | When Redis is down: `open` = L1 fallback (60s bounded-replay window); `closed` = reject all tokens. See revision requirement below. |
+
+**Revision requirement for `A2A_JTI_FAIL_MODE`.** `A2A_JTI_FAIL_MODE`
+is read **once at module import time** (when the Cloud Run container
+starts) and cached in the module-level `_FAIL_MODE` constant. Changing
+this env var via
+`gcloud run services update --update-env-vars A2A_JTI_FAIL_MODE=closed`
+triggers a **new Cloud Run revision** which starts a fresh container —
+the new value takes effect on that revision with Cloud Run's standard
+zero-downtime rollout (old revision drains, new revision takes over as
+traffic shifts). No code change is required, no in-place hot-reload is
+attempted, and there is no risk of a partial-toggle state where some
+in-flight requests see `open` and others see `closed` on the same
+container. The same revision-rollout semantics apply to `REDIS_URL`
+and `REDIS_CONNECT_TIMEOUT_SECS`.
 
 ### Setting them
 

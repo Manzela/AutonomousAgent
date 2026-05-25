@@ -50,7 +50,7 @@ class LocalSubprocessSandbox(AbstractSandbox):
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 cwd=str(cwd),
-                env=env or {},
+                env=env if env is not None else None,
                 stdin=asyncio.subprocess.PIPE if stdin is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

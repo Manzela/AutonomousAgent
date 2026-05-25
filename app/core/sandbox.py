@@ -1,4 +1,11 @@
+"""Sandbox ABC + result dataclass.
+
+``LocalSubprocessSandbox`` is **dev/CI only** (see ``adapters/inmemory/sandbox.py``).
+Production deploys MUST use ``FirecrackerSandbox`` (see ``INTEGRATION.md`` P-4).
+"""
+
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path

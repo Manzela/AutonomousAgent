@@ -1,4 +1,14 @@
+"""Memory store ABC — layer-3 of the 5-layer cross-project isolation defence.
+
+The ``search()`` contract REJECTS empty scope sets, so a caller cannot
+accidentally request "all records" and bypass namespace isolation.
+
+For production: subclass ``AbstractMemoryStore`` with ``CloudSqlPgvectorStore``
+(Cloud SQL + HNSW pgvector). See ``INTEGRATION.md`` P-2 for the work item.
+"""
+
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Iterable, Optional
 

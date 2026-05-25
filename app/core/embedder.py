@@ -1,4 +1,12 @@
+"""Embedder ABC + dimension-projection helper.
+
+For production-scale fleets (>500 active agents) swap to
+``VertexEmbeddingsEmbedder`` wrapping ``text-embedding-005``
+(see ``04-gcp-native-adapter-plan.md`` P-9).
+"""
+
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Iterable
 

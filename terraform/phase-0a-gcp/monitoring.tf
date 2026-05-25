@@ -72,6 +72,10 @@ resource "google_monitoring_alert_policy" "watchdog_restart" {
   }
 
   depends_on = [google_logging_metric.watchdog_restart]
+
+  alert_strategy {
+    auto_close = "1800s"
+  }
 }
 
 # Alert: VM uptime drops to zero (instance stopped or terminated).
@@ -104,4 +108,8 @@ resource "google_monitoring_alert_policy" "vm_down" {
   }
 
   depends_on = [google_project_service.enabled]
+
+  alert_strategy {
+    auto_close = "1800s"
+  }
 }

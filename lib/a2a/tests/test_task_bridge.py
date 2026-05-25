@@ -15,6 +15,7 @@ class _AgentIdentity:
     audience: str
     acting_for: dict[str, str] = field(default_factory=dict)
     expiry: float = 9999999999.0
+    jti: str = "stub-jti-000"
 
 
 _IDENTITY = _AgentIdentity(

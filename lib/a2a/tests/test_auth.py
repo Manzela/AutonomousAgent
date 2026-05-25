@@ -123,7 +123,7 @@ async def test_verify_token_jti_replay_rejected():
 
 
 @pytest.mark.asyncio
-async def test_verify_token_expired_rejected():
+async def test_verify_token_expired_rejected(capsys):
     from lib.a2a.auth import _JTI_CACHE
 
     _JTI_CACHE.clear()
@@ -131,10 +131,21 @@ async def test_verify_token_expired_rejected():
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
         with pytest.raises(ValueError, match="expired"):
             await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+    captured = capsys.readouterr()
+    assert captured.out.strip(), "expected audit log line on stdout"
+    import json as _json
+
+    entry = _json.loads(captured.out.strip().splitlines()[-1])
+    assert entry.get("decision") in (
+        "rejected_expired",
+        "rejected_invalid_sig",
+        "rejected_not_allowlisted",
+        "rejected_replay",
+    )
 
 
 @pytest.mark.asyncio
-async def test_verify_token_audience_mismatch_rejected():
+async def test_verify_token_audience_mismatch_rejected(capsys):
     from lib.a2a.auth import _JTI_CACHE
 
     _JTI_CACHE.clear()
@@ -142,10 +153,21 @@ async def test_verify_token_audience_mismatch_rejected():
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
         with pytest.raises(ValueError, match="audience"):
             await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+    captured = capsys.readouterr()
+    assert captured.out.strip(), "expected audit log line on stdout"
+    import json as _json
+
+    entry = _json.loads(captured.out.strip().splitlines()[-1])
+    assert entry.get("decision") in (
+        "rejected_expired",
+        "rejected_invalid_sig",
+        "rejected_not_allowlisted",
+        "rejected_replay",
+    )
 
 
 @pytest.mark.asyncio
-async def test_verify_token_non_allowlisted_issuer_rejected():
+async def test_verify_token_non_allowlisted_issuer_rejected(capsys):
     from lib.a2a.auth import _JTI_CACHE
 
     _JTI_CACHE.clear()
@@ -153,6 +175,17 @@ async def test_verify_token_non_allowlisted_issuer_rejected():
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
         with pytest.raises(ValueError, match="not allowlisted"):
             await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+    captured = capsys.readouterr()
+    assert captured.out.strip(), "expected audit log line on stdout"
+    import json as _json
+
+    entry = _json.loads(captured.out.strip().splitlines()[-1])
+    assert entry.get("decision") in (
+        "rejected_expired",
+        "rejected_invalid_sig",
+        "rejected_not_allowlisted",
+        "rejected_replay",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -228,3 +261,6 @@ def test_emit_audit_log_hipaa_fields(capsys):
     assert entry["trace_id"] == "00-traceid-spanid-01"
     assert "ts" in entry
     assert entry.get("level") == "INFO"
+    assert (
+        entry.get("event") == "auth_decision"
+    ), f"expected event='auth_decision', got {entry.get('event')!r}"

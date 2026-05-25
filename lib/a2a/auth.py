@@ -99,6 +99,7 @@ async def verify_token(
 
     jwk_entries = await _fetch_jwks(issuer)
     if not jwk_entries:
+        _emit_audit_log("rejected_invalid_sig", None, None, None, None, peer_sa=issuer)
         raise ValueError(f"JWKS empty for {issuer}")
     public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(jwk_entries[0]))
 

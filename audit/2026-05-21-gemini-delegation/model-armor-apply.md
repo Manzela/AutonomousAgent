@@ -2,7 +2,7 @@
 
 **Status:** Plan stage queued (non-destructive). **Apply stage gated on explicit operator go-ahead.**
 **Date:** 2026-05-21
-**Delegate:** Gemini CLI v0.42.0 with `gemini-3.1-pro-preview` on `global` Vertex endpoint, project `i-for-ai`.
+**Delegate:** Gemini CLI v0.42.0 with `gemini-3.1-pro-preview` on `global` Vertex endpoint, project `autonomous-agent-2026`.
 **Operator (Claude):** Orchestrates briefing, captures plan output, pauses before apply.
 
 ---
@@ -12,7 +12,7 @@
 The J1 trajectory shipper (Task #12, committed) writes judge verdicts to GCS so they become the RLAIF substrate for Phase 4. Without Model Armor enforcement at the project level, a future caller can write raw PII to GCS by simply *not* calling the sanitize template. The terraform sub-module at `terraform/phase-0a-gcp/model-armor/` closes the loop:
 
 1. **DLP InspectTemplate** (`j1-inspect-and-redact`, global) defines the redaction policy (4 InfoTypes at LIKELIHOOD_LOW).
-2. **Model Armor Floor Setting** at the project level enforces SDP filtering on *every* Model Armor call in `i-for-ai` — even bypass attempts are caught.
+2. **Model Armor Floor Setting** at the project level enforces SDP filtering on *every* Model Armor call in `autonomous-agent-2026` — even bypass attempts are caught.
 3. **Model Armor Template** (`j1-trajectory-shipper`, us-central1) is the explicit handle the shipper code calls via `templates.sanitize`. This is the post-inference dam against the Persistence Trap (Task #12.c) — code already shipped at `lib/trajectory/shipper.py` references this exact template name.
 
 ADR-0008 Q6 and `model-armor-j1-config` memory document the design choice. Failure-matrix entry **F37** is the in-product detector for "Model Armor sanitize unavailable → halt LOUD" — that code path is dormant until Floor Settings is active in production.
@@ -23,20 +23,20 @@ This apply makes four cloud-side mutations:
 
 | Resource | Scope | Reversibility | Cost impact |
 |---|---|---|---|
-| Enable `modelarmor.googleapis.com` | Project `i-for-ai` | `disable_on_destroy = false` (intentional — disabling could break other workloads) | $0 (enablement free) |
-| Enable `dlp.googleapis.com` | Project `i-for-ai` | Same as above | $0 |
+| Enable `modelarmor.googleapis.com` | Project `autonomous-agent-2026` | `disable_on_destroy = false` (intentional — disabling could break other workloads) | $0 (enablement free) |
+| Enable `dlp.googleapis.com` | Project `autonomous-agent-2026` | Same as above | $0 |
 | Create `google_data_loss_prevention_inspect_template.j1` | global / project | Deletable via `terraform destroy` | $0 (template is metadata) |
 | Create `google_model_armor_floorsetting.project` | **PROJECT-WIDE** | Deletable, but **every Model Armor call in the project will inherit this enforcement until destroyed** | Floor is free; SDP inspection ~$1.20/mo at projected 10K verdicts/day |
 | Create `google_model_armor_template.j1_trajectory_shipper` | us-central1 | Deletable via `terraform destroy` | ~$29.80/mo at projected 10K verdicts/day (≈$31/mo total per runbook §5) |
 
-**The load-bearing concern is the project-level Floor Setting.** Once active, any Model Armor invocation anywhere in `i-for-ai` (including future projects' callers) inherits the SDP InspectTemplate enforcement. This is *intended* (defense-in-depth), but operators should understand it before approving the apply.
+**The load-bearing concern is the project-level Floor Setting.** Once active, any Model Armor invocation anywhere in `autonomous-agent-2026` (including future projects' callers) inherits the SDP InspectTemplate enforcement. This is *intended* (defense-in-depth), but operators should understand it before approving the apply.
 
 **No data exfiltration risk.** All resources are GCP-internal control-plane objects. No GCS writes, no IAM elevation, no VPC changes, no SA creation.
 
 ## 3. Pre-flight verification (Claude side, done)
 
 - [x] Module files present + parseable (5 files: README.md, main.tf, providers.tf, variables.tf, outputs.tf)
-- [x] Backend `gcs://i-for-ai-autonomousagent-tfstate/phase-0a-model-armor` is isolated from root phase-0a state (`prefix = "phase-0a-model-armor"`)
+- [x] Backend `gcs://autonomous-agent-2026-autonomousagent-tfstate/phase-0a-model-armor` is isolated from root phase-0a state (`prefix = "phase-0a-model-armor"`)
 - [x] Provider pin `google-beta ~> 6.43` (matches Model Armor resource availability)
 - [x] Billing project + user_project_override = true (matches root phase-0a convention; avoids quota project ambiguity)
 - [x] Inspect template uses `LIKELIHOOD_LOW` (over-redact intentional — runbook §11 design note)
@@ -50,9 +50,9 @@ Per runbook §2.IAM, the executing identity needs:
 - `roles/modelarmor.admin` (or `roles/modelarmor.floorSettingsAdmin` for the project Floor only)
 - `roles/dlp.admin`
 - `roles/serviceusage.serviceUsageAdmin`
-- Storage permissions on the terraform state bucket (`i-for-ai-autonomousagent-tfstate`)
+- Storage permissions on the terraform state bucket (`autonomous-agent-2026-autonomousagent-tfstate`)
 
-The Gemini CLI runs under `manzela@tngshopper.com` ADC (gemini-gcp skill, Authentication state §) which already has Owner on `i-for-ai`. No additional grants needed.
+The Gemini CLI runs under `manzela@tngshopper.com` ADC (gemini-gcp skill, Authentication state §) which already has Owner on `autonomous-agent-2026`. No additional grants needed.
 
 ## 5. Exact command sequence
 
@@ -84,18 +84,18 @@ Operator (Claude) reviews the captured plan output for:
 
 ```bash
 # 7.1 Confirm floor settings are enforcing
-gcloud model-armor floorsettings describe --project=i-for-ai --location=global \
+gcloud model-armor floorsettings describe --project=autonomous-agent-2026 --location=global \
     --format='value(enableFloorSettingEnforcement,filterConfig.sdpSettings.advancedConfig.inspectTemplate)'
-# Expected: True, projects/i-for-ai/locations/global/inspectTemplates/...
+# Expected: True, projects/autonomous-agent-2026/locations/global/inspectTemplates/...
 
 # 7.2 Confirm template is callable
 gcloud model-armor templates describe j1-trajectory-shipper \
-    --project=i-for-ai --location=us-central1 --format='value(name,filterConfig)'
+    --project=autonomous-agent-2026 --location=us-central1 --format='value(name,filterConfig)'
 # Expected: prints the template + sdp_settings block
 
 # 7.3 Confirm DLP InspectTemplate
 gcloud dlp inspect-templates describe j1-inspect-and-redact \
-    --project=i-for-ai --location=global --format='value(name,inspectConfig.infoTypes)'
+    --project=autonomous-agent-2026 --location=global --format='value(name,inspectConfig.infoTypes)'
 # Expected: prints 4 InfoTypes (EMAIL_ADDRESS, CREDIT_CARD_NUMBER, PHONE_NUMBER, US_SOCIAL_SECURITY_NUMBER)
 ```
 
@@ -138,7 +138,7 @@ Task #58 closes when ALL of:
 ```
 GOOGLE_GENAI_MODEL=gemini-3.1-pro-preview \
 GEMINI_CLI_TRUST_WORKSPACE=true \
-GOOGLE_CLOUD_PROJECT=i-for-ai \
+GOOGLE_CLOUD_PROJECT=autonomous-agent-2026 \
 GOOGLE_CLOUD_LOCATION=global \
 gemini --yolo -p "<see Appendix B for prompt body>"
 ```
@@ -187,7 +187,7 @@ Plan: 5 to add, 0 to change, 0 to destroy.
   }
 
 # google_model_armor_floorsetting.project will be created
-+ parent = "projects/i-for-ai"
++ parent = "projects/autonomous-agent-2026"
 + location = "global"
 + enable_floor_setting_enforcement = true
 + filter_config { sdp_settings { advanced_config {
@@ -195,7 +195,7 @@ Plan: 5 to add, 0 to change, 0 to destroy.
   } } }
 
 # google_model_armor_template.j1_trajectory_shipper will be created
-+ project = "i-for-ai"
++ project = "autonomous-agent-2026"
 + location = "us-central1"
 + template_id = "j1-trajectory-shipper"
 + filter_config { sdp_settings { advanced_config {
@@ -232,9 +232,9 @@ Delegated `terraform apply -input=false tfplan` via Gemini.
 - `google_project_service.apis["modelarmor.googleapis.com"]` created (5s)
 - `google_project_service.apis["dlp.googleapis.com"]` created (26s)
 - `google_data_loss_prevention_inspect_template.j1` created
-  - `id = projects/i-for-ai/locations/global/inspectTemplates/1292447203549173017`
+  - `id = projects/autonomous-agent-2026/locations/global/inspectTemplates/1292447203549173017`
 - `google_model_armor_floorsetting.project` created (33s) — ENFORCING
-  - `id = projects/i-for-ai/locations/global/floorSetting`
+  - `id = projects/autonomous-agent-2026/locations/global/floorSetting`
 - `google_model_armor_template.j1_trajectory_shipper` (us-central1) — FAILED:
 
 > Google API: `INVALID_SDP_TEMPLATE` — "Ensure that SDP templates are valid
@@ -277,8 +277,8 @@ Exit code 2. **0 to change, 0 to destroy** — the 4 live resources from Apply
 ### C.4 Second apply (success)
 
 ```
-google_data_loss_prevention_inspect_template.j1_regional: Creation complete after 2s [id=projects/i-for-ai/locations/us-central1/inspectTemplates/7198199013222528364]
-google_model_armor_template.j1_trajectory_shipper: Creation complete after 2s [id=projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper]
+google_data_loss_prevention_inspect_template.j1_regional: Creation complete after 2s [id=projects/autonomous-agent-2026/locations/us-central1/inspectTemplates/7198199013222528364]
+google_model_armor_template.j1_trajectory_shipper: Creation complete after 2s [id=projects/autonomous-agent-2026/locations/us-central1/templates/j1-trajectory-shipper]
 
 Apply complete! Resources: 2 added, 0 changed, 0 destroyed.
 ```
@@ -297,9 +297,9 @@ google_project_service.apis["modelarmor.googleapis.com"]
 Outputs (consumed by J1 shipper config):
 
 ```
-floor_setting_id          = "projects/i-for-ai/locations/global/floorSetting"
-inspect_template_id       = "projects/i-for-ai/locations/global/inspectTemplates/1292447203549173017"
-model_armor_template_id   = "projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper"
+floor_setting_id          = "projects/autonomous-agent-2026/locations/global/floorSetting"
+inspect_template_id       = "projects/autonomous-agent-2026/locations/global/inspectTemplates/1292447203549173017"
+model_armor_template_id   = "projects/autonomous-agent-2026/locations/us-central1/templates/j1-trajectory-shipper"
 model_armor_template_name = "j1-trajectory-shipper"
 ```
 
@@ -330,7 +330,7 @@ template name the shipper needs is `j1-trajectory-shipper` in `us-central1`,
 full path:
 
 ```
-projects/i-for-ai/locations/us-central1/templates/j1-trajectory-shipper
+projects/autonomous-agent-2026/locations/us-central1/templates/j1-trajectory-shipper
 ```
 
 This must be injected into the shipper via env var / config when J1 launches;

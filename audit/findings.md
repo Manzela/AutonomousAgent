@@ -78,7 +78,7 @@ The current Phase 1 is **plumbing only**. It can talk to Vertex AI through Teleg
 ### F. Self-hosted inference at high-volume (DEFERRED to Phase 4)
 - Spec says Phase 4 = Atropos RL training of an open-weight model
 - Research adds: serving the open-weight model at inference time (Qwen 3.6 Code or Llama 3.3 family) for orchestrator/evaluator chatter to dodge per-token API costs at 500M+ tokens/3 days
-- Current state: 100% reliant on Vertex AI Anthropic (paid per token; Opus 4.7 quota also throttled by Claude Code's parallel usage on `i-for-ai`)
+- Current state: 100% reliant on Vertex AI Anthropic (paid per token; Opus 4.7 quota also throttled by Claude Code's parallel usage on `autonomous-agent-2026`)
 
 ### G. Walk-away verification (NOT EXERCISED)
 - The system has never run unattended for >1 hour

@@ -5,7 +5,7 @@
 variable "project_id" {
   description = "GCP project ID hosting the Phase 2 Cloud SQL instance."
   type        = string
-  default     = "i-for-ai"
+  default     = "autonomous-agent-2026"
 }
 
 variable "region" {

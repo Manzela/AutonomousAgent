@@ -82,7 +82,7 @@ Each day has: **goal**, **deliverable**, **acceptance gate**, **dependencies**, 
 - **Deliverable**:
   - `lib/a2a/auth.py`: `mint_token`, `verify_token`, `AgentIdentity` dataclass, in-memory TTL caches for both minted JWTs and `jti` replay, `_emit_audit_log` helper.
   - Wire `mint_token` into `client.py`; wire `verify_token` into `server.py`'s middleware.
-  - Provision a second SA `agent-canary-spike@i-for-ai.iam.gserviceaccount.com` in Terraform (or via gcloud out-of-band for the spike — call it out as a debt item). Grant the Hermes runtime SA `roles/iam.serviceAccountTokenCreator` on both `agent-a` and `agent-canary`.
+  - Provision a second SA `agent-canary-spike@autonomous-agent-2026.iam.gserviceaccount.com` in Terraform (or via gcloud out-of-band for the spike — call it out as a debt item). Grant the Hermes runtime SA `roles/iam.serviceAccountTokenCreator` on both `agent-a` and `agent-canary`.
   - `config/a2a/peers.yaml` populated with the canary SA's email as the issuer.
   - `lib/a2a/tests/test_auth.py`: 7 tests covering the acceptance criteria in `auth-design.md` §11.
 - **Acceptance gate**: 7 auth tests pass; a request without `Authorization` returns `-32001` (Unauthenticated); a request from a non-allowlisted SA returns `-32001`.
@@ -159,10 +159,10 @@ Each day has: **goal**, **deliverable**, **acceptance gate**, **dependencies**, 
 
 These items MUST be true at spike kickoff. If not, push the start date.
 
-- [ ] GCP project `i-for-ai` has Cloud Run + IAM Credentials API + Cloud Trace + Cloud Logging APIs enabled (already true per `terraform/phase-0a-gcp/`).
+- [ ] GCP project `autonomous-agent-2026` has Cloud Run + IAM Credentials API + Cloud Trace + Cloud Logging APIs enabled (already true per `terraform/phase-0a-gcp/`).
 - [ ] A spare SA we can provision as `agent-canary-spike` (can be created day-of, but the OWNER needs `roles/iam.serviceAccountAdmin`).
 - [ ] Hermes-agent submodule is populated in this worktree — see [`integration-points.md`](./integration-points.md) §1, currently empty. Submodule init is a 5-minute task but it's a blocker for verifying line references.
-- [ ] Spike owner has Cloud Trace + Cloud Logging viewer roles on `i-for-ai`.
+- [ ] Spike owner has Cloud Trace + Cloud Logging viewer roles on `autonomous-agent-2026`.
 - [ ] Reviewer is available for a 30-min sync at end of each day to unblock.
 
 ---

@@ -151,7 +151,7 @@ This is **the** key insight. Claude Code is the dev environment for *writing* th
 - **Daily GCS snapshot** (`config/limits.yaml: snapshots.gcs_snapshot_cron: "0 4 * * *"`) — full state snapshot at 04:00 UTC.
 
 ### Layer 5 — External durability (cloud)
-- **Vertex AI** (`i-for-ai` project, `global` Opus endpoint) — 24M tokens/min Opus quota, <1% utilization.
+- **Vertex AI** (`autonomous-agent-2026` project, `global` Opus endpoint) — 24M tokens/min Opus quota, <1% utilization.
 - **Phoenix** (local + can ship to hosted) — trace persistence.
 - **Honcho** (hosted) — long-term memory across sessions.
 - **Chroma Cloud** — vector store, hosted.

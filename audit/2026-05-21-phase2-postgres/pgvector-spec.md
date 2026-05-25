@@ -273,7 +273,7 @@ def upgrade():
 #!/bin/bash
 set -euo pipefail
 
-psql "host=/cloudsql/i-for-ai:us-central1:hermes-vector-db dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" <<EOF
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:hermes-vector-db dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" <<EOF
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_embedding_hnsw
 ON semantic_embeddings
 USING hnsw (embedding vector_cosine_ops)

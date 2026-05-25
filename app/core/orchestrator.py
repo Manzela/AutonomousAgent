@@ -1,17 +1,18 @@
-"""P-3 orchestrator extension: A2A peer-execution dispatch.
+"""A2A peer-execution dispatch layer (P-3).
 
-Extends the seed orchestrator's ``_execute()`` to route tasks across the
-A2A boundary when an ``AgentCapability`` has ``peer_endpoint`` set.
+**Scope:** This module implements the A2A routing layer for P-3 only —
+the ``execute()`` entry point that branches between local and peer dispatch.
+It does NOT contain the full seed ``Orchestrator`` class (router, registry,
+policy update loops, etc.). Those components are ported in subsequent
+work items (P-1, P-12, P-13 per INTEGRATION.md).
 
-Design:
-  - ``_execute()`` branches on ``cap.peer_endpoint is not None``
-  - Peer path calls ``lib.a2a.client.send_message(peer_url, message, ...)``
-  - Local path calls ``cap.invoke(request)`` directly (unchanged from seed)
-  - Both paths produce ``ExecutionResult`` with proper cost/timing accounting
+Per 04-gcp-native-adapter-plan.md: the dispatch logic lives here as a
+module-level function (not a class method) because the full orchestrator
+class has not yet been ported to app/core/. When P-12/P-13 are implemented,
+``execute()`` should be moved into ``Orchestrator._execute()`` and this module
+becomes the implementation of that method.
 
-This module DOES NOT re-implement the full seed orchestrator (router, registry,
-background loops, circuit breakers). It provides the dispatch layer that the
-full orchestrator calls. See ``seed/orchestrator.py`` for the complete reference.
+See INTEGRATION.md §P-3 for acceptance criteria.
 
 Collision boundary: this module calls ``lib.a2a.client.send_message`` but
 does NOT modify ``lib/a2a/`` — that is Claude Code territory.
@@ -57,7 +58,8 @@ async def execute(
         request: The task to execute.
         capability: The chosen expert's descriptor.
         agent_identity: SA identity for outbound JWT minting (Day 5+).
-            Pass ``None`` for the spike (fail-open auth).
+            Pass ``None`` for the pre-production posture per INTEGRATION.md §P-3
+            (fail-open auth).
         peer_timeout_s: httpx timeout for A2A peer requests.
         local_timeout_s: asyncio timeout for local invoke().
 
@@ -92,7 +94,8 @@ async def _execute_via_a2a(
     response into an ``ExecutionResult``.
 
     The peer's SA email is looked up from ``config/a2a/peers.yaml`` by URL;
-    auth is fail-open if the peer is not configured (spike posture).
+    auth is fail-open if the peer is not configured — pre-production posture
+    per INTEGRATION.md §P-3.
     """
     # Lazy import to avoid circular dependencies and to respect the collision
     # boundary: lib.a2a.client is Claude Code territory — we call it, never modify.
@@ -170,18 +173,38 @@ async def _execute_via_a2a(
 
     except Exception as exc:
         duration = time.monotonic() - t0
-        logger.error(
-            "a2a peer dispatch error: task_id=%s peer=%s error=%r",
-            request.task_id,
-            capability.peer_endpoint,
-            exc,
-        )
+        # Detect A2AError subclasses to surface the error code for operators.
+        try:
+            from lib.a2a.client import A2AError  # type: ignore[import-untyped]
+
+            is_a2a = isinstance(exc, A2AError)
+        except ImportError:
+            is_a2a = False
+
+        if is_a2a:
+            logger.error(
+                "a2a peer dispatch protocol error: task_id=%s peer=%s code=%d msg=%s",
+                request.task_id,
+                capability.peer_endpoint,
+                exc.code,  # type: ignore[union-attr]
+                exc,
+            )
+            error_str = f"a2a_peer_error: code={exc.code} msg={exc}"  # type: ignore[union-attr]
+        else:
+            logger.error(
+                "a2a peer dispatch error: task_id=%s peer=%s error=%r",
+                request.task_id,
+                capability.peer_endpoint,
+                exc,
+            )
+            error_str = f"a2a_peer_error: {exc!r}"
+
         return ExecutionResult(
             task_id=request.task_id,
             status=TaskStatus.FAILED,
             agent_id=capability.agent_id,
             output=None,
-            error=f"a2a_peer_error: {exc!r}",
+            error=error_str,
             duration_s=duration,
             cost_usd=0.0,
             tokens_in=0,
@@ -275,11 +298,21 @@ def _map_a2a_status(status: str) -> TaskStatus:
 
     A2A uses: SUBMITTED, WORKING, INPUT_REQUIRED, COMPLETED, CANCELED, FAILED.
     The orchestrator uses: PENDING, INFLIGHT, COMPLETED, FAILED, REFUSED.
+
+    INPUT_REQUIRED maps to FAILED because the peer is blocked waiting for
+    human input that the orchestrator cannot provide.  Operators are warned
+    via a log message so the blockage is surfaced rather than silently
+    treated as in-progress work.
     """
+    if status == "INPUT_REQUIRED":
+        logger.warning(
+            "a2a: peer returned INPUT_REQUIRED — task is blocked waiting for human input; "
+            "orchestrator has no mechanism to unblock this task (treating as FAILED)"
+        )
     mapping = {
         "SUBMITTED": TaskStatus.INFLIGHT,
         "WORKING": TaskStatus.INFLIGHT,
-        "INPUT_REQUIRED": TaskStatus.INFLIGHT,
+        "INPUT_REQUIRED": TaskStatus.FAILED,
         "COMPLETED": TaskStatus.COMPLETED,
         "CANCELED": TaskStatus.FAILED,
         "FAILED": TaskStatus.FAILED,

@@ -81,6 +81,7 @@ async def test_peer_dispatch_calls_send_message():
     assert result.agent_id == AgentID("agent-test-01")
     assert result.output is not None
     assert result.output["id"] == "peer-task-001"
+    assert result.task_id == req.task_id  # correlation key must be preserved
 
 
 @pytest.mark.asyncio
@@ -163,6 +164,44 @@ async def test_peer_dispatch_error():
     assert result.status == TaskStatus.FAILED
     assert "peer_error" in (result.error or "")
     assert result.duration_s >= 0.0
+
+
+@pytest.mark.asyncio
+async def test_peer_dispatch_a2a_error() -> None:
+    """A2A protocol errors (not network errors) are surfaced in result.error."""
+    from lib.a2a.client import A2AUnsupportedOperation
+
+    async def _raise_a2a(*args, **kwargs):
+        raise A2AUnsupportedOperation(-32004, "message/send not implemented", None)
+
+    with patch("lib.a2a.client.send_message", side_effect=_raise_a2a):
+        cap = _make_capability(peer_endpoint="http://peer:9001/")
+        req = _make_request()
+        result = await execute(req, cap)
+
+    assert result.status == TaskStatus.FAILED
+    assert result.task_id == req.task_id
+    assert "a2a_peer_error" in (result.error or "")
+    assert "-32004" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_peer_dispatch_a2a_task_not_found() -> None:
+    """A2ATaskNotFound is surfaced as FAILED with a2a_peer_error prefix."""
+    from lib.a2a.client import A2ATaskNotFound
+
+    async def _raise_not_found(*args, **kwargs):
+        raise A2ATaskNotFound(-32001, "task not found", None)
+
+    with patch("lib.a2a.client.send_message", side_effect=_raise_not_found):
+        cap = _make_capability(peer_endpoint="http://peer:9001/")
+        req = _make_request()
+        result = await execute(req, cap)
+
+    assert result.status == TaskStatus.FAILED
+    assert result.task_id == req.task_id
+    assert "a2a_peer_error" in (result.error or "")
+    assert "-32001" in (result.error or "")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -274,7 +313,7 @@ def test_a2a_status_mapping():
     """Verify all A2A statuses map to the correct orchestrator TaskStatus."""
     assert _map_a2a_status("SUBMITTED") == TaskStatus.INFLIGHT
     assert _map_a2a_status("WORKING") == TaskStatus.INFLIGHT
-    assert _map_a2a_status("INPUT_REQUIRED") == TaskStatus.INFLIGHT
+    assert _map_a2a_status("INPUT_REQUIRED") == TaskStatus.FAILED
     assert _map_a2a_status("COMPLETED") == TaskStatus.COMPLETED
     assert _map_a2a_status("CANCELED") == TaskStatus.FAILED
     assert _map_a2a_status("FAILED") == TaskStatus.FAILED

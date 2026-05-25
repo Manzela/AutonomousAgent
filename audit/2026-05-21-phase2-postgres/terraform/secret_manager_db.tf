@@ -8,8 +8,8 @@
 #   {
 #     "host": "<private-ip>",
 #     "database": "hermes",
-#     "user": "autonomousagent-vm-runtime@i-for-ai.iam",
-#     "connection_name": "i-for-ai:us-central1:autonomousagent-postgres-vector"
+#     "user": "autonomousagent-vm-runtime@autonomous-agent-2026.iam",
+#     "connection_name": "autonomous-agent-2026:us-central1:autonomousagent-postgres-vector"
 #   }
 #
 # IAM binding: autonomousagent-vm-runtime SA granted secretAccessor role

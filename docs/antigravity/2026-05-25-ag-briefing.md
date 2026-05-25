@@ -53,7 +53,7 @@ You run **concurrently** with:
 **Your directory boundary:**
 ```
 YOURS (exclusive write access):
-  deploy/scripts/                     (create rebuild-bootstrap-tarball.sh)
+  deploy/scripts/                     (create rebuild-bootstrap-tarball.sh - note: dir will be implicitly created)
   deploy/docker-compose.canary.yml    (create canary peer — Wave 2 only)
   audit/2026-05-21-a2a-spike-plan/    (fix stale i-for-ai refs)
 
@@ -115,6 +115,12 @@ Ask yourself these and verify against the files above before writing the script:
 `audit/2026-05-21-a2a-spike-plan/integration-points.md`:
 - Line ~196: `agent-runtime@i-for-ai.iam.gserviceaccount.com` → `agent-runtime@autonomous-agent-2026.iam.gserviceaccount.com`
 
+**Additional files to edit (missed in original runbook):**
+- `audit/2026-05-20-model-armor-j1-runbook/terraform/model_armor.tf` (Line 8)
+- `audit/2026-05-20-model-armor-j1-runbook/validate.sh` (Lines 2, 5)
+- `audit/2026-05-21-phase2-postgres/terraform/secret_manager_db.tf` (Lines 11, 12)
+- `terraform/phase-0a-gcp/postgres/main.tf` (Line 195)
+
 **Verification command (must return 0 results):**
 ```bash
 grep -rn "i-for-ai" audit/2026-05-21-a2a-spike-plan/
@@ -140,9 +146,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 STAGING_DIR="$(mktemp -d /tmp/hermes-bootstrap-staging.XXXXXX)"
-_TARBALL_TMP="$(mktemp /tmp/hermes-bootstrap.XXXXXX)"
-TARBALL_PATH="${_TARBALL_TMP}.tar.gz"
-mv "${_TARBALL_TMP}" "${TARBALL_PATH}"
+TARBALL_PATH="$(mktemp /tmp/hermes-bootstrap.XXXXXX.tar.gz)"
 GCS_BUCKET="gs://autonomous-agent-2026-snapshots/bootstrap"
 
 trap 'rm -rf "${STAGING_DIR}" "${TARBALL_PATH}"' EXIT
@@ -195,6 +199,8 @@ find "${STAGING_DIR}" -name ".git" -prune -exec rm -rf {} + 2>/dev/null || true
 find "${STAGING_DIR}" -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find "${STAGING_DIR}" -name "*.pyc" -delete 2>/dev/null || true
 find "${STAGING_DIR}" -name ".DS_Store" -delete 2>/dev/null || true
+find "${STAGING_DIR}" -name ".venv" -prune -exec rm -rf {} + 2>/dev/null || true
+find "${STAGING_DIR}/lib" -name "tests" -prune -exec rm -rf {} + 2>/dev/null || true
 # Secrets are SOPS-encrypted and loaded at runtime by hermes-secrets.service
 # via GCP Secret Manager. Do NOT include secrets/ in the tarball.
 rm -rf "${STAGING_DIR}/secrets" 2>/dev/null || true
@@ -316,7 +322,7 @@ EOF
 
 3. **Does the canary share volumes with the main stack?** No. The canary is a fully isolated peer. It should have its own config volume pointing to a `config/canary/` directory (create it with minimal placeholder files) or no config volume at all for a stub.
 
-4. **Which network does the canary join?** The `hermes_default` network (created by `deploy/docker-compose.yml`) so the main hermes can reach the canary at `http://agent-canary:9001/`.
+4. **Which network does the canary join?** The `deploy_internal` network (created by `deploy/docker-compose.yml`) so the main hermes can reach the canary at `http://agent-canary:9001/`.
 
 5. **Does the canary need the GCP logging driver?** For local dev testing, no. Add a comment noting that on the VM you'd add `logging: *gcplogs`.
 
@@ -330,7 +336,7 @@ EOF
 #   docker compose -f deploy/docker-compose.yml up -d
 #   docker compose -f deploy/docker-compose.canary.yml up -d
 #
-# The canary joins the hermes_default network created by docker-compose.yml,
+# The canary joins the deploy_internal network created by docker-compose.yml,
 # making it reachable from the main hermes container at http://agent-canary:9001/.
 #
 # Host port 9002 maps to container port 9001 to avoid collision with the
@@ -349,19 +355,19 @@ services:
       HERMES_A2A_PORT: "9001"
       HERMES_LOG_LEVEL: "DEBUG"
     networks:
-      - hermes_default
+      - internal
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9001/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9001/health')"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
 
 networks:
-  hermes_default:
+  internal:
     external: true
-    name: hermes_default
+    name: deploy_internal
 ```
 
 **Acceptance test:**
@@ -385,7 +391,7 @@ gh pr create \
   --body "$(cat <<'EOF'
 ## Summary
 - Creates \`deploy/docker-compose.canary.yml\` — isolated canary peer for A2A Day 9 e2e testing
-- Canary joins \`hermes_default\` network; reachable at \`http://agent-canary:9001/\` from main hermes
+- Canary joins \`deploy_internal\` network; reachable at \`http://agent-canary:9001/\` from main hermes
 - Exposed on host port 9002 (9001 reserved for main hermes)
 - \`HERMES_A2A_CANARY_MODE=true\` signals echo+delay behavior (Day 10 implementation)
 
@@ -432,7 +438,7 @@ Python package management: uv (not pip directly)
   Run tests: uv run pytest lib/a2a/tests/ -v
   Run linter: uv run ruff check lib/a2a/
   Run formatter: uv run ruff format lib/a2a/
-Terraform: >= 1.7.0, providers google ~> 6.43
+Terraform: >= 1.7.0, providers google ~> 5.30
 GCS paths: gs://autonomous-agent-2026-snapshots/bootstrap/
 AR image registry: us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/
 ```

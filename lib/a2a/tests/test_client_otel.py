@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from opentelemetry.context import attach, detach
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -126,15 +127,32 @@ async def test_tracestate_passed_through() -> None:
 
 @pytest.mark.asyncio
 async def test_sampled_bit_respected() -> None:
-    """When span is NOT sampled, traceparent flags byte must be '00' or absent."""
-    from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
+    """An active but unsampled span must produce traceparent with flags '00' or no traceparent at all.
 
-    provider_off = TracerProvider(sampler=ALWAYS_OFF)
-    tracer_off = provider_off.get_tracer("test-unsampled")
+    Uses a NonRecordingSpan with an explicit valid SpanContext carrying TraceFlags(0x00)
+    so the is_valid guard passes but trace_flags.sampled is False.
+    """
+    from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
+    from opentelemetry import trace as _trace
+
+    # Build a valid (non-zero trace_id, non-zero span_id) but unsampled SpanContext.
+    unsampled_ctx = SpanContext(
+        trace_id=0x000102030405060708090A0B0C0D0E0F,
+        span_id=0x0102030405060708,
+        is_remote=True,
+        trace_flags=TraceFlags(0x00),  # NOT sampled
+    )
+    unsampled_span = NonRecordingSpan(unsampled_ctx)
+
     captured_headers: dict[str, str] = {}
 
     async def _capturing_post(
-        url: str, *, json: dict, timeout: float, headers: dict | None = None, **kwargs: Any
+        url: str,
+        *,
+        json: dict,
+        timeout: float,
+        headers: dict | None = None,
+        **kwargs: Any,
     ) -> httpx.Response:
         captured_headers.update(headers or {})
         mock_response = MagicMock(spec=httpx.Response)
@@ -142,11 +160,25 @@ async def test_sampled_bit_respected() -> None:
         mock_response.json.return_value = _SUBMITTED_RESPONSE
         return mock_response
 
-    with tracer_off.start_as_current_span("unsampled-span"):
+    # Attach the unsampled span as the current span for this task
+    ctx = _trace.set_span_in_context(unsampled_span)
+    token = attach(ctx)
+    try:
         with patch("httpx.AsyncClient.post", side_effect=_capturing_post):
             await send_message(_BASE, _MSG)
+    finally:
+        detach(token)
 
+    # The sampled bit is 0x00 — implementation should either:
+    #   (a) not inject traceparent at all, OR
+    #   (b) inject with flags "00"
+    # Both are correct per W3C spec. What must NOT happen is flags "01".
     tp = captured_headers.get("traceparent", "")
     if tp:
-        flags = tp.split("-")[-1]
-        assert flags == "00", f"unsampled span must produce flags '00', got {flags!r} in {tp!r}"
+        parts = tp.split("-")
+        assert len(parts) == 4, f"malformed traceparent: {tp!r}"
+        assert (
+            parts[-1] == "00"
+        ), f"unsampled span must produce flags '00', got {parts[-1]!r} in {tp!r}"
+    # If no traceparent header, that's also valid — the implementation chose not to propagate.
+    # The important assertion is that we reached this point without flags "01".

@@ -1,7 +1,7 @@
 # Phase 2 Postgres Provisioning Packet
 
 **Status**: Specification-only (NOT deployed)
-**Target**: Cloud SQL for PostgreSQL 16 on GCP project `i-for-ai`
+**Target**: Cloud SQL for PostgreSQL 16 on GCP project `autonomous-agent-2026`
 **Purpose**: Hierarchical memory tier for autonomous-agent (episodic, semantic, procedural memory)
 **Owner**: ADR-0008 Phase 2 work-packet
 **Created**: 2026-05-21
@@ -80,7 +80,7 @@ Before applying terraform:
 
 1. **Phase 0a Infrastructure**: VPC (`autonomousagent-vpc`), IAM (`autonomousagent-vm-runtime` SA), Secret Manager access
 2. **GCP APIs Enabled**: `sqladmin.googleapis.com`, `servicenetworking.googleapis.com`
-3. **Terraform State**: Remote state in `gs://i-for-ai-autonomousagent-tfstate/phase-0a`
+3. **Terraform State**: Remote state in `gs://autonomous-agent-2026-autonomousagent-tfstate/phase-0a`
 4. **Authenticated Principal**: `gcloud auth login` with Terraform-capable credentials
 
 ## Deployment Workflow (Future)
@@ -98,7 +98,7 @@ terraform plan -out=phase2-postgres.tfplan
 terraform apply phase2-postgres.tfplan
 
 # 3. Wait for instance provisioning (~10 minutes)
-gcloud sql operations list --instance=autonomousagent-postgres-vector --project=i-for-ai
+gcloud sql operations list --instance=autonomousagent-postgres-vector --project=autonomous-agent-2026
 
 # 4. Run Alembic baseline migration
 cd /path/to/autonomous-agent/
@@ -175,5 +175,5 @@ Before promoting to production, ALL 28 acceptance criteria must pass (see `accep
 
 **Owner**: Claude Code (autonomous-agent provisioning)
 **Reviewer**: User (sign-off required)
-**GCP Project**: `i-for-ai`
+**GCP Project**: `autonomous-agent-2026`
 **Terraform Module**: `terraform/phase-0a-gcp/` (post-merge)

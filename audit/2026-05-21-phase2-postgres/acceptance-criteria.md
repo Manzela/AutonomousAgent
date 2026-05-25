@@ -10,7 +10,7 @@
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(state)"
 ```
 
@@ -25,7 +25,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.tier)"
 ```
 
@@ -40,7 +40,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.availabilityType)"
 ```
 
@@ -56,12 +56,12 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 ```bash
 # Check private IP exists
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(ipAddresses[0].ipAddress)"
 
 # Check public IP is absent
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(ipAddresses[?type=='PRIMARY'].ipAddress)" | wc -l
 ```
 
@@ -80,7 +80,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.dataDiskSizeGb,settings.dataDiskType)"
 ```
 
@@ -95,7 +95,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.backupConfiguration.enabled)"
 ```
 
@@ -110,7 +110,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.backupConfiguration.pointInTimeRecoveryEnabled,settings.backupConfiguration.transactionLogRetentionDays)"
 ```
 
@@ -126,7 +126,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 ```bash
 gcloud sql backups list \
   --instance=autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --limit=1 \
   --format="value(id)"
 ```
@@ -144,7 +144,7 @@ gcloud sql backups list \
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.databaseFlags[?name=='cloudsql.iam_authentication'].value)"
 ```
 
@@ -160,12 +160,12 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 ```bash
 gcloud sql users list \
   --instance=autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --filter="name:autonomousagent-vm-runtime" \
   --format="value(name,type)"
 ```
 
-**Expected Output**: `autonomousagent-vm-runtime@i-for-ai.iam CLOUD_IAM_SERVICE_ACCOUNT`
+**Expected Output**: `autonomousagent-vm-runtime@autonomous-agent-2026.iam CLOUD_IAM_SERVICE_ACCOUNT`
 
 **Failure Mode**: User missing or wrong type → IAM auth will fail
 
@@ -175,9 +175,9 @@ gcloud sql users list \
 
 **Test**:
 ```bash
-gcloud projects get-iam-policy i-for-ai \
+gcloud projects get-iam-policy autonomous-agent-2026 \
   --flatten="bindings[].members" \
-  --filter="bindings.role:roles/cloudsql.client AND bindings.members:serviceAccount:autonomousagent-vm-runtime@i-for-ai.iam.gserviceaccount.com" \
+  --filter="bindings.role:roles/cloudsql.client AND bindings.members:serviceAccount:autonomousagent-vm-runtime@autonomous-agent-2026.iam.gserviceaccount.com" \
   --format="value(bindings.role)"
 ```
 
@@ -192,11 +192,11 @@ gcloud projects get-iam-policy i-for-ai \
 **Test** (run on VM):
 ```bash
 # Start Cloud SQL Proxy in background
-cloud-sql-proxy i-for-ai:us-central1:autonomousagent-postgres-vector &
+cloud-sql-proxy autonomous-agent-2026:us-central1:autonomousagent-postgres-vector &
 sleep 5
 
 # Test connection
-psql "host=localhost port=5432 dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=localhost port=5432 dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "SELECT version();"
 ```
 
@@ -212,7 +212,7 @@ psql "host=localhost port=5432 dbname=hermes user=autonomousagent-vm-runtime@i-f
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "SELECT * FROM pg_available_extensions WHERE name = 'vector';"
 ```
 
@@ -226,7 +226,7 @@ psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "CREATE EXTENSION IF NOT EXISTS vector; SELECT extname FROM pg_extension WHERE extname = 'vector';"
 ```
 
@@ -240,7 +240,7 @@ psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "SELECT '[1,2,3]'::vector <=> '[3,2,1]'::vector AS distance;"
 ```
 
@@ -269,7 +269,7 @@ alembic current
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "\dt" | grep -E "episodic_events|semantic_embeddings|procedural_skills|migrations"
 ```
 
@@ -283,7 +283,7 @@ psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "\d+ episodic_events_2026_05"
 ```
 
@@ -297,7 +297,7 @@ psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" <<EOF
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" <<EOF
 -- Episodic insert
 INSERT INTO episodic_events (session_id, agent_id, event_type, payload)
 VALUES (gen_random_uuid(), 'test-agent', 'test', '{"test": true}');
@@ -327,7 +327,7 @@ EOF
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" <<EOF
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" <<EOF
 -- Episodic query
 SELECT id, event_type FROM episodic_events LIMIT 1;
 
@@ -354,7 +354,7 @@ EOF
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "SELECT indexname FROM pg_indexes WHERE tablename = 'semantic_embeddings' AND indexname = 'idx_embedding_hnsw';"
 ```
 
@@ -368,7 +368,7 @@ psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_embedding_hnsw';"
 ```
 
@@ -385,7 +385,7 @@ psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname
 **Test**:
 ```bash
 gcloud secrets describe autonomousagent-db-connection \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(name)"
 ```
 
@@ -401,7 +401,7 @@ gcloud secrets describe autonomousagent-db-connection \
 ```bash
 gcloud secrets versions access latest \
   --secret=autonomousagent-db-connection \
-  --project=i-for-ai
+  --project=autonomous-agent-2026
 ```
 
 **Expected Output**: JSON blob with `host`, `database`, `user`, `connection_name` keys
@@ -414,7 +414,7 @@ gcloud secrets versions access latest \
 
 **Test**:
 ```bash
-SECRET_JSON=$(gcloud secrets versions access latest --secret=autonomousagent-db-connection --project=i-for-ai)
+SECRET_JSON=$(gcloud secrets versions access latest --secret=autonomousagent-db-connection --project=autonomous-agent-2026)
 echo $SECRET_JSON | jq -e '.connection_name,.database,.user' > /dev/null
 ```
 
@@ -430,7 +430,7 @@ echo $SECRET_JSON | jq -e '.connection_name,.database,.user' > /dev/null
 
 **Test** (after loading 1M test embeddings):
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" <<EOF
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" <<EOF
 EXPLAIN ANALYZE
 SELECT id, text, embedding <=> '[0.1, 0.2, ...]'::vector(768) AS distance
 FROM semantic_embeddings
@@ -451,7 +451,7 @@ EOF
 ```bash
 # Simulate 50 concurrent psql connections
 seq 1 50 | parallel -j 50 \
-  'psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" -c "SELECT 1;" > /dev/null'
+  'psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" -c "SELECT 1;" > /dev/null'
 ```
 
 **Expected Output**: All connections succeed (no connection refused errors)
@@ -465,7 +465,7 @@ seq 1 50 | parallel -j 50 \
 **Test**:
 ```bash
 # Insert test row
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "INSERT INTO procedural_skills (name, description, code) VALUES ('pitr-test', 'PITR test skill', 'print(\"pitr\")');"
 
 # Record timestamp
@@ -473,25 +473,25 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 sleep 60
 
 # Delete test row
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "DELETE FROM procedural_skills WHERE name = 'pitr-test';"
 
 # Restore to timestamp (creates new instance)
 gcloud sql backups create \
   --instance=autonomousagent-postgres-vector \
-  --project=i-for-ai
+  --project=autonomous-agent-2026
 
 gcloud sql instances clone autonomousagent-postgres-vector \
   autonomousagent-postgres-vector-pitr-test \
   --point-in-time=$TIMESTAMP \
-  --project=i-for-ai
+  --project=autonomous-agent-2026
 
 # Verify test row exists on restored instance
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector-pitr-test dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" \
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector-pitr-test dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" \
   -c "SELECT COUNT(*) FROM procedural_skills WHERE name = 'pitr-test';"
 
 # Cleanup
-gcloud sql instances delete autonomousagent-postgres-vector-pitr-test --project=i-for-ai --quiet
+gcloud sql instances delete autonomousagent-postgres-vector-pitr-test --project=autonomous-agent-2026 --quiet
 ```
 
 **Expected Output**: Count = `1` (test row restored)
@@ -507,7 +507,7 @@ gcloud sql instances delete autonomousagent-postgres-vector-pitr-test --project=
 **Test**:
 ```bash
 gcloud sql instances describe autonomousagent-postgres-vector \
-  --project=i-for-ai \
+  --project=autonomous-agent-2026 \
   --format="value(settings.maintenanceWindow.day,settings.maintenanceWindow.hour)"
 ```
 
@@ -523,7 +523,7 @@ gcloud sql instances describe autonomousagent-postgres-vector \
 
 **Test**:
 ```bash
-psql "host=/cloudsql/i-for-ai:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam" <<EOF
+psql "host=/cloudsql/autonomous-agent-2026:us-central1:autonomousagent-postgres-vector dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam" <<EOF
 DELETE FROM episodic_events WHERE agent_id = 'test-agent';
 DELETE FROM semantic_embeddings WHERE source_type = 'test';
 DELETE FROM procedural_skills WHERE name = 'test-skill';

@@ -26,11 +26,19 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any
 
 import yaml
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+
+try:
+    from fastapi import Depends, FastAPI, Request
+    from fastapi.responses import JSONResponse, StreamingResponse
+except ImportError as _fastapi_err:
+    raise ImportError(
+        "lib.a2a.server requires FastAPI. Install with: uv sync --extra a2a\n"
+        f"Original error: {_fastapi_err}"
+    ) from _fastapi_err
 
 from lib.a2a.agent_card import build_agent_card as _build_agent_card
 from lib.a2a.agent_card import sign_card as _sign_card
@@ -42,6 +50,20 @@ from opentelemetry import trace as otel_trace
 from opentelemetry.propagate import extract as otel_extract
 
 logger = logging.getLogger(__name__)
+
+# H5: unauthenticated-request posture.
+# Spike default: open (A2A_REQUIRE_AUTH unset). Production: set A2A_REQUIRE_AUTH=true.
+_A2A_REQUIRE_AUTH: bool = os.getenv("A2A_REQUIRE_AUTH", "false").lower() == "true"
+if not _A2A_REQUIRE_AUTH:
+    logger.warning(
+        "a2a: A2A_REQUIRE_AUTH not set — unauthenticated requests ALLOWED (spike posture). "
+        "Set A2A_REQUIRE_AUTH=true before any production deploy."
+    )
+
+# M11: peers.yaml TTL cache (60s) — avoids per-request file reads
+_PEERS_CACHE: list[str] | None = None
+_PEERS_CACHE_AT: float = 0.0
+_PEERS_CACHE_TTL = 60.0
 
 # --- OTel tracer ----------------------------------------------------------
 
@@ -86,23 +108,30 @@ def _jsonrpc_result(req_id: Any, result: Any) -> dict[str, Any]:
 
 
 def _load_peers_config() -> list[str]:
-    """Load peers.yaml allowlist. Falls back to empty list if file missing/malformed."""
+    """Load peers.yaml allowlist with 60s TTL cache. Falls back to empty list on error."""
+    global _PEERS_CACHE, _PEERS_CACHE_AT
+    now = time.monotonic()
+    if _PEERS_CACHE is not None and (now - _PEERS_CACHE_AT) < _PEERS_CACHE_TTL:
+        return _PEERS_CACHE
     try:
         with open("config/a2a/peers.yaml") as f:
             data = yaml.safe_load(f)
-        return [p["issuer"] for p in (data.get("peers") or []) if "issuer" in p]
+        result = [p["issuer"] for p in (data.get("peers") or []) if "issuer" in p]
+        logger.debug("a2a: loaded %d peer issuers from peers.yaml", len(result))
     except FileNotFoundError:
         logger.warning(
             "a2a: config/a2a/peers.yaml not found — no peers allowlisted; all inbound JWTs will be rejected"
         )
-        return []
+        result = []
     except Exception as exc:
         logger.error(
-            "a2a: failed to load peers.yaml (%s: %s) — all inbound JWTs will be rejected",
+            "a2a: failed to load peers.yaml (%s) — all inbound JWTs will be rejected",
             type(exc).__name__,
-            exc,
         )
-        return []
+        result = []
+    _PEERS_CACHE = result
+    _PEERS_CACHE_AT = now
+    return result
 
 
 def _attach_inbound_context(request: Request) -> Any:
@@ -121,6 +150,10 @@ async def _jwt_guard(request: Request) -> AgentIdentity | None:
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header:
+        if _A2A_REQUIRE_AUTH:
+            request.state.identity = None
+            request.state.jwt_error = True
+            return None
         request.state.identity = None
         return None
     token_str = auth_header.removeprefix("Bearer ").strip()
@@ -239,6 +272,27 @@ app = FastAPI(
     version="0.1.0-spike-day7",
 )
 
+# M3: 1MB body size limit — prevents OOM from oversized JSON payloads
+from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
+from starlette.responses import Response as _StarletteResponse  # noqa: E402
+
+
+class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    _MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+
+    async def dispatch(self, request, call_next):  # type: ignore[override]
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self._MAX_BYTES:
+            return _StarletteResponse(
+                content='{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Request too large"}}',
+                status_code=413,
+                media_type="application/json",
+            )
+        return await call_next(request)
+
+
+app.add_middleware(_BodySizeLimitMiddleware)
+
 
 @app.get("/health")
 async def health() -> dict[str, str]:
@@ -258,7 +312,7 @@ async def agent_card_endpoint() -> JSONResponse:
     base_url = os.environ.get("A2A_BASE_URL", "http://localhost:9001")
     card = _build_agent_card(agent_sa, base_url)
     try:
-        signed = _sign_card(card, agent_sa)
+        signed = await _sign_card(card, agent_sa)
     except Exception as exc:
         logger.warning(
             "a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", type(exc).__name__
@@ -370,7 +424,7 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
             content=_jsonrpc_error(
                 req_id,
                 JSONRPC_METHOD_NOT_FOUND,
-                f"Unknown method: {method}",
+                "Unknown method",  # not echoing — method is user-controlled
             )
         )
 
@@ -407,13 +461,8 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
         # Log type only — exception messages can contain caller data; method is user-controlled.
         logger.error("a2a: unhandled exception in handler exc_type=%s", type(exc).__name__)
         return JSONResponse(
-            content=_jsonrpc_error(
-                req_id,
-                JSONRPC_INTERNAL_ERROR,
-                "Internal server error",
-                {"exception_type": type(exc).__name__},
-            )
-        )
+            content=_jsonrpc_error(req_id, JSONRPC_INTERNAL_ERROR, "Internal server error")
+        )  # M5: exception_type removed from data — leaks stack topology to caller
 
     return JSONResponse(content=_jsonrpc_result(req_id, result))
 

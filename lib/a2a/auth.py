@@ -323,16 +323,11 @@ async def verify_token(
                 "to L1 (fail-open, 60s TTL)",
                 type(exc).__name__,
             )
-            _emit_audit_log(
-                "accepted_redis_unavailable",
-                None,
-                None,
-                None,
-                None,
-                peer_sa=issuer,
-            )
             async with _JTI_L1_LOCK:
                 if _JTI_L1_FALLBACK.get(replay_key):
+                    # L1 caught a replay — emit rejected, NOT accepted_redis_unavailable.
+                    # Emitting accepted before this check creates false-positive monitoring
+                    # alerts whenever L1 correctly blocks an attack during Redis outage.
                     _emit_audit_log(
                         "rejected_replay_l1",
                         None,
@@ -343,6 +338,15 @@ async def verify_token(
                     )
                     raise ValueError("jti replay (L1 fallback)")
                 _JTI_L1_FALLBACK[replay_key] = True
+            # Emit accepted only after L1 confirms this is a first-time token.
+            _emit_audit_log(
+                "accepted_redis_unavailable",
+                None,
+                None,
+                None,
+                None,
+                peer_sa=issuer,
+            )
     elif fail_closed:
         # Redis not configured / not installed + fail-closed mode:
         # reject everything. (Operator misconfiguration alert.)

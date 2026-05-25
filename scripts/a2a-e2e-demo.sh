@@ -31,8 +31,23 @@ warn() { echo -e "${YELLOW}WARN${NC}: $*"; }
 echo "=== A2A Spike Day 10 — Canary E2E Demo ==="
 echo ""
 
+# Unified cleanup — reads CANARY_IS_STUB, CANARY_PID, AGENT_A_PID.
+# Declared before any trap assignment so all variables are in scope.
+CANARY_IS_STUB=0
+CANARY_PID=0
+AGENT_A_PID=0
+
+_cleanup() {
+    [[ "${AGENT_A_PID}" -ne 0 ]] && kill "${AGENT_A_PID}" 2>/dev/null || true
+    if [[ "${CANARY_IS_STUB}" -eq 1 ]]; then
+        [[ "${CANARY_PID}" -ne 0 ]] && kill "${CANARY_PID}" 2>/dev/null || true
+    else
+        docker compose -f "${COMPOSE_FILE}" down 2>/dev/null || true
+    fi
+}
+trap _cleanup EXIT
+
 # --- 0. Start canary (compose stack or stdlib stub) --------------------------
-CANARY_IS_STUB=0  # used in EXIT trap below
 if [[ ! -f "${COMPOSE_FILE}" ]]; then
     warn "deploy/docker-compose.canary.yml not found — using stdlib HTTP stub"
     python3 -c "
@@ -55,13 +70,10 @@ threading.Thread(target=s.serve_forever,daemon=True).start()
 import time; time.sleep(3600)
 " &
     CANARY_PID=$!
-    # shellcheck disable=SC2064
-    trap "kill ${CANARY_PID} 2>/dev/null || true" EXIT
+    CANARY_IS_STUB=1
 else
     echo "Starting canary compose stack..."
     docker compose -f "${COMPOSE_FILE}" up -d
-    # shellcheck disable=SC2064
-    trap "docker compose -f '${COMPOSE_FILE}' down 2>/dev/null || true" EXIT
 fi
 
 # --- 1. Start agent-a --------------------------------------------------------
@@ -69,8 +81,6 @@ echo "Starting agent-a on :9001..."
 cd "${REPO_ROOT}"
 uv run uvicorn lib.a2a.server:app --host 0.0.0.0 --port 9001 --log-level warning &
 AGENT_A_PID=$!
-# shellcheck disable=SC2064
-trap "kill ${AGENT_A_PID} 2>/dev/null || true" EXIT
 
 # --- 2. Wait for both to be healthy ------------------------------------------
 wait_up() {

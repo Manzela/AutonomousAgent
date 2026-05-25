@@ -10,6 +10,7 @@ Tests use TestClient so no network is involved.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -94,6 +95,58 @@ def test_email_in_message_is_scrubbed_before_handler() -> None:
 
     assert resp.status_code == 200
     assert "patient@hospital.org" not in str(captured_params[0])
+    assert "[REDACTED]" in str(captured_params[0])
+
+
+def test_ssn_in_stream_params_is_scrubbed() -> None:
+    """PHI in POST /stream params is redacted before the handler sees it."""
+    captured_params: list[dict] = []
+
+    async def _capture_stream(params: dict) -> Any:
+        captured_params.append(params)
+        from fastapi.responses import StreamingResponse as _SR
+
+        async def _gen():
+            yield b"data: {}\n\n"
+
+        return _SR(_gen(), media_type="text/event-stream")
+
+    with patch("lib.a2a.server.handle_stream_message", side_effect=_capture_stream):
+        with client.stream(
+            "POST",
+            "/stream",
+            json={"message": {"role": "USER", "parts": [{"text": "SSN: 999-88-7777"}]}},
+        ) as resp:
+            resp.read()
+
+    assert len(captured_params) == 1
+    assert "999-88-7777" not in str(captured_params[0])
+    assert "[REDACTED]" in str(captured_params[0])
+
+
+def test_ssn_in_subscribe_params_is_scrubbed() -> None:
+    """PHI in POST /subscribe params is redacted before the handler sees it."""
+    captured_params: list[dict] = []
+
+    async def _capture_subscribe(params: dict) -> Any:
+        captured_params.append(params)
+        from fastapi.responses import StreamingResponse as _SR
+
+        async def _gen():
+            yield b"data: {}\n\n"
+
+        return _SR(_gen(), media_type="text/event-stream")
+
+    with patch("lib.a2a.server.handle_subscribe_task", side_effect=_capture_subscribe):
+        with client.stream(
+            "POST",
+            "/subscribe",
+            json={"id": "task-001", "patient_email": "phi@hospital.org"},
+        ) as resp:
+            resp.read()
+
+    assert len(captured_params) == 1
+    assert "phi@hospital.org" not in str(captured_params[0])
     assert "[REDACTED]" in str(captured_params[0])
 
 

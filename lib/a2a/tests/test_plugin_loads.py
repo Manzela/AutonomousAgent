@@ -28,10 +28,20 @@ def test_register_function_exists() -> None:
 
 def test_register_wires_session_start_hook() -> None:
     """Day 1 contract: register installs exactly one on_session_start hook."""
+    import os
+    from unittest.mock import patch
+
     from lib.a2a import register
 
     ctx = MagicMock()
-    register(ctx)
+    with patch.dict(
+        os.environ,
+        {
+            "HERMES_A2A_ENABLED": "true",
+            "HERMES_A2A_SA": "agent-a@autonomous-agent-2026.iam.gserviceaccount.com",
+        },
+    ):
+        register(ctx)
 
     ctx.register_hook.assert_called_once()
     hook_name, hook_fn = ctx.register_hook.call_args.args

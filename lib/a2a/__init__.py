@@ -21,9 +21,17 @@ See: audit/2026-05-21-a2a-spike-plan/DEFAULTS-ACCEPTED.md for Q1-Q12 lock-in.
 from __future__ import annotations
 
 import logging
+import os
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# GCP service account email format — name and project-id each:
+#   starts [a-z], ends [a-z0-9], body [a-z0-9-], total 6-30 chars
+_SA_EMAIL_RE = re.compile(
+    r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"
+)
 
 
 def _on_session_start(session_id: str = "", **_: Any) -> None:
@@ -31,14 +39,39 @@ def _on_session_start(session_id: str = "", **_: Any) -> None:
     logger.debug("a2a: on_session_start session=%s (no-op until Day 7)", session_id)
 
 
-def register(ctx) -> None:
+def register(ctx) -> None:  # type: ignore[type-arg]
     """Plugin entry point — registers with Hermes PluginManager.
+
+    Reads HERMES_A2A_ENABLED at call time (not import time) so tests can
+    monkeypatch os.environ without importlib.reload().
 
     Day 1: registers a single no-op `on_session_start` hook so the plugin
     loader logs `register: a2a` once at startup (acceptance gate).
-
-    Day 2+: this function grows to wire the FastAPI server, A2A client,
-    auth middleware, TaskSpec bridge, and telemetry exporters.
     """
+    enabled_raw = os.getenv("HERMES_A2A_ENABLED")
+
+    # Deprecation: default is currently true; will flip to false next release.
+    if not enabled_raw:
+        logger.warning(
+            "a2a: HERMES_A2A_ENABLED env var not set or empty; defaulting true "
+            "(will change to false in next release — set explicitly to suppress this warning)"
+        )
+
+    enabled = (enabled_raw or "true").lower() == "true"
+
+    if not enabled:
+        logger.info("a2a: HERMES_A2A_ENABLED=false; plugin skipped — no routes registered")
+        return
+
+    # H6 — validate SA identity format before wiring anything
+    sa = os.getenv("HERMES_A2A_SA", "")
+    if not sa or not _SA_EMAIL_RE.fullmatch(sa):
+        raise RuntimeError(
+            f"A2A: HERMES_A2A_SA is missing or invalid: {sa!r}. "
+            "Must be a GCP service account email "
+            "(<name>@<project>.iam.gserviceaccount.com)"
+        )
+    logger.info("a2a: HERMES_A2A_SA validated: %s", sa)
+
     ctx.register_hook("on_session_start", _on_session_start)
-    logger.info("a2a: plugin registered (Day 1 scaffolding shell)")
+    logger.info("a2a: plugin registered")

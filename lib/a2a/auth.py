@@ -43,6 +43,8 @@ _JWKS_CACHE: cachetools.TTLCache[str, list[dict]] = cachetools.TTLCache(
     maxsize=1_000,
     ttl=900,  # 15 min — matches Google JWKS Cache-Control: max-age=900
 )
+# M6: negative cache — if JWKS fetch fails (429/503), back off for 30s
+_JWKS_FAIL_CACHE: cachetools.TTLCache[str, str] = cachetools.TTLCache(maxsize=100, ttl=30)
 _JWKS_LOCK: asyncio.Lock | None = (
     None  # initialized lazily (avoids event-loop-before-creation error)
 )
@@ -89,14 +91,22 @@ _JWKS_URL_TEMPLATE = "https://www.googleapis.com/service_accounts/v1/jwk/{sa_ema
 
 async def _fetch_jwks(sa_email: str) -> list[dict]:
     lock = _get_jwks_lock()
-    async with lock:  # holds lock across fetch — single-flight, no thundering herd
+    async with lock:  # single-flight: no thundering herd on cache miss
+        # Positive cache hit
         cached = _JWKS_CACHE.get(sa_email)
         if cached is not None:
             return cached
+        # M6: negative cache — back off if JWKS endpoint recently failed
+        if sa_email in _JWKS_FAIL_CACHE:
+            raise ValueError(f"JWKS fetch for {sa_email} recently failed; backing off for 30s")
         url = _JWKS_URL_TEMPLATE.format(sa_email=sa_email)
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+        except Exception as exc:
+            _JWKS_FAIL_CACHE[sa_email] = type(exc).__name__
+            raise
         keys = resp.json().get("keys", [])
         _JWKS_CACHE[sa_email] = keys
         return keys

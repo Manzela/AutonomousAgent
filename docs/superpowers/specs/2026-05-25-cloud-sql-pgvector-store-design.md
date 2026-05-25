@@ -226,6 +226,8 @@ CREATE INDEX IF NOT EXISTS memory_records_content_hash_idx
     WHERE content_hash IS NOT NULL;
 ```
 
+This mirrors `MemoryRecord._tier_namespace_invariant` (app/core/schemas.py:321-323) — it is defence-in-depth, not a new contract; the Pydantic validator already rejects EPHEMERAL records without `expires_at` before any DB write.
+
 **Why `vector(256)` and not a variable-dim column:** pgvector requires
 the dimension on the column. The orchestrator's embedder always emits
 256-dim vectors (see `app/core/embedder.py::project_dim`); pinning it
@@ -328,6 +330,9 @@ async def _get_pool(dsn: Optional[str] = None) -> asyncpg.Pool:
             init=_register_vector_codec,
             # Statement-level timeout — bounds the worst-case query.
             command_timeout=10.0,
+            # Note: HNSW index pages are mmap'd lazily; the first query on a cold replica may take 1–3s to fault index pages into RAM.
+            # `command_timeout=10.0` provides headroom but a process-boot warmup query (`SELECT 1 FROM memory_records LIMIT 1`)
+            # is recommended to avoid confusing `QueryCanceledError` on cold-start. See the Cloud Run startup probe in Section 4.
         )
         return _POOL
 
@@ -604,6 +609,8 @@ def _row_to_record(row: asyncpg.Record) -> MemoryRecord:
         namespace_token=row["namespace_token"],
     )
 ```
+
+**Concurrency note:** A `search()` call that reads `expires_at = T+ε` may return a record that a concurrent `gc_expired(before_ts=T+2ε)` deletes a millisecond later. This race is safe — asyncpg materialises `fetch()` results into memory before returning, so the concurrent DELETE cannot corrupt the in-flight result. The logical consequence (caller may receive a record that is already GC'd by the time it acts on it) is acceptable for an LLM memory store where millisecond-scale staleness is irrelevant. Do NOT serialise search and gc_expired to "fix" this — it would tank throughput.
 
 ### Notes on the `put()` content-hash dedup
 
@@ -885,6 +892,8 @@ test fixture runs a modified migration that creates the column as
 `vector(8)` — see `_apply_test_schema()` below. This is the *only*
 divergence from the production schema; everything else (indexes,
 constraints, codecs) is identical.
+
+> **Note:** Tests do NOT validate HNSW index selection by the planner — at dim=8 with <10 rows, the planner correctly prefers SeqScan. The contract tests verify correctness (round-trip, scope isolation, GC) which is dim-agnostic; HNSW planner selection is validated in the load tests against a populated dev instance.
 
 ```python
 """Contract tests for CloudSqlPgvectorStore.
@@ -1225,6 +1234,8 @@ of 2026-05). Re-evaluate when `pgvector-python>=0.4` ships.
 **Why pin `pgvector<0.4`:** 0.3 is the latest stable release with the
 binary codec; 0.4 is in beta and changes the codec registration API
 (`register_vector` → `register_vector_async`). Re-evaluate at GA.
+
+**Version re-evaluation triggers:** When `pgvector` releases ≥0.4 GA (expected to rename `register_vector` → `register_vector_async`), update the pin and codec registration pattern. When `asyncpg` releases ≥0.30, re-verify pool `init=` behaviour. Add P-2.1 to INTEGRATION.md to track these upgrades.
 
 **Why a separate `gcp` extra and not putting these in core
 `dependencies`:** the in-memory adapter (`app/adapters/inmemory/`) is

@@ -93,9 +93,9 @@ async def test_verify_token_returns_agent_identity():
     """verify_token returns a frozen AgentIdentity with correct fields."""
     token = _make_token()
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
-        from lib.a2a.auth import _JTI_CACHE
+        from lib.a2a.auth import _JTI_L1_FALLBACK
 
-        _JTI_CACHE.clear()
+        _JTI_L1_FALLBACK.clear()
         identity = await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
     assert identity.sub == _CANARY_SA
     assert identity.audience == _AGENT_SA
@@ -112,9 +112,9 @@ async def test_verify_token_returns_agent_identity():
 @pytest.mark.asyncio
 async def test_verify_token_jti_replay_rejected():
     """Same JWT presented twice — second call raises ValueError('jti replay')."""
-    from lib.a2a.auth import _JTI_CACHE
+    from lib.a2a.auth import _JTI_L1_FALLBACK
 
-    _JTI_CACHE.clear()
+    _JTI_L1_FALLBACK.clear()
     token = _make_token(jti="replay-jti-unique")
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
         await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
@@ -124,10 +124,10 @@ async def test_verify_token_jti_replay_rejected():
 
 @pytest.mark.asyncio
 async def test_verify_token_expired_rejected(caplog):
-    from lib.a2a.auth import _JTI_CACHE
+    from lib.a2a.auth import _JTI_L1_FALLBACK
     import logging
 
-    _JTI_CACHE.clear()
+    _JTI_L1_FALLBACK.clear()
     token = _make_token(exp_offset=-10, jti="exp-jti")
     with caplog.at_level(logging.INFO, logger="a2a.audit"):
         with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
@@ -148,10 +148,10 @@ async def test_verify_token_expired_rejected(caplog):
 
 @pytest.mark.asyncio
 async def test_verify_token_audience_mismatch_rejected(caplog):
-    from lib.a2a.auth import _JTI_CACHE
+    from lib.a2a.auth import _JTI_L1_FALLBACK
     import logging
 
-    _JTI_CACHE.clear()
+    _JTI_L1_FALLBACK.clear()
     token = _make_token(aud="peer-b@autonomous-agent-2026.iam.gserviceaccount.com", jti="aud-jti")
     with caplog.at_level(logging.INFO, logger="a2a.audit"):
         with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
@@ -172,10 +172,10 @@ async def test_verify_token_audience_mismatch_rejected(caplog):
 
 @pytest.mark.asyncio
 async def test_verify_token_non_allowlisted_issuer_rejected(caplog):
-    from lib.a2a.auth import _JTI_CACHE
+    from lib.a2a.auth import _JTI_L1_FALLBACK
     import logging
 
-    _JTI_CACHE.clear()
+    _JTI_L1_FALLBACK.clear()
     token = _make_token(iss="rogue@other-project.iam.gserviceaccount.com", jti="rogue-jti")
     with caplog.at_level(logging.INFO, logger="a2a.audit"):
         with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
@@ -237,10 +237,10 @@ async def test_mint_token_uses_cache_on_repeat_call():
 
 
 def test_emit_audit_log_hipaa_fields(caplog):
-    from lib.a2a.auth import _JTI_CACHE
+    from lib.a2a.auth import _JTI_L1_FALLBACK
     import logging
 
-    _JTI_CACHE.clear()
+    _JTI_L1_FALLBACK.clear()
     identity = AgentIdentity(
         sub=_CANARY_SA,
         audience=_AGENT_SA,

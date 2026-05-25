@@ -353,6 +353,13 @@ services:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_SERVICE_NAME: hermes
+      # P-2: CloudSqlPgvectorStore DSN — Cloud SQL Auth Proxy on localhost.
+      # IAM auth via the proxy; no password in the DSN.
+      # Unset in dev/CI where InMemoryStore is used (the store is lazy-imported).
+      CLOUD_SQL_DSN: ${CLOUD_SQL_DSN:-}
+      # P-7: Redis-backed jti replay cache — Cloud Memorystore private IP.
+      # Unset = L1-only fallback with WARNING. See redis jti design spec §7.
+      REDIS_URL: ${REDIS_URL:-}
       # Auto-approve hooks/commands without a TTY (we're in Docker).
       HERMES_ACCEPT_HOOKS: "1"
       # Per-plugin discovery trace logging — enabled for the audit final-sweep
@@ -455,6 +462,44 @@ services:
       github-mcp: {condition: service_started}    # distroless image has no probe binaries
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
+      # P-2: Cloud SQL Auth Proxy must be healthy before hermes starts so
+      # CloudSqlPgvectorStore can connect to 127.0.0.1:5432.
+      cloud-sql-proxy: {condition: service_healthy}
+
+  # ---- Cloud SQL Auth Proxy (P-2) ----
+  #
+  # Runs as a sidecar that IAM-authenticates to Cloud SQL Postgres 16
+  # (autonomousagent-postgres-vector) and proxies TCP on 127.0.0.1:5432.
+  # The app connects to the proxy, not directly to Cloud SQL.
+  # --auto-iam-authn injects a fresh OAuth token from the runtime metadata
+  # server — no passwords stored anywhere.
+  #
+  # Design spec: docs/superpowers/specs/2026-05-25-cloud-sql-pgvector-store-design.md §4.C
+  cloud-sql-proxy:
+    # Google's official Cloud SQL Auth Proxy v2 image.
+    # Pinned to 2.15.x — latest stable at time of writing.
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0
+    <<: [*restart_policy, *json_logging]
+    container_name: autonomous-agent-cloud-sql-proxy-1
+    command:
+      - --auto-iam-authn
+      - --address=0.0.0.0
+      - --port=5432
+      - ${CLOUD_SQL_CONNECTION_NAME:-autonomous-agent-2026:us-central1:autonomousagent-postgres-vector}
+    environment:
+      # ADC chain — same gcloud config mount as snapshot-watchdog.
+      GOOGLE_APPLICATION_CREDENTIALS: /credentials/application_default_credentials.json
+    volumes:
+      - ${HOME}/.config/gcloud:/credentials:ro
+    networks: [internal]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - nc -z 127.0.0.1 5432 || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
 
   # ---- Escalation watcher (P1-6) ----
   #

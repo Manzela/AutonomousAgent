@@ -42,7 +42,15 @@ logger = logging.getLogger(__name__)
 
 # --- OTel tracer ----------------------------------------------------------
 
-_tracer = otel_trace.get_tracer("lib.a2a.server", "0.1.0-spike")
+# Tracer is fetched lazily so test fixtures can swap in a TracerProvider
+# after module import without the span silently landing on the NoOp tracer.
+_TRACER_NAME = "lib.a2a.server"
+_TRACER_VERSION = "0.1.0-spike"
+
+
+def _get_tracer() -> otel_trace.Tracer:
+    return otel_trace.get_tracer(_TRACER_NAME, _TRACER_VERSION)
+
 
 # --- JSON-RPC 2.0 standard error codes (spec §5.1) -----------------------
 JSONRPC_PARSE_ERROR = -32700
@@ -231,7 +239,7 @@ async def health() -> dict[str, str]:
 async def stream_endpoint(request: Request) -> StreamingResponse:
     """POST /stream — SSE streaming for message/stream (Day 4)."""
     _ctx_token = _attach_inbound_context(request)
-    with _tracer.start_as_current_span("a2a.server.stream"):
+    with _get_tracer().start_as_current_span("a2a.server.stream"):
         body_bytes = await request.body()
         try:
             params = json.loads(body_bytes) if body_bytes else {}
@@ -246,7 +254,7 @@ async def stream_endpoint(request: Request) -> StreamingResponse:
 async def subscribe_endpoint(request: Request) -> StreamingResponse:
     """POST /subscribe — SSE streaming for tasks/subscribe (Day 4)."""
     _ctx_token = _attach_inbound_context(request)
-    with _tracer.start_as_current_span("a2a.server.subscribe"):
+    with _get_tracer().start_as_current_span("a2a.server.subscribe"):
         body_bytes = await request.body()
         try:
             params = json.loads(body_bytes) if body_bytes else {}
@@ -370,7 +378,7 @@ async def jsonrpc_dispatch(
 
     # Day 6: extract inbound OTel context and wrap dispatch in a server span.
     _ctx_token = _attach_inbound_context(request)
-    with _tracer.start_as_current_span("a2a.server.dispatch"):
+    with _get_tracer().start_as_current_span("a2a.server.dispatch"):
         result = await _jsonrpc_dispatch_inner(request)
     otel_context.detach(_ctx_token)
     return result

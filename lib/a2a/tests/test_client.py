@@ -59,7 +59,10 @@ async def test_send_message_returns_submitted_task() -> None:
 
     assert isinstance(task, dict), "result must be a dict"
     assert "id" in task, "Task must have an 'id' field"
-    assert task["id"].startswith("task-"), f"unexpected id prefix: {task['id']}"
+    # Day 7: id is a UUID from the TaskSpec bridge (no longer has "task-" prefix)
+    assert (
+        isinstance(task["id"], str) and len(task["id"]) > 0
+    ), f"id must be non-empty: {task['id']}"
     assert task["status"] == "SUBMITTED", f"unexpected status: {task['status']}"
 
 

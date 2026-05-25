@@ -2,7 +2,7 @@
 
 **Status:** Plan stage only — **NO APPLY**. Apply gated on separate explicit operator go-ahead.
 **Date:** 2026-05-21
-**Delegate:** Gemini CLI v0.42.0 with `gemini-3.1-pro-preview` on `global` Vertex endpoint, project `i-for-ai`.
+**Delegate:** Gemini CLI v0.42.0 with `gemini-3.1-pro-preview` on `global` Vertex endpoint, project `autonomous-agent-2026`.
 **Operator (Claude):** Orchestrates briefing, captures plan output, **stops at plan**. Does NOT trigger apply in this task.
 
 ---
@@ -104,7 +104,7 @@ Cost breakdown per `audit/2026-05-21-phase2-postgres/cost-estimate.md`:
 ## 5. Pre-flight verification (Claude side, done)
 
 - [x] Module files present + parseable (5 files: README.md, providers.tf, variables.tf, main.tf, outputs.tf)
-- [x] Backend `gs://i-for-ai-autonomousagent-tfstate/phase-0a-postgres/` isolated from root phase-0a state
+- [x] Backend `gs://autonomous-agent-2026-autonomousagent-tfstate/phase-0a-postgres/` isolated from root phase-0a state
 - [x] Provider pin `google ~> 5.30` (matches root; sufficient for Cloud SQL)
 - [x] Billing project + user_project_override = true (matches root convention)
 - [x] VPC peering resources declared (gap closure vs staging packet)
@@ -116,11 +116,11 @@ Cost breakdown per `audit/2026-05-21-phase2-postgres/cost-estimate.md`:
 ## 6. IAM the plan requires (Gemini-side)
 
 Plan-only needs `roles/storage.objectViewer` on the state bucket
-(`i-for-ai-autonomousagent-tfstate`) + project-level read on whatever
+(`autonomous-agent-2026-autonomousagent-tfstate`) + project-level read on whatever
 resources data sources look up (VPC, service account, project services).
 
 The Gemini CLI runs under `manzela@tngshopper.com` ADC which already has
-Owner on `i-for-ai`. No additional grants needed.
+Owner on `autonomous-agent-2026`. No additional grants needed.
 
 For the eventual apply (NOT this task): same identity needs
 `roles/cloudsql.admin`, `roles/compute.networkAdmin` (for the
@@ -194,7 +194,7 @@ Task #59 closes when ALL of:
 ```
 GOOGLE_GENAI_MODEL=gemini-3.1-pro-preview \
 GEMINI_CLI_TRUST_WORKSPACE=true \
-GOOGLE_CLOUD_PROJECT=i-for-ai \
+GOOGLE_CLOUD_PROJECT=autonomous-agent-2026 \
 GOOGLE_CLOUD_LOCATION=global \
 gemini --yolo -p "<see Appendix B below>"
 ```
@@ -229,7 +229,7 @@ gemini --yolo -p "<see Appendix B below>"
 
 ### C.1 First plan attempt — BLOCKED
 
-`terraform init` exit 0 (clean: backend `gs://i-for-ai-autonomousagent-tfstate/phase-0a-postgres`
+`terraform init` exit 0 (clean: backend `gs://autonomous-agent-2026-autonomousagent-tfstate/phase-0a-postgres`
 configured, providers `hashicorp/google` + `hashicorp/google-beta` v5.45.2
 downloaded).
 
@@ -261,9 +261,9 @@ Full output: `postgres-plan.output`.
 
 ```
 data.google_compute_network.vpc: Read complete after 1s
-  [id=projects/i-for-ai/global/networks/autonomousagent-vpc]
+  [id=projects/autonomous-agent-2026/global/networks/autonomousagent-vpc]
 data.google_service_account.vm_runtime: Read complete after 1s
-  [id=projects/i-for-ai/serviceAccounts/autonomousagent-vm-runtime@i-for-ai.iam.gserviceaccount.com]
+  [id=projects/autonomous-agent-2026/serviceAccounts/autonomousagent-vm-runtime@autonomous-agent-2026.iam.gserviceaccount.com]
 
 Plan: 11 to add, 0 to change, 0 to destroy.
 ```
@@ -311,7 +311,7 @@ Full output: `postgres-replan.output`.
   — preserves Google-internal egress (DNS, Logs, Monitoring) over the
   private path, as configured in main.tf.
 - VPC peering range allocated as `/16` (`autonomousagent-postgres-peering-range`)
-  on `projects/i-for-ai/global/networks/autonomousagent-vpc` — matches the
+  on `projects/autonomous-agent-2026/global/networks/autonomousagent-vpc` — matches the
   Service Networking expectation; no conflict with the existing 10.10.0.0/24
   subnet.
 

@@ -1,6 +1,6 @@
 # Phase 2 Postgres Provisioning Specification
 
-**Target**: Cloud SQL for PostgreSQL 16 on GCP project `i-for-ai`
+**Target**: Cloud SQL for PostgreSQL 16 on GCP project `autonomous-agent-2026`
 **Purpose**: Hierarchical memory tier for autonomous-agent (episodic, semantic, procedural memory)
 **Status**: Specification-only (NO deployment)
 
@@ -74,7 +74,7 @@
 ### Deployment Model
 
 - **Docker Compose**: Add `cloud-sql-proxy` service alongside hermes (Task 29 implementation)
-- **Connection String**: `host=/cloudsql/<instance-connection-name> dbname=hermes user=autonomousagent-vm-runtime@i-for-ai.iam`
+- **Connection String**: `host=/cloudsql/<instance-connection-name> dbname=hermes user=autonomousagent-vm-runtime@autonomous-agent-2026.iam`
 
 ### Future Scaling
 
@@ -85,7 +85,7 @@ If QPS exceeds 50, transition to PgBouncer for transaction pooling (proxy → Pg
 ### Database User
 
 - **Type**: `CLOUD_IAM_SERVICE_ACCOUNT`
-- **Name**: `autonomousagent-vm-runtime@i-for-ai.iam` (truncate `.gserviceaccount.com` suffix for SQL user)
+- **Name**: `autonomousagent-vm-runtime@autonomous-agent-2026.iam` (truncate `.gserviceaccount.com` suffix for SQL user)
 - **Auth Mechanism**: Temporary IAM tokens (60-minute TTL, automatically refreshed by proxy)
 
 ### Database Flags
@@ -99,7 +99,7 @@ database_flags {
 
 ### IAM Bindings
 
-- **Service Account**: `autonomousagent-vm-runtime@i-for-ai.iam.gserviceaccount.com` (already exists per `iam.tf:18-24`)
+- **Service Account**: `autonomousagent-vm-runtime@autonomous-agent-2026.iam.gserviceaccount.com` (already exists per `iam.tf:18-24`)
 - **Role**: `roles/cloudsql.client` (granted at project level, allows IAM auth to all Cloud SQL instances)
 
 ## 7. Secret Manager Integration
@@ -111,8 +111,8 @@ database_flags {
    {
      "host": "<private-ip>",
      "database": "hermes",
-     "user": "autonomousagent-vm-runtime@i-for-ai.iam",
-     "connection_name": "i-for-ai:us-central1:hermes-vector-db"
+     "user": "autonomousagent-vm-runtime@autonomous-agent-2026.iam",
+     "connection_name": "autonomous-agent-2026:us-central1:hermes-vector-db"
    }
    ```
 
@@ -230,7 +230,7 @@ Defer to Task 30 (Phase 2 observability):
 
 ### Naming Prefix
 
-All resources prefixed `autonomousagent-*` to avoid collision with sibling workloads on `i-for-ai` project.
+All resources prefixed `autonomousagent-*` to avoid collision with sibling workloads on `autonomous-agent-2026` project.
 
 ### Provider Configuration
 
@@ -269,7 +269,7 @@ lifecycle {
 
 ## 14. Validation Checklist (Post-Deployment)
 
-1. **Instance Status**: `gcloud sql instances describe hermes-vector-db --project i-for-ai --format="value(state)"` → `RUNNABLE`
+1. **Instance Status**: `gcloud sql instances describe hermes-vector-db --project autonomous-agent-2026 --format="value(state)"` → `RUNNABLE`
 2. **Private IP Allocated**: Instance has private IP, NO public IP
 3. **pgvector Enabled**: `SELECT * FROM pg_available_extensions WHERE name = 'vector';` → 1 row
 4. **IAM Auth Works**: Connect via proxy with IAM user (no password)

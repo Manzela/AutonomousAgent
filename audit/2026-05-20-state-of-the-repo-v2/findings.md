@@ -87,7 +87,7 @@ None. Prior audit was at `main@6fffe21` and `main` is still `6fffe21`. All work 
 | `cee4704` | feat(terraform): scaffold phase-0a-gcp module (providers, variables, backend config) | Task 6 |
 | `ebd448b` | chore(terraform): polish phase-0a-gcp scaffold per code review | Task 6 polish |
 | `6daeb9c` | chore(terraform): commit provider lock file for phase-0a | Task 6 polish |
-| `4ee7c3e` | feat(terraform): repoint phase-0a to existing i-for-ai GCP project | OQ-1 resolution (existing project) |
+| `4ee7c3e` | feat(terraform): repoint phase-0a to existing autonomous-agent-2026 GCP project | OQ-1 resolution (existing project) |
 | `1937008` | feat(terraform): enable 11 required GCP APIs for phase-0a (Task 7) | Task 7 ✅ |
 | `5b83c45` | feat(terraform): VPC + subnet + firewall for phase-0a (Tasks 8+9) | Tasks 8+9 ✅ |
 | `2a79aaf` | feat(terraform): IAM + WIF — runtime SA, CI SA, GitHub OIDC (Tasks 10+11) | Tasks 10+11 ✅ |
@@ -139,7 +139,7 @@ compute.tf                  # boot disk (50GB pd-balanced) + data disk (100GB pd
 | 31 | `scripts/phase-0a/smoke.sh` | not started |
 | 32 | `scripts/phase-0a/chaos.sh` | not started |
 | 33 | `scripts/phase-0a/acceptance.sh` (10 criteria from spec §11) | not started |
-| 34 | `terraform apply` against live `i-for-ai` (irreversible) | not started |
+| 34 | `terraform apply` against live `autonomous-agent-2026` (irreversible) | not started |
 | 35 | `docs/runbooks/phase-0a-cutover.md` | not started |
 | 36 | `docs/runbooks/phase-0a-rollback.md` | not started |
 | 37 | `docs/runbooks/phase-0a-recovery.md` | not started |
@@ -263,30 +263,30 @@ The comment at `secret_manager.tf:14-15` says the list "Mirrors `secrets/*.env.s
 
 ---
 
-### 3.6 F-2026-05-20-V2-6: Phase 0a IaC has ALREADY been partially applied to `i-for-ai` — state-vs-code divergence risk (NEW, pass-2)
+### 3.6 F-2026-05-20-V2-6: Phase 0a IaC has ALREADY been partially applied to `autonomous-agent-2026` — state-vs-code divergence risk (NEW, pass-2)
 
-**Where.** Live GCP snapshot of project `i-for-ai` (via gemini-gcp delegation, 2026-05-20T18:30 local):
+**Where.** Live GCP snapshot of project `autonomous-agent-2026` (via gemini-gcp delegation, 2026-05-20T18:30 local):
 
-| Phase 0a Terraform resource | Lives in i-for-ai? | Source on disk |
+| Phase 0a Terraform resource | Lives in autonomous-agent-2026? | Source on disk |
 |---|---|---|
 | VPC `autonomousagent-vpc` | **YES** (already applied) | `networking.tf` (Tasks 8+9, commit `5b83c45`) |
 | 4 SM secrets `autonomousagent-chroma-cloud`, `-honcho`, `-litellm-db`, `-telegram` | **YES** (all 4 applied) | `secret_manager.tf` (Task 14, commit `884f439`) |
 | AR repo `autonomousagent-images` | **YES** (already applied) | `artifact_registry.tf` (Task 12, commit `7bf1c68`) |
-| GCS bucket `i-for-ai-autonomousagent-snapshots` | **YES** (already applied) | `gcs.tf` (Task 13, commit `7bf1c68`) |
-| GCS bucket `i-for-ai-autonomousagent-tfstate` | **YES** | Terraform backend bucket (Task 6, commit `cee4704`) |
+| GCS bucket `autonomous-agent-2026-autonomousagent-snapshots` | **YES** (already applied) | `gcs.tf` (Task 13, commit `7bf1c68`) |
+| GCS bucket `autonomous-agent-2026-autonomousagent-tfstate` | **YES** | Terraform backend bucket (Task 6, commit `cee4704`) |
 | SAs `autonomousagent-github-ci`, `autonomousagent-vm-runtime` | **YES** (both applied) | `iam.tf` (Tasks 10+11, commit `2a79aaf`) |
 | Snapshot policy `autonomousagent-data-daily-snapshot` | **YES** (already applied) | `compute.tf` (Task 15, commit `ce7d875`) |
 | `google_compute_instance` (VM) | **NO** | Task 16 — NOT YET AUTHORED |
 
 **Implication.** Phase 0a Tasks 6–15 have been applied to live GCP off-branch (PR #112 is still DRAFT and unmerged). This means:
 
-1. **There is `terraform.tfstate` in `gs://i-for-ai-autonomousagent-tfstate/`** that someone (or a prior session) wrote. Local `terraform/phase-0a-gcp/` working dir must reconcile against it before any future `terraform plan` is trustworthy.
+1. **There is `terraform.tfstate` in `gs://autonomous-agent-2026-autonomousagent-tfstate/`** that someone (or a prior session) wrote. Local `terraform/phase-0a-gcp/` working dir must reconcile against it before any future `terraform plan` is trustworthy.
 2. **The cost meter is already running** for the AR repo (effectively $0 until images are pushed), GCS buckets (negligible until snapshots land), and the SAs (free). No ongoing compute cost yet (no VM, no images, no apply-driven workloads). Net incremental ≈ <$5/mo until VM lands.
 3. **P1-A (add singletons to SM) becomes a delta-apply** — additive, safe, but the operator must `terraform init` against the existing GCS backend before planning.
 4. **PR #112 cannot be "applied for the first time"** — it must be re-described as "syncs Terraform code with already-deployed state + adds VM (Task 16)." This is a documentation/PR-description fix.
 5. **The provenance of who applied these is unclear** from git history. Worth a `gcloud logging read 'protoPayload.methodName=~"create"'` to recover the audit trail (deferred — not blocking).
 
-**Action.** Add a new P0-D to the audit-plan: "Reconcile Terraform state with deployed GCP resources." Pre-flight every subsequent `terraform plan` against the live `i-for-ai` state.
+**Action.** Add a new P0-D to the audit-plan: "Reconcile Terraform state with deployed GCP resources." Pre-flight every subsequent `terraform plan` against the live `autonomous-agent-2026` state.
 
 ### 3.7 F-2026-05-20-V2-7: P0-A allowlist patch as written is insufficient — audit/*.md now triggers same false-positive (NEW, pass-2)
 
@@ -325,7 +325,7 @@ Verify with `gitleaks detect --source . --no-git --redact --config .gitleaks.tom
 
 | OQ | Spec default | IaC value | Source | Status |
 |---|---|---|---|---|
-| OQ-1 (project) | "Default to new (`rx-research-autonomousagent`) for blast-radius isolation" | `i-for-ai` | `variables.tf:4` | **MISMATCH** — IaC overrode default per commit `4ee7c3e`, spec not updated |
+| OQ-1 (project) | "Default to new (`rx-research-autonomousagent`) for blast-radius isolation" | `autonomous-agent-2026` | `variables.tf:4` | **MISMATCH** — IaC overrode default per commit `4ee7c3e`, spec not updated |
 | OQ-2 (WIF naming) | "Standard `github-actions` pool, provider `manzela-autonomousagent`" | Pool `autonomousagent-github`, provider `autonomousagent-actions` | `wif.tf:27,36` | **MISMATCH** — IaC chose consistent `autonomousagent-` prefix, spec not updated |
 | OQ-3 (snapshot retention) | "Daily PD only; weekly GCS for cross-region durability" | `max_retention_days = 7` | `compute.tf:36` | **MATCH** |
 
@@ -391,7 +391,7 @@ Pulling the morning's P0/P1/P2 numbering and re-flagging each:
 | R-PR112 | High | NEW; widened in pass-2 | PR #112 blocked on gitleaks false-positives. **Pass-2: allowlist scope must broaden to `audit/*.{md,log}` (§3.7).** |
 | R-RCA-blind | Medium | NEW (§3.1); confirmed (§3.9) | Crash signature unrecoverable from persisted artifacts. 24h soak + Cloud Logging on GCE are the only mitigations. |
 | R-SM-coverage | Medium → **LOWERED** | NEW (§3.3); refined in pass-2 | Only 2 singletons (`github-pat`, `litellm-master-key`) need SM migration. `healthchecks-url` needs host-side handling. Others dead/deferred. |
-| **R-IaC-drift** | Medium | NEW (pass-2, §3.6) | Phase 0a Tasks 6–15 already applied to live `i-for-ai` off-branch. PR #112 must be reframed as "sync deployed state + add VM." Reconcile before next plan. |
+| **R-IaC-drift** | Medium | NEW (pass-2, §3.6) | Phase 0a Tasks 6–15 already applied to live `autonomous-agent-2026` off-branch. PR #112 must be reframed as "sync deployed state + add VM." Reconcile before next plan. |
 | R-WIF-broad | Low | NEW (pass-2, §3.8) | WIF condition accepts all branches in repo. Acceptable for Phase 0a; tighten in Phase 0b. |
 | R-Spec-drift | Low | NEW (pass-2, §3.8) | Spec §4 + §12 still cite `rx-research-autonomousagent` + `manzela-autonomousagent` pool naming. 5-min doc fix. |
 | R24 (morning) | High → Lowered | resolved on laptop | Stack up 6h+; pending 24h soak gate |
@@ -405,7 +405,7 @@ Pulling the morning's P0/P1/P2 numbering and re-flagging each:
 1. **Cross-check Task 14's `local.sops_env_files` against `deploy/docker-compose.yml env_file:` directives** — confirm whether the 5 singletons are loaded directly or as part of a parent `.env` file. (Tool: grep over `deploy/`.)
 2. **Verify `secrets/hermes-provider.env` runtime usage** (§3.4) — single grep tells us whether this is dev-only or a real Phase E blocker.
 3. **Inspect prior incident logs for hermes exit-137** if any persisted from the morning crash (`logs/`, journalctl, healthchecks.io history) — currently no evidence trail; pass-2 should attempt to recover one. The current `docker logs autonomous-agent-hermes-1` only covers the 6h since restart.
-4. **Confirm Phase 0a OQ-1 / OQ-2 / OQ-3 resolutions** in the spec are reflected in the IaC on disk — `4ee7c3e` repointed to existing `i-for-ai` (OQ-1 closed). OQ-2 (region) is `us-central1` per `variables.tf`. OQ-3 (snapshot retention) is 7-day per `compute.tf:36`. Confirm against `docs/superpowers/specs/2026-05-20-phase-0a-gcp-always-online-design.md:§12`.
+4. **Confirm Phase 0a OQ-1 / OQ-2 / OQ-3 resolutions** in the spec are reflected in the IaC on disk — `4ee7c3e` repointed to existing `autonomous-agent-2026` (OQ-1 closed). OQ-2 (region) is `us-central1` per `variables.tf`. OQ-3 (snapshot retention) is 7-day per `compute.tf:36`. Confirm against `docs/superpowers/specs/2026-05-20-phase-0a-gcp-always-online-design.md:§12`.
 5. **Compare wif.tf attribute_condition against current branch ref format** — branch is `feat/phase-0a-gcp-migration`; the condition should accept `refs/heads/feat/phase-0a-*` or PR #112's deploy step will fail OIDC. (Spot-checked at `wif.tf` write — confirm in pass-2.)
-6. **Live-snapshot of `i-for-ai` GCP project** via `gemini-gcp` skill — confirm there are no name collisions for `autonomousagent-*` resources before `terraform apply`. (Pre-flight for Task 34.)
+6. **Live-snapshot of `autonomous-agent-2026` GCP project** via `gemini-gcp` skill — confirm there are no name collisions for `autonomousagent-*` resources before `terraform apply`. (Pre-flight for Task 34.)
 7. **Reproduce gitleaks CI run locally** with `--report-format sarif` to confirm the 2 leaks are the same lines local-mode finds, and that no additional leaks surface in `--no-git` mode-of-mode. (Sanity check before pushing the allowlist patch.)

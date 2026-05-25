@@ -1,7 +1,7 @@
 # Alembic Migration Strategy
 
 **Tool**: Alembic (Python database migration framework)
-**Database**: Cloud SQL Postgres 16 (`hermes` on `i-for-ai`)
+**Database**: Cloud SQL Postgres 16 (`hermes` on `autonomous-agent-2026`)
 **Rationale**: Python-native, SQLAlchemy integration optional, supports raw SQL migrations, mature ecosystem
 
 ## 1. Tooling Decision: Alembic vs Alternatives
@@ -47,7 +47,7 @@ script_location = alembic
 file_template = %%(year)d%%(month).2d%%(day).2d_%%(hour).2d%%(minute).2d_%%(slug)s
 
 # Database connection URL (override via env var for security)
-# Format: postgresql+psycopg://user@/dbname?host=/cloudsql/i-for-ai:us-central1:hermes-vector-db
+# Format: postgresql+psycopg://user@/dbname?host=/cloudsql/autonomous-agent-2026:us-central1:hermes-vector-db
 sqlalchemy.url =
 
 # Timezone for migration timestamps
@@ -124,7 +124,7 @@ def get_url():
     # Option 2: Fetch from Secret Manager (production VM)
     from google.cloud import secretmanager
     client = secretmanager.SecretManagerServiceClient()
-    secret_name = "projects/i-for-ai/secrets/autonomousagent-db-connection/versions/latest"
+    secret_name = "projects/autonomous-agent-2026/secrets/autonomousagent-db-connection/versions/latest"
     response = client.access_secret_version(request={"name": secret_name})
     import json
     db_config = json.loads(response.payload.data.decode("UTF-8"))
@@ -175,10 +175,10 @@ else:
 
 ```bash
 # Local development (Cloud SQL Proxy running locally)
-export DATABASE_URL="postgresql+psycopg://autonomousagent-vm-runtime@i-for-ai.iam@/hermes?host=/cloudsql/i-for-ai:us-central1:hermes-vector-db"
+export DATABASE_URL="postgresql+psycopg://autonomousagent-vm-runtime@autonomous-agent-2026.iam@/hermes?host=/cloudsql/autonomous-agent-2026:us-central1:hermes-vector-db"
 
 # CI (GitHub Actions)
-export DATABASE_URL="postgresql+psycopg://autonomousagent-github-ci@i-for-ai.iam@/hermes?host=/cloudsql/i-for-ai:us-central1:hermes-vector-db"
+export DATABASE_URL="postgresql+psycopg://autonomousagent-github-ci@autonomous-agent-2026.iam@/hermes?host=/cloudsql/autonomous-agent-2026:us-central1:hermes-vector-db"
 ```
 
 ## 5. Baseline Migration (`alembic/versions/001_baseline.py`)
@@ -397,9 +397,9 @@ def downgrade() -> None:
 
 set -euo pipefail
 
-INSTANCE_CONNECTION_NAME="i-for-ai:us-central1:hermes-vector-db"
+INSTANCE_CONNECTION_NAME="autonomous-agent-2026:us-central1:hermes-vector-db"
 DB_NAME="hermes"
-DB_USER="autonomousagent-vm-runtime@i-for-ai.iam"
+DB_USER="autonomousagent-vm-runtime@autonomous-agent-2026.iam"
 
 echo "Building HNSW index on semantic_embeddings.embedding..."
 echo "This may take 6-12 hours for 100M vectors. DO NOT INTERRUPT."
@@ -443,9 +443,9 @@ alembic upgrade head
 
 set -euo pipefail
 
-INSTANCE_CONNECTION_NAME="i-for-ai:us-central1:hermes-vector-db"
+INSTANCE_CONNECTION_NAME="autonomous-agent-2026:us-central1:hermes-vector-db"
 DB_NAME="hermes"
-DB_USER="autonomousagent-vm-runtime@i-for-ai.iam"
+DB_USER="autonomousagent-vm-runtime@autonomous-agent-2026.iam"
 
 # Calculate next month (YYYY_MM format)
 NEXT_MONTH=$(date -u -d "next month" +%Y_%m)
@@ -504,7 +504,7 @@ alembic upgrade head --sql > migration.sql
 less migration.sql
 
 # 2. Backup database
-gcloud sql backups create --instance=hermes-vector-db --project=i-for-ai
+gcloud sql backups create --instance=hermes-vector-db --project=autonomous-agent-2026
 
 # 3. Apply migration
 alembic upgrade head

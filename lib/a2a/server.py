@@ -366,13 +366,8 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
             content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, "Invalid params")
         )
     except Exception as exc:
-        # Log type only — exception messages can contain caller data; stack
-        # trace is not emitted to avoid py/stack-trace-exposure (CodeQL).
-        logger.error(
-            "a2a: unhandled exception in handler for method=%s exc_type=%s",
-            method,
-            type(exc).__name__,
-        )
+        # Log type only — 'method' is user-controlled so excluded (py/log-injection).
+        logger.error("a2a: unhandled exception in handler exc_type=%s", type(exc).__name__)
         return JSONResponse(
             content=_jsonrpc_error(
                 req_id,

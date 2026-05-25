@@ -301,10 +301,8 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
     try:
         body_bytes = await request.body()
         envelope = json.loads(body_bytes)
-    except json.JSONDecodeError as exc:
-        return JSONResponse(
-            content=_jsonrpc_error(None, JSONRPC_PARSE_ERROR, f"Parse error: {exc}")
-        )
+    except json.JSONDecodeError:
+        return JSONResponse(content=_jsonrpc_error(None, JSONRPC_PARSE_ERROR, "Parse error"))
 
     # Stage 2: validate the envelope shape.
     req_id = envelope.get("id") if isinstance(envelope, dict) else None

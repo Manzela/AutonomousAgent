@@ -147,8 +147,8 @@ def _lookup_peer_issuer(peer_url: str) -> str | None:
         for peer in data.get("peers") or []:
             if peer.get("base_url", "").rstrip("/") == base:
                 return peer.get("issuer")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("a2a: failed to read peer issuer from %s: %s", _PEERS_YAML, exc)
     return None
 
 

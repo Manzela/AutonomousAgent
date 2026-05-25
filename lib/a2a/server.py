@@ -1,44 +1,56 @@
-"""A2A receiver — FastAPI JSON-RPC dispatch (Day 2).
+"""A2A receiver — FastAPI JSON-RPC dispatch (Days 2-7).
 
-Per spike-plan.md §Day 2:
-- FastAPI app with single POST `/` endpoint accepting JSON-RPC 2.0 envelopes.
-- Method dispatch table for the 5 A2A methods used in the canary demo:
-  `message/send`, `message/stream`, `tasks/get`, `tasks/subscribe`,
-  `tasks/cancel`.
-- Day 2 implements `message/send` only (returns a synthetic Task with state
-  `SUBMITTED`); the other 4 return `-32004` UnsupportedOperationError per
-  A2A spec §5.4 (Day 3/4/7 fill them in).
-- `/health` liveness endpoint returns 200 with `{"status": "ok"}`.
-- No auth on Day 2 (allow-all). Day 5 wires `verify_token` middleware via
-  `lib/a2a/auth.py`.
+Per spike-plan.md:
+- Day 2: FastAPI app with single POST `/` endpoint accepting JSON-RPC 2.0 envelopes.
+  Method dispatch table for 5 A2A methods. `message/send` returns synthetic Task.
+  Others return -32004 UnsupportedOperationError.
+- Day 4: SSE streaming via POST /stream and POST /subscribe (3 synthetic events).
+- Day 5: JWT auth via FastAPI Depends — verify_token guard on POST /; invalid → -32600.
+- Day 6: W3C traceparent extracted from inbound headers via OTel propagate.extract.
+- Day 7: handle_send_message calls bridge_inbound_to_taskspec + bridge_taskspec_status_to_a2a.
 
 Acceptance gate (from spike-plan.md):
     curl -X POST http://localhost:9001/ -H "Content-Type: application/json" \\
          -d '{"jsonrpc":"2.0","id":1,"method":"message/send",
               "params":{"message":{"role":"USER","parts":[{"text":"hi"}]}}}'
     Returns: {"jsonrpc":"2.0","id":1,
-              "result":{"id":"task-...","status":"SUBMITTED"}}
+              "result":{"id":"<uuid>","status":"SUBMITTED"}}
 
 Pinned A2A spec: e997516542bd6e3a12ecb6b4939aa0bae3b13a21
     (see audit/2026-05-21-a2a-spike-plan/SPEC-VERSION.md)
-
-Day 3+ will replace the synthetic Task with a real round-trip via
-`lib/a2a/client.py`. Day 4 adds SSE streaming. Day 5 wires JWT auth.
-Day 6 adds OTel traceparent propagation. Day 7 swaps the synthetic Task
-for a real TaskSpec via `lib/a2a/task_bridge.py`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
 from typing import Any
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from ulid import ULID
+import yaml
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from lib.a2a.auth import AgentIdentity, verify_token
+from lib.a2a.task_bridge import bridge_inbound_to_taskspec, bridge_taskspec_status_to_a2a
+from opentelemetry import context as otel_context
+from opentelemetry import trace as otel_trace
+from opentelemetry.propagate import extract as otel_extract
 
 logger = logging.getLogger(__name__)
+
+# --- OTel tracer ----------------------------------------------------------
+
+# Tracer is fetched lazily so test fixtures can swap in a TracerProvider
+# after module import without the span silently landing on the NoOp tracer.
+_TRACER_NAME = "lib.a2a.server"
+_TRACER_VERSION = "0.1.0-spike"
+
+
+def _get_tracer() -> otel_trace.Tracer:
+    return otel_trace.get_tracer(_TRACER_NAME, _TRACER_VERSION)
+
 
 # --- JSON-RPC 2.0 standard error codes (spec §5.1) -----------------------
 JSONRPC_PARSE_ERROR = -32700
@@ -67,6 +79,53 @@ def _jsonrpc_result(req_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
+# --- JWT guard helpers ----------------------------------------------------
+
+
+def _load_peers_config() -> list[str]:
+    """Load peers.yaml allowlist. Falls back to empty list if file missing."""
+    try:
+        with open("config/a2a/peers.yaml") as f:
+            data = yaml.safe_load(f)
+        return [p["issuer"] for p in (data.get("peers") or []) if "issuer" in p]
+    except Exception:
+        return []
+
+
+def _attach_inbound_context(request: Request) -> Any:
+    """Extract W3C traceparent/tracestate from inbound headers and attach to OTel context."""
+    carrier = dict(request.headers)
+    ctx = otel_extract(carrier)
+    return otel_context.attach(ctx)
+
+
+async def _jwt_guard(request: Request) -> AgentIdentity | None:
+    """FastAPI Depends guard — verifies Bearer JWT if present.
+
+    Sets request.state.identity on success (or None when no header).
+    Sets request.state.jwt_error = True on verification failure.
+    The jsonrpc_dispatch handler short-circuits to -32600 when jwt_error is set.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        request.state.identity = None
+        return None
+    token_str = auth_header.removeprefix("Bearer ").strip()
+    our_sa = os.getenv(
+        "HERMES_A2A_SA",
+        "agent-a@autonomous-agent-2026.iam.gserviceaccount.com",
+    )
+    peers = _load_peers_config()
+    try:
+        identity = await verify_token(token_str, our_sa=our_sa, peers_allowlist=peers)
+    except Exception:
+        request.state.identity = None
+        request.state.jwt_error = True
+        return None
+    request.state.identity = identity
+    return identity
+
+
 # --- Handlers ------------------------------------------------------------
 
 
@@ -82,19 +141,21 @@ class _A2AUnsupportedOperation(Exception):
         self.method_name = method_name
 
 
-async def handle_send_message(params: dict[str, Any]) -> dict[str, Any]:
-    """Day 2 handler: return a synthetic Task in SUBMITTED state.
+async def handle_send_message(
+    params: dict[str, Any],
+    identity: Any | None = None,
+) -> dict[str, Any]:
+    """Day 7: create TaskSpec via bridge instead of returning a synthetic Task.
 
     Spec contract (§7.6.1): params MUST include a `message` object with
-    `parts` array. We don't validate the parts schema here (Day 7 does
-    that via task_bridge); Day 2 just asserts the field exists so the
-    "invalid params" path is exercised.
+    `parts` array. bridge_inbound_to_taskspec validates and creates the TaskSpec.
     """
     message = params.get("message")
     if not isinstance(message, dict) or "parts" not in message:
         raise ValueError("params.message.parts is required")
-    task_id = f"task-{ULID()}"
-    return {"id": task_id, "status": "SUBMITTED"}
+    spec = bridge_inbound_to_taskspec(params, identity)
+    status = bridge_taskspec_status_to_a2a(spec)
+    return {"id": spec.id, "status": status}
 
 
 async def _handle_unsupported_stream(_params: dict[str, Any]) -> None:
@@ -124,12 +185,45 @@ _DISPATCH = {
 }
 
 
+# --- SSE streaming handlers ----------------------------------------------
+
+
+async def handle_stream_message(params: dict[str, Any]) -> StreamingResponse:
+    """Day 4: SSE streaming for message/stream. 3 synthetic events."""
+
+    async def _gen() -> Any:
+        for evt in [{"status": "WORKING"}, {"artifact_added": True}, {"status": "COMPLETED"}]:
+            yield f"data: {json.dumps(evt)}\n\n"
+            await asyncio.sleep(0)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def handle_subscribe_task(params: dict[str, Any]) -> StreamingResponse:
+    """Day 4: SSE streaming for tasks/subscribe. 3 synthetic events."""
+
+    async def _gen() -> Any:
+        for evt in [{"status": "WORKING"}, {"artifact_added": True}, {"status": "COMPLETED"}]:
+            yield f"data: {json.dumps(evt)}\n\n"
+            await asyncio.sleep(0)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # --- FastAPI app ---------------------------------------------------------
 
 app = FastAPI(
     title="A2A Spike Agent",
-    description=("JSON-RPC 2.0 / SSE agent-to-agent protocol — spike Day 2 minimal dispatch"),
-    version="0.1.0-spike-day2",
+    description="JSON-RPC 2.0 / SSE agent-to-agent protocol — Days 2-7 spike",
+    version="0.1.0-spike-day7",
 )
 
 
@@ -138,13 +232,48 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/")
-async def jsonrpc_dispatch(request: Request) -> JSONResponse:
-    """JSON-RPC 2.0 dispatch endpoint.
+# --- Day 4: SSE streaming routes -----------------------------------------
 
-    Pipeline: parse body → validate envelope → resolve method → invoke
-    handler. Each stage maps cleanly to a JSON-RPC error code, with A2A
-    method-level errors layered on top.
+
+@app.post("/stream")
+async def stream_endpoint(request: Request) -> StreamingResponse:
+    """POST /stream — SSE streaming for message/stream (Day 4)."""
+    _ctx_token = _attach_inbound_context(request)
+    with _get_tracer().start_as_current_span("a2a.server.stream"):
+        body_bytes = await request.body()
+        try:
+            params = json.loads(body_bytes) if body_bytes else {}
+        except json.JSONDecodeError:
+            params = {}
+        response = await handle_stream_message(params)
+    otel_context.detach(_ctx_token)
+    return response
+
+
+@app.post("/subscribe")
+async def subscribe_endpoint(request: Request) -> StreamingResponse:
+    """POST /subscribe — SSE streaming for tasks/subscribe (Day 4)."""
+    _ctx_token = _attach_inbound_context(request)
+    with _get_tracer().start_as_current_span("a2a.server.subscribe"):
+        body_bytes = await request.body()
+        try:
+            params = json.loads(body_bytes) if body_bytes else {}
+        except json.JSONDecodeError:
+            params = {}
+        response = await handle_subscribe_task(params)
+    otel_context.detach(_ctx_token)
+    return response
+
+
+# --- JSON-RPC dispatch ---------------------------------------------------
+
+
+async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
+    """Inner dispatch body, extracted so jsonrpc_dispatch can wrap it in OTel span.
+
+    Pipeline: parse body → validate envelope → resolve method → invoke handler.
+    Each stage maps cleanly to a JSON-RPC error code, with A2A method-level
+    errors layered on top.
     """
     # Stage 1: parse the raw body as JSON.
     try:
@@ -194,7 +323,12 @@ async def jsonrpc_dispatch(request: Request) -> JSONResponse:
         )
 
     try:
-        result = await handler(params)
+        # Day 7: pass identity to message/send so it can be threaded into the TaskSpec.
+        if method == "message/send":
+            identity = getattr(request.state, "identity", None)
+            result = await handler(params, identity)
+        else:
+            result = await handler(params)
     except _A2AUnsupportedOperation as exc:
         return JSONResponse(
             content=_jsonrpc_error(
@@ -223,3 +357,28 @@ async def jsonrpc_dispatch(request: Request) -> JSONResponse:
         )
 
     return JSONResponse(content=_jsonrpc_result(req_id, result))
+
+
+@app.post("/")
+async def jsonrpc_dispatch(
+    request: Request,
+    _identity: AgentIdentity | None = Depends(_jwt_guard),
+) -> JSONResponse:
+    """JSON-RPC 2.0 dispatch endpoint.
+
+    Day 5: JWT guard runs via FastAPI Depends. Invalid token → -32600.
+    Day 6: W3C traceparent extracted and OTel span started.
+    Day 7: message/send handler receives identity for TaskSpec bridge.
+    """
+    # Day 5: short-circuit on JWT error.
+    if getattr(request.state, "jwt_error", False):
+        return JSONResponse(
+            content=_jsonrpc_error(None, JSONRPC_INVALID_REQUEST, "Invalid or expired token")
+        )
+
+    # Day 6: extract inbound OTel context and wrap dispatch in a server span.
+    _ctx_token = _attach_inbound_context(request)
+    with _get_tracer().start_as_current_span("a2a.server.dispatch"):
+        result = await _jsonrpc_dispatch_inner(request)
+    otel_context.detach(_ctx_token)
+    return result

@@ -47,7 +47,8 @@ def test_message_send_returns_submitted_task() -> None:
     assert body["id"] == 1
     assert "error" not in body
     assert body["result"]["status"] == "SUBMITTED"
-    assert body["result"]["id"].startswith("task-")
+    # Day 7: id is a UUID from the TaskSpec bridge (no longer has "task-" prefix)
+    assert isinstance(body["result"]["id"], str) and len(body["result"]["id"]) > 0
 
 
 # ---------------------------------------------------------------------------

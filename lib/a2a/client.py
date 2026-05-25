@@ -19,10 +19,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import pathlib
 import uuid
 from typing import Any
 
 import httpx
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +135,52 @@ async def _post_with_retry(
 # --- OTel helpers ------------------------------------------------------------
 
 
+_PEERS_YAML = pathlib.Path(__file__).parent.parent.parent / "config" / "a2a" / "peers.yaml"
+
+
+def _lookup_peer_issuer(peer_url: str) -> str | None:
+    """Return the peer SA email from peers.yaml matching base_url, or None."""
+    try:
+        with open(_PEERS_YAML) as fh:
+            data = yaml.safe_load(fh)
+        base = peer_url.rstrip("/")
+        for peer in data.get("peers") or []:
+            if peer.get("base_url", "").rstrip("/") == base:
+                return peer.get("issuer")
+    except Exception as exc:
+        logger.debug("a2a: failed to read peer issuer from %s: %s", _PEERS_YAML, exc)
+    return None
+
+
+async def _build_auth_headers(peer_url: str, agent_identity: Any) -> dict[str, str]:
+    """Mint an outbound JWT for peer_url using agent_identity.acting_for.
+
+    Returns {} when:
+    - agent_identity is None (unauthenticated call)
+    - peer SA not found in peers.yaml
+    - mint_token raises (GCP unavailable, quota, etc.) — fail open so callers
+      can still reach peers that don't enforce auth (spike posture)
+    """
+    if agent_identity is None:
+        return {}
+    peer_sa = _lookup_peer_issuer(peer_url.rstrip("/"))
+    if not peer_sa:
+        logger.debug("a2a: no peer issuer found for %s — sending unauthenticated", peer_url)
+        return {}
+    try:
+        from lib.a2a.auth import mint_token
+
+        our_sa = os.environ.get(
+            "HERMES_A2A_SA", "agent-a@autonomous-agent-2026.iam.gserviceaccount.com"
+        )
+        acting_for = getattr(agent_identity, "acting_for", {})
+        token = await mint_token(our_sa, peer_sa, acting_for)
+        return {"Authorization": f"Bearer {token}"}
+    except Exception as exc:
+        logger.warning("a2a: mint_token failed (%s) — sending unauthenticated", type(exc).__name__)
+        return {}
+
+
 def _build_otel_headers() -> dict[str, str]:
     """Return headers dict with W3C traceparent/tracestate from the active span.
 
@@ -170,11 +219,13 @@ async def _call(
     method: str,
     params: dict[str, Any],
     timeout: float,
+    auth_headers: dict[str, str] | None = None,
 ) -> Any:
-    """Build envelope, POST with OTel traceparent, decode result."""
+    """Build envelope, POST with auth + OTel traceparent, decode result."""
     payload = _build_request(method, params)
-    otel_headers = _build_otel_headers()
-    resp = await _post_with_retry(client, peer_url, payload, timeout, headers=otel_headers)
+    # Auth takes precedence; OTel headers are additive.
+    headers = {**(auth_headers or {}), **_build_otel_headers()}
+    resp = await _post_with_retry(client, peer_url, payload, timeout, headers=headers)
     resp.raise_for_status()
     body = resp.json()
     if "error" in body:
@@ -210,8 +261,7 @@ async def send_message(
         httpx.HTTPStatusError: non-2xx HTTP response after retries.
         httpx.TransportError: connection failure after retries exhausted.
     """
-    if agent_identity is not None:  # pragma: no cover — Day 5
-        logger.debug("a2a: agent_identity provided but not yet used (Day 5)")
+    auth_headers = await _build_auth_headers(peer_url.rstrip("/"), agent_identity)
 
     async with httpx.AsyncClient() as client:
         result = await _call(
@@ -220,6 +270,7 @@ async def send_message(
             "message/send",
             {"message": message},
             timeout,
+            auth_headers=auth_headers,
         )
 
     if not isinstance(result, dict) or "id" not in result:

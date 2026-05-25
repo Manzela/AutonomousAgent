@@ -35,6 +35,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from lib.a2a.agent_card import build_agent_card as _build_agent_card
 from lib.a2a.agent_card import sign_card as _sign_card
 from lib.a2a.auth import AgentIdentity, verify_token
+from lib.a2a.scrubber import scrub_inbound_params
 from lib.a2a.task_bridge import bridge_inbound_to_taskspec, bridge_taskspec_status_to_a2a
 from opentelemetry import context as otel_context
 from opentelemetry import trace as otel_trace
@@ -347,12 +348,15 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
             )
         )
 
-    # Stage 4: validate params shape and invoke the handler.
+    # Stage 4: validate params shape, scrub PHI, then invoke the handler.
     params = envelope.get("params") or {}
     if not isinstance(params, dict):
         return JSONResponse(
             content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, "params must be an object")
         )
+    # Scrub PHI from inbound params at the A2A boundary before any handler sees them.
+    # Patterns configured in config/a2a/scrubber-patterns.yaml.
+    params = scrub_inbound_params(params)
 
     try:
         # Day 7: pass identity to message/send so it can be threaded into the TaskSpec.

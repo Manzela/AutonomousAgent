@@ -498,11 +498,12 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
             )
         )
     except _A2ATaskNotFound as exc:
+        logger.info("a2a: task not found: %s", str(exc))
         return JSONResponse(
             content=_jsonrpc_error(
                 req_id,
                 A2A_TASK_NOT_FOUND,
-                str(exc),
+                "Task not found",
             )
         )
     except ValueError:

@@ -125,6 +125,10 @@ resource "google_sql_database_instance" "postgres_vector" {
     # per the canonical Postgres tuning guidance; maintenance_work_mem = 4GB
     # is the HNSW build budget per audit/2026-05-21-phase2-postgres/pgvector-spec.md.
     #
+    # NOTE: units for shared_buffers and effective_cache_size are 8KB buffers.
+    # shared_buffers: 16GB = 16 * 1024 * 1024 / 8 = 2097152
+    # effective_cache_size: 40GB = 40 * 1024 * 1024 / 8 = 5242880
+    #
     # NOTE: pgvector is enabled at the database level via `CREATE EXTENSION
     # vector;` in the Alembic baseline migration (Task #29), NOT here.
     # Cloud SQL Postgres 16 ships pgvector pre-installed; no
@@ -165,8 +169,8 @@ locals {
     { name = "cloudsql.iam_authentication", value = "on" },
 
     # Memory tuning for 64GB RAM tier.
-    { name = "shared_buffers", value = "16777216" },       # 16 GB (25% RAM)
-    { name = "effective_cache_size", value = "50331648" }, # 48 GB (75% RAM)
+    { name = "shared_buffers", value = "2097152" },       # 16 GB (25% RAM)
+    { name = "effective_cache_size", value = "5242880" }, # 40 GB (~63% RAM)
     { name = "maintenance_work_mem", value = "4194304" },  #  4 GB (HNSW build budget)
     { name = "work_mem", value = "131072" },               # 128 MB per query
 

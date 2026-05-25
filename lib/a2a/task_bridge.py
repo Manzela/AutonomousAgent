@@ -68,7 +68,8 @@ def bridge_inbound_to_taskspec(
     trace_id: str | None = None,
 ) -> TaskSpec:
     """Convert an inbound A2A task dict + AgentIdentity into a bridge TaskSpec."""
-    owner: str = (agent_identity.acting_for or {}).get("human_sub", "unknown")
+    acting_for: dict = (agent_identity.acting_for or {}) if agent_identity is not None else {}
+    owner: str = acting_for.get("human_sub", "unknown")
     a2a_task_id: str = a2a_task.get("id", "")
     metadata: dict[str, Any] = {"a2a_task_id": a2a_task_id}
     if trace_id is not None:

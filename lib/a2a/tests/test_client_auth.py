@@ -68,7 +68,7 @@ async def test_send_message_with_identity_adds_authorization_header() -> None:
 
     with (
         patch(
-            "lib.a2a.client._lookup_peer_issuer",
+            "lib.a2a.client._lookup_peer_audience",
             return_value="peer@project.iam.gserviceaccount.com",
         ),
         patch("lib.a2a.auth.mint_token", new=AsyncMock(return_value="fake.jwt.token")),
@@ -111,7 +111,7 @@ async def test_send_message_no_peer_in_yaml_sends_unauthenticated() -> None:
         return mock
 
     with (
-        patch("lib.a2a.client._lookup_peer_issuer", return_value=None),
+        patch("lib.a2a.client._lookup_peer_audience", return_value=None),
         patch("httpx.AsyncClient.post", side_effect=_capturing_post),
     ):
         await send_message(_BASE, _MSG, agent_identity=_FAKE_IDENTITY)
@@ -136,7 +136,7 @@ async def test_send_message_mint_token_failure_sends_unauthenticated() -> None:
 
     with (
         patch(
-            "lib.a2a.client._lookup_peer_issuer",
+            "lib.a2a.client._lookup_peer_audience",
             return_value="peer@project.iam.gserviceaccount.com",
         ),
         patch("lib.a2a.auth.mint_token", side_effect=_fail_mint),

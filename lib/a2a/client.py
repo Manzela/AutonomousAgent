@@ -138,17 +138,22 @@ async def _post_with_retry(
 _PEERS_YAML = pathlib.Path(__file__).parent.parent.parent / "config" / "a2a" / "peers.yaml"
 
 
-def _lookup_peer_issuer(peer_url: str) -> str | None:
-    """Return the peer SA email from peers.yaml matching base_url, or None."""
+def _lookup_peer_audience(peer_url: str) -> str | None:
+    """Return the outbound JWT audience for peer_url from peers.yaml, or None.
+
+    Field semantics (peers.yaml):
+      issuer   -- SA email peer signs INBOUND JWTs with (server.py verification).
+      audience -- target audience URL we put in aud claim of minted JWTs (this func).
+    """
     try:
         with open(_PEERS_YAML) as fh:
             data = yaml.safe_load(fh)
         base = peer_url.rstrip("/")
         for peer in data.get("peers") or []:
             if peer.get("base_url", "").rstrip("/") == base:
-                return peer.get("issuer")
+                return peer.get("audience")
     except Exception as exc:
-        logger.debug("a2a: failed to read peer issuer from %s: %s", _PEERS_YAML, exc)
+        logger.debug("a2a: failed to read peer audience from %s: %s", _PEERS_YAML, exc)
     return None
 
 
@@ -157,15 +162,15 @@ async def _build_auth_headers(peer_url: str, agent_identity: Any) -> dict[str, s
 
     Returns {} when:
     - agent_identity is None (unauthenticated call)
-    - peer SA not found in peers.yaml
+    - peer audience not found in peers.yaml
     - mint_token raises (GCP unavailable, quota, etc.) — fail open so callers
       can still reach peers that don't enforce auth (spike posture)
     """
     if agent_identity is None:
         return {}
-    peer_sa = _lookup_peer_issuer(peer_url.rstrip("/"))
+    peer_sa = _lookup_peer_audience(peer_url.rstrip("/"))
     if not peer_sa:
-        logger.debug("a2a: no peer issuer found for %s — sending unauthenticated", peer_url)
+        logger.debug("a2a: no peer audience found for %s — sending unauthenticated", peer_url)
         return {}
     try:
         from lib.a2a.auth import mint_token

@@ -261,8 +261,20 @@ async def agent_card_endpoint() -> JSONResponse:
 
 
 @app.post("/stream")
-async def stream_endpoint(request: Request) -> StreamingResponse:
-    """POST /stream — SSE streaming for message/stream (Day 4)."""
+async def stream_endpoint(
+    request: Request,
+    _identity: AgentIdentity | None = Depends(_jwt_guard),
+) -> StreamingResponse:
+    """POST /stream - SSE streaming for message/stream (Day 4).
+
+    JWT guard: invalid token returns JSON -32600 (cannot stream before auth).
+    PHI guard: params scrubbed before handler sees them.
+    """
+    if getattr(request.state, "jwt_error", False):
+        return JSONResponse(
+            status_code=200,
+            content=_jsonrpc_error(None, JSONRPC_INVALID_REQUEST, "Invalid or expired token"),
+        )
     _ctx_token = _attach_inbound_context(request)
     with _get_tracer().start_as_current_span("a2a.server.stream"):
         body_bytes = await request.body()
@@ -270,14 +282,27 @@ async def stream_endpoint(request: Request) -> StreamingResponse:
             params = json.loads(body_bytes) if body_bytes else {}
         except json.JSONDecodeError:
             params = {}
+        params = scrub_inbound_params(params)
         response = await handle_stream_message(params)
     otel_context.detach(_ctx_token)
     return response
 
 
 @app.post("/subscribe")
-async def subscribe_endpoint(request: Request) -> StreamingResponse:
-    """POST /subscribe — SSE streaming for tasks/subscribe (Day 4)."""
+async def subscribe_endpoint(
+    request: Request,
+    _identity: AgentIdentity | None = Depends(_jwt_guard),
+) -> StreamingResponse:
+    """POST /subscribe - SSE streaming for tasks/subscribe (Day 4).
+
+    JWT guard: invalid token returns JSON -32600 (cannot stream before auth).
+    PHI guard: params scrubbed before handler sees them.
+    """
+    if getattr(request.state, "jwt_error", False):
+        return JSONResponse(
+            status_code=200,
+            content=_jsonrpc_error(None, JSONRPC_INVALID_REQUEST, "Invalid or expired token"),
+        )
     _ctx_token = _attach_inbound_context(request)
     with _get_tracer().start_as_current_span("a2a.server.subscribe"):
         body_bytes = await request.body()
@@ -285,6 +310,7 @@ async def subscribe_endpoint(request: Request) -> StreamingResponse:
             params = json.loads(body_bytes) if body_bytes else {}
         except json.JSONDecodeError:
             params = {}
+        params = scrub_inbound_params(params)
         response = await handle_subscribe_task(params)
     otel_context.detach(_ctx_token)
     return response

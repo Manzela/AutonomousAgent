@@ -31,7 +31,7 @@ Research grounded in May 2026 leaderboards:
 | Class | Primary | Fallback chain | Why this model |
 |---|---|---|---|
 | `class:reasoning` / `class:orchestrator` / `class:headline` | **`vertex_ai/claude-opus-4-7`** | sonnet-4-6 → gemini-3.1-pro | Frontier agentic reasoning; already wired; constitutional safety; 1M ctx ext |
-| `class:long-context` | **`vertex_ai/gemini-3.1-pro`** *(NEW — enable in i-for-ai)* | claude-opus-4-7 (1M) → claude-sonnet-4-6 | Best 1M+ context per leaderboards; native multimodal; cost-efficient at frontier |
+| `class:long-context` | **`vertex_ai/gemini-3.1-pro`** *(NEW — enable in autonomous-agent-2026)* | claude-opus-4-7 (1M) → claude-sonnet-4-6 | Best 1M+ context per leaderboards; native multimodal; cost-efficient at frontier |
 | `class:coding` (high-stakes) | **`vertex_ai/claude-opus-4-7`** *(see OpenAI option below)* | qwen-coder-next → sonnet-4-6 | Close 2nd on SWE-bench Pro (74); already wired; no new vendor |
 | `class:coding` (high-volume / non-headline) | **`vllm/qwen3-coder-next`** *(self-hosted A100 80GB)* | claude-sonnet-4-6 → claude-opus-4-7 | Code-specialist; near-zero marginal cost; quality gap small for routine code |
 | `class:chatter` (sub-agent dispatch) | **`vertex_ai/claude-sonnet-4-6`** | gemini-3.1-flash → qwen-coder-next | Fast Anthropic, high quality; Sonnet is not a "compromise" — it's frontier-tier for routine tasks |
@@ -84,22 +84,22 @@ model_list:
   - model_name: claude-opus-4-7
     litellm_params:
       model: vertex_ai/claude-opus-4-7
-      vertex_project: i-for-ai
+      vertex_project: autonomous-agent-2026
       vertex_location: us-east5
   - model_name: claude-sonnet-4-6
     litellm_params:
       model: vertex_ai/claude-sonnet-4-6
-      vertex_project: i-for-ai
+      vertex_project: autonomous-agent-2026
       vertex_location: us-east5
   - model_name: gemini-3.1-pro
     litellm_params:
       model: vertex_ai/gemini-3.1-pro
-      vertex_project: i-for-ai
+      vertex_project: autonomous-agent-2026
       vertex_location: us-central1   # check actual Gemini region
   - model_name: gemini-3.1-flash
     litellm_params:
       model: vertex_ai/gemini-3.1-flash
-      vertex_project: i-for-ai
+      vertex_project: autonomous-agent-2026
       vertex_location: us-central1
   - model_name: qwen3-coder-next
     litellm_params:

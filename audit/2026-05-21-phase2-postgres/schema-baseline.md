@@ -1,7 +1,7 @@
 # Schema Baseline — Hierarchical Memory Tiers
 
 **Database**: `hermes` (Cloud SQL Postgres 16)
-**Owner**: `autonomousagent-vm-runtime@i-for-ai.iam`
+**Owner**: `autonomousagent-vm-runtime@autonomous-agent-2026.iam`
 **Migration Tool**: Alembic (Python-native)
 
 ## 1. Extension Dependencies
@@ -301,7 +301,7 @@ def downgrade():
 
 ```bash
 # Export schema-only (no data)
-pg_dump -h <private-ip> -U autonomousagent-vm-runtime@i-for-ai.iam \
+pg_dump -h <private-ip> -U autonomousagent-vm-runtime@autonomous-agent-2026.iam \
     --schema-only --no-owner --no-privileges \
     hermes > schema-baseline.sql
 ```
@@ -310,7 +310,7 @@ pg_dump -h <private-ip> -U autonomousagent-vm-runtime@i-for-ai.iam \
 
 ```bash
 # Restore database to specific timestamp (Cloud SQL managed)
-gcloud sql backups create --instance=hermes-vector-db --project=i-for-ai
+gcloud sql backups create --instance=hermes-vector-db --project=autonomous-agent-2026
 gcloud sql backups restore <backup-id> \
     --backup-instance=hermes-vector-db \
     --target-instance=hermes-vector-db-restored \
@@ -420,7 +420,7 @@ cursor.execute(query, (skill_name,))
 ## 14. Deployment Checklist
 
 - [ ] Create database `hermes` via Terraform (`google_sql_database`)
-- [ ] Grant IAM user `autonomousagent-vm-runtime@i-for-ai.iam` CONNECT privilege
+- [ ] Grant IAM user `autonomousagent-vm-runtime@autonomous-agent-2026.iam` CONNECT privilege
 - [ ] Run Alembic baseline migration (`alembic upgrade head`)
 - [ ] Verify pgvector extension enabled (`SELECT * FROM pg_available_extensions WHERE name = 'vector'`)
 - [ ] Build HNSW index CONCURRENTLY (post-migration script)

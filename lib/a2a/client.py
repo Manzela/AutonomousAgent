@@ -26,6 +26,16 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+try:
+    from opentelemetry import propagate as _otel_propagate
+    from opentelemetry import trace as _otel_trace
+
+    _OTEL_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _OTEL_AVAILABLE = False
+    _otel_propagate = None  # type: ignore[assignment]
+    _otel_trace = None  # type: ignore[assignment]
+
 # --- Error hierarchy ---------------------------------------------------------
 
 _JSONRPC_TO_EXC: dict[int, type["A2AError"]] = {}
@@ -93,6 +103,7 @@ async def _post_with_retry(
     url: str,
     payload: dict[str, Any],
     timeout: float,
+    headers: dict[str, str] | None = None,
 ) -> httpx.Response:
     """POST with exponential-backoff retry on transient transport errors.
 
@@ -102,7 +113,7 @@ async def _post_with_retry(
     delay = _RETRY_BASE_DELAY
     for attempt in range(_MAX_RETRIES):
         try:
-            return await client.post(url, json=payload, timeout=timeout)
+            return await client.post(url, json=payload, timeout=timeout, headers=headers or {})
         except httpx.TransportError as exc:
             if attempt == _MAX_RETRIES - 1:
                 raise
@@ -116,6 +127,29 @@ async def _post_with_retry(
             await asyncio.sleep(delay)
             delay *= 2
     raise AssertionError("unreachable")  # pragma: no cover
+
+
+# --- OTel helpers ------------------------------------------------------------
+
+
+def _build_otel_headers() -> dict[str, str]:
+    """Return headers dict with W3C traceparent/tracestate from the active span.
+
+    Returns {} when: OTel not installed, no active span, NonRecordingSpan, or
+    the span is not sampled (SAMPLED bit unset in TraceFlags).
+    Never force-samples. Sampled bit read verbatim from TraceFlags.
+    """
+    if not _OTEL_AVAILABLE:
+        return {}
+    span = _otel_trace.get_current_span()
+    ctx = span.get_span_context()
+    if not ctx.is_valid:
+        return {}
+    if not ctx.trace_flags.sampled:
+        return {}
+    headers: dict[str, str] = {}
+    _otel_propagate.inject(headers)
+    return headers
 
 
 # --- Envelope helpers --------------------------------------------------------
@@ -137,9 +171,10 @@ async def _call(
     params: dict[str, Any],
     timeout: float,
 ) -> Any:
-    """Build envelope, POST, decode, raise or return result."""
+    """Build envelope, POST with OTel traceparent, decode result."""
     payload = _build_request(method, params)
-    resp = await _post_with_retry(client, peer_url, payload, timeout)
+    otel_headers = _build_otel_headers()
+    resp = await _post_with_retry(client, peer_url, payload, timeout, headers=otel_headers)
     resp.raise_for_status()
     body = resp.json()
     if "error" in body:

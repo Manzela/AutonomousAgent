@@ -72,12 +72,12 @@
 
 ### P0-D — Reconcile Terraform state with already-deployed GCP resources (NEW in pass 2)
 
-- **What.** Run `terraform init` against the backend bucket `gs://i-for-ai-autonomousagent-tfstate/`, then `terraform plan` against `terraform/phase-0a-gcp/`. Compare with the 11 already-deployed resources Gemini enumerated against live `i-for-ai`. Per-resource decision: import into state, treat as out-of-band, or delete and let Terraform recreate.
-- **Why.** F-2026-05-20-V2-6 / R-IaC-drift. Pass-2 GCP pre-flight via Gemini revealed the IaC for Phase 0a has been **partially applied off-branch** to live `i-for-ai`: VPC + 4 SM env-file secrets (`autonomousagent-{chroma-cloud,honcho,litellm-db,telegram}`) + AR repo `autonomousagent-images` + GCS buckets `i-for-ai-autonomousagent-{snapshots,tfstate}` + runtime + CI SAs (`autonomousagent-{vm-runtime,github-ci}`) + snapshot policy `autonomousagent-data-daily-snapshot` all exist. Only the VM (Task 16) is missing. PR #112 is still DRAFT and unmerged. **Code-state divergence is real.** Without reconciliation, the first `terraform apply` will either error ("resource already exists") or duplicate. The cost meter is already running for the deployed resources (negligible until VM lands, but real).
+- **What.** Run `terraform init` against the backend bucket `gs://autonomous-agent-2026-autonomousagent-tfstate/`, then `terraform plan` against `terraform/phase-0a-gcp/`. Compare with the 11 already-deployed resources Gemini enumerated against live `autonomous-agent-2026`. Per-resource decision: import into state, treat as out-of-band, or delete and let Terraform recreate.
+- **Why.** F-2026-05-20-V2-6 / R-IaC-drift. Pass-2 GCP pre-flight via Gemini revealed the IaC for Phase 0a has been **partially applied off-branch** to live `autonomous-agent-2026`: VPC + 4 SM env-file secrets (`autonomousagent-{chroma-cloud,honcho,litellm-db,telegram}`) + AR repo `autonomousagent-images` + GCS buckets `autonomous-agent-2026-autonomousagent-{snapshots,tfstate}` + runtime + CI SAs (`autonomousagent-{vm-runtime,github-ci}`) + snapshot policy `autonomousagent-data-daily-snapshot` all exist. Only the VM (Task 16) is missing. PR #112 is still DRAFT and unmerged. **Code-state divergence is real.** Without reconciliation, the first `terraform apply` will either error ("resource already exists") or duplicate. The cost meter is already running for the deployed resources (negligible until VM lands, but real).
 - **Where.**
   ```bash
   cd terraform/phase-0a-gcp/
-  terraform init -backend-config="bucket=i-for-ai-autonomousagent-tfstate"
+  terraform init -backend-config="bucket=autonomous-agent-2026-autonomousagent-tfstate"
   terraform plan -out=/tmp/p0a-reconcile.tfplan 2>&1 | tee /tmp/p0a-reconcile.log
   # Expect: "<resource> already exists" warnings, or "1 to create, 0 to change, 0 to destroy" if state is in sync
   ```
@@ -85,7 +85,7 @@
   - **If `terraform.tfstate` is empty:** `terraform import` each of the 11 resources (script the imports — `for_each` resources need explicit `<addr>[<key>]` indexing).
   - **Reframe PR #112 description:** instead of "applies IaC for the first time", reframe as "syncs Terraform code with deployed state + adds VM (Task 16)" — sets correct expectation for reviewer.
 - **Effort.** M — 45 min for init+plan+diff; up to 90 min if 11 imports are needed. Worth front-loading because P1-B (Task 16 VM) cannot proceed without trusted state.
-- **Acceptance.** `terraform plan` shows exactly 1 new resource to create (`google_compute_instance.autonomousagent_vm` from P1-B once authored), zero unexpected diffs. State stored in `gs://i-for-ai-autonomousagent-tfstate/`. PR #112 description updated.
+- **Acceptance.** `terraform plan` shows exactly 1 new resource to create (`google_compute_instance.autonomousagent_vm` from P1-B once authored), zero unexpected diffs. State stored in `gs://autonomous-agent-2026-autonomousagent-tfstate/`. PR #112 description updated.
 - **Risk if delayed.** P1-B (Task 16 VM) cannot be applied without trusted state — `apply` would either duplicate or error. Cost remains low while only existing resources run, but blocks all of Phase D execution.
 - **Depends on.** Nothing. Runs in parallel with P0-A/B/C; gates P1-B.
 
@@ -132,7 +132,7 @@
     ```
   - `outputs.tf` — add `singleton_secret_ids = { for k, s in google_secret_manager_secret.singleton : k => s.id }`.
   - **Host-side consumption note for `healthchecks-url`:** load-secrets.sh (P1-C) pulls it from SM into `/run/secrets/healthchecks-url.env` like the container env files; hermes-watchdog systemd timer (P1-E) consumes via `EnvironmentFile=/run/secrets/healthchecks-url.env`.
-- **Effort.** S — 20 min including `terraform validate` + `terraform plan` against `i-for-ai` (expect 3 new SM secrets in the plan because the 4 env-file secrets already exist per F-V2-6 — see P0-D reconciliation).
+- **Effort.** S — 20 min including `terraform validate` + `terraform plan` against `autonomous-agent-2026` (expect 3 new SM secrets in the plan because the 4 env-file secrets already exist per F-V2-6 — see P0-D reconciliation).
 - **Acceptance.** `terraform plan` shows 3 new singleton SM secret resources (`autonomousagent-github-pat`, `autonomousagent-litellm-master-key`, `autonomousagent-healthchecks-url`). `outputs.tf` exposes both maps. Plan output attached to commit body for diff review.
 - **Risk if delayed.** Lower than pass-1 estimate (3 secrets not 5; `chroma-token` and `honcho-db-password` removed entirely). Still cascades into Task 24 if the migration script is authored against the 4-entry list.
 - **Depends on.** P0-D (state must be reconciled so plan diff is meaningful).
@@ -239,7 +239,7 @@
 ### P2-D — Tasks 34, 35, 36, 37, 38: Cutover from laptop to GCP
 
 - **What.** The final phase, executed only after every P0/P1/P2 above has landed and every gate has passed:
-  - **Task 34:** `terraform apply` against `i-for-ai`. **Irreversible cost commit (~$125/mo).** Captures `terraform.tfstate` to the GCS backend (Task 6) for shared lock.
+  - **Task 34:** `terraform apply` against `autonomous-agent-2026`. **Irreversible cost commit (~$125/mo).** Captures `terraform.tfstate` to the GCS backend (Task 6) for shared lock.
   - **Task 35:** `docs/runbooks/phase-0a-cutover.md` — step-by-step the operator follows once on cutover day: stop laptop stack, push final secrets, run deploy workflow, run acceptance.sh, redirect healthchecks.io.
   - **Task 36:** `docs/runbooks/phase-0a-rollback.md` — what to do if cutover fails: rehydrate laptop secrets, `docker compose up -d` on laptop, accept GCP cost incurred so far.
   - **Task 37:** `docs/runbooks/phase-0a-recovery.md` — what to do if the VM is lost: `terraform apply` recreates VM with same disk-snapshot policy (Task 15), `load-secrets.sh` re-runs, watchdog re-enables, ≤30 min RTO.
@@ -298,9 +298,9 @@ Items that the morning audit-plan covers and that remain valid. The morning plan
 ### P3-F — Reconcile Phase 0a spec §4 + §12 with deployed reality (NEW in pass 2)
 
 - **What.** 5-min doc edit to `docs/superpowers/specs/2026-05-20-phase-0a-gcp-always-online-design.md` resolving OQ-1 and OQ-2 to match what's actually deployed.
-- **Why.** F-2026-05-20-V2-8. Spec §4 still cites GCP project `rx-research-autonomousagent`; the IaC + deployed resources use `i-for-ai`. Spec §12 cites WIF pool `manzela-autonomousagent`; the IaC + deployed pool is `autonomousagent-github` (pool) / `autonomousagent-actions` (provider). The spec also defaults OQ-3 (WIF condition specificity) without noting that pass-2 inspection of `terraform/phase-0a-gcp/wif.tf:45` revealed `attribute_condition = "attribute.repository == \"Manzela/AutonomousAgent\""` — which accepts **any branch** of the repo. That is the deliberate intent per Task 30 (deploys from main + PR previews) but should be explicit in §12 so future auditors don't flag it as over-broad.
+- **Why.** F-2026-05-20-V2-8. Spec §4 still cites GCP project `rx-research-autonomousagent`; the IaC + deployed resources use `autonomous-agent-2026`. Spec §12 cites WIF pool `manzela-autonomousagent`; the IaC + deployed pool is `autonomousagent-github` (pool) / `autonomousagent-actions` (provider). The spec also defaults OQ-3 (WIF condition specificity) without noting that pass-2 inspection of `terraform/phase-0a-gcp/wif.tf:45` revealed `attribute_condition = "attribute.repository == \"Manzela/AutonomousAgent\""` — which accepts **any branch** of the repo. That is the deliberate intent per Task 30 (deploys from main + PR previews) but should be explicit in §12 so future auditors don't flag it as over-broad.
 - **Where.** `docs/superpowers/specs/2026-05-20-phase-0a-gcp-always-online-design.md` — three find-replace edits:
-  - §4 / OQ-1: `rx-research-autonomousagent` → `i-for-ai`
+  - §4 / OQ-1: `rx-research-autonomousagent` → `autonomous-agent-2026`
   - §12 / OQ-2: `manzela-autonomousagent` → `autonomousagent-github` (pool) and `autonomousagent-actions` (provider)
   - §12 / OQ-3: add 1-line note: "WIF attribute condition is `attribute.repository == \"Manzela/AutonomousAgent\"` — accepts all branches. Branch-level gating happens in the workflow (`if: github.ref == 'refs/heads/main'`)."
 - **Effort.** XS — 5 minutes.
@@ -355,17 +355,17 @@ P3 items run in parallel — no blocking dependencies on P0/P1/P2 work — but r
 
 ## §Changes from pass 1
 
-Pass 2 dispatched 5 parallel operations: 3 `Explore` subagents (SOPS coverage / OQ + WIF / exit-137 evidence), 1 background Gemini delegation (GCP pre-flight against live `i-for-ai`), 1 inline gitleaks SARIF re-scan. Six material changes to this plan:
+Pass 2 dispatched 5 parallel operations: 3 `Explore` subagents (SOPS coverage / OQ + WIF / exit-137 evidence), 1 background Gemini delegation (GCP pre-flight against live `autonomous-agent-2026`), 1 inline gitleaks SARIF re-scan. Six material changes to this plan:
 
 1. **P0-A allowlist broadened.** Pass-1 prescribed `audit/.*/p0a-rca/.*\.log$` (2 morning RCA log false-positives). Pass-2 gitleaks re-scan after writing v2 audit files revealed 15 leaks total, 5 of them inside `audit/2026-05-20-state-of-the-repo-v2/{findings,audit-plan}.md` (the v2 docs quote pattern strings for forensic clarity). Allowlist now `audit/.*\.(md|log)$` covering the entire audit tree.
 
 2. **P0-C dissolved as a verification step, replaced with a doc note.** Pass-2 Explore against `scripts/decrypt-secrets.sh:65-73` resolved F-V2-4: `hermes-provider.env` is a derived secret, generated at bootstrap from `litellm-master-key`. No `.sops` source needed, no SM migration line. The remaining work is a 3-line note in `secrets/README.md`.
 
-3. **P0-D added (Terraform state reconciliation).** Pass-2 Gemini pre-flight discovered the IaC for Phase 0a has been **partially applied off-branch** to live `i-for-ai`: VPC + 4 SM env-file secrets + AR repo + 2 GCS buckets + 2 SAs + snapshot policy all exist (only the VM is missing). Code-state divergence is real. Without `terraform import` + reconciliation, the first `terraform apply` will fail or duplicate. This becomes a hard gate before P1-B.
+3. **P0-D added (Terraform state reconciliation).** Pass-2 Gemini pre-flight discovered the IaC for Phase 0a has been **partially applied off-branch** to live `autonomous-agent-2026`: VPC + 4 SM env-file secrets + AR repo + 2 GCS buckets + 2 SAs + snapshot policy all exist (only the VM is missing). Code-state divergence is real. Without `terraform import` + reconciliation, the first `terraform apply` will fail or duplicate. This becomes a hard gate before P1-B.
 
 4. **P1-A scope refined from 5 singletons to 2 production-critical + 1 host-side.** Pass-2 Explore agent A inspected each singleton's consumer: `chroma-token` is dead code (Chroma Cloud migration), `honcho-db-password` is disabled (Honcho commented out), `healthchecks-url` is host-side cron (not container). The 2 production-critical singletons are `github-pat` (github-mcp) and `litellm-master-key` (litellm-proxy + derives hermes-provider.env). `healthchecks-url` migrates to SM but is consumed by the hermes-watchdog systemd timer via load-secrets.sh.
 
-5. **P3-F added (spec reconciliation).** Pass-2 Explore agent B exposed OQ-1/OQ-2 doc drift: spec §4 cites `rx-research-autonomousagent` but IaC + deployed state uses `i-for-ai`; spec §12 cites `manzela-autonomousagent` pool but IaC uses `autonomousagent-github` / `autonomousagent-actions`. Also surfaced that `wif.tf:45` has `attribute_condition = "attribute.repository == \"Manzela/AutonomousAgent\""` — accepts all branches, not just `main`. 5-min spec edit.
+5. **P3-F added (spec reconciliation).** Pass-2 Explore agent B exposed OQ-1/OQ-2 doc drift: spec §4 cites `rx-research-autonomousagent` but IaC + deployed state uses `autonomous-agent-2026`; spec §12 cites `manzela-autonomousagent` pool but IaC uses `autonomousagent-github` / `autonomousagent-actions`. Also surfaced that `wif.tf:45` has `attribute_condition = "attribute.repository == \"Manzela/AutonomousAgent\""` — accepts all branches, not just `main`. 5-min spec edit.
 
 6. **Risk register updates in `findings.md` §5:** R-IaC-drift (medium, NEW), R-WIF-broad (low, NEW), R-Spec-drift (low, NEW), R-SM-coverage (LOWERED — only 2 singletons actually need migration), R-PR112 widened (covers 15 leaks not 2). R-RCA-blind unchanged (F-V2-9 confirmed exit-137 signature unrecoverable from persisted artifacts on macOS Docker Desktop).
 

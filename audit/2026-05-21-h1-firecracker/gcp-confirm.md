@@ -2,7 +2,7 @@
 
 **Purpose:** Confirm that every GCP-side capability assumed in `architecture.md` is actually supported, available in our region, and within our project's quota. This is the "no surprises during terraform apply" pre-flight.
 
-**Confirmation method:** Inline citations to GCP docs (current as of 2026-05-21) plus probe commands the operator runs against our actual project (`i-for-ai`) before P1.3.
+**Confirmation method:** Inline citations to GCP docs (current as of 2026-05-21) plus probe commands the operator runs against our actual project (`autonomous-agent-2026`) before P1.3.
 
 ---
 
@@ -92,16 +92,16 @@ If any quota is at >70% utilization, request increase via GCP console before P1.
 ### Operator pre-flight probe
 
 ```bash
-gcloud services list --enabled --project=i-for-ai | grep -E "compute|run|redis|artifactregistry"
+gcloud services list --enabled --project=autonomous-agent-2026 | grep -E "compute|run|redis|artifactregistry"
 # Enable redis if absent:
-gcloud services enable redis.googleapis.com --project=i-for-ai
+gcloud services enable redis.googleapis.com --project=autonomous-agent-2026
 ```
 
 ## 5. IAM bindings required
 
 ### fc-host service account (new)
 
-Service account: `fc-host@i-for-ai.iam.gserviceaccount.com`
+Service account: `fc-host@autonomous-agent-2026.iam.gserviceaccount.com`
 
 Roles needed:
 - `roles/artifactregistry.reader` — to pull rootfs image
@@ -116,7 +116,7 @@ NOT needed (deliberate):
 
 ### fc-control service account (new)
 
-Service account: `fc-control@i-for-ai.iam.gserviceaccount.com`
+Service account: `fc-control@autonomous-agent-2026.iam.gserviceaccount.com`
 
 Roles needed:
 - `roles/redis.editor` — manage pool state
@@ -131,9 +131,9 @@ NOT needed:
 
 ```bash
 # Confirm Workload Identity Federation (already configured in Phase 0a per project memory)
-gcloud iam workload-identity-pools list --location=global --project=i-for-ai
+gcloud iam workload-identity-pools list --location=global --project=autonomous-agent-2026
 # Confirm we have the headroom to create 2 more SAs
-gcloud iam service-accounts list --project=i-for-ai | wc -l  # default quota 100; check we're well below
+gcloud iam service-accounts list --project=autonomous-agent-2026 | wc -l  # default quota 100; check we're well below
 ```
 
 ## 6. VPC + networking
@@ -159,7 +159,7 @@ Initial allowlist (extend per-A2A-peer as P2 grows):
 
 ```bash
 # Confirm we can create a separate Cloud NAT gateway (or reuse)
-gcloud compute routers list --regions=us-central1 --project=i-for-ai
+gcloud compute routers list --regions=us-central1 --project=autonomous-agent-2026
 # Recommend: create a new router/nat for fc-host's subnet to scope allowlist independently
 ```
 
@@ -218,7 +218,7 @@ resource "google_cloud_run_v2_service" "fc_control" {
       egress    = "PRIVATE_RANGES_ONLY"
     }
     service_account = google_service_account.fc_control.email
-    containers { image = "us-central1-docker.pkg.dev/i-for-ai/fc/fc-control:latest" }
+    containers { image = "us-central1-docker.pkg.dev/autonomous-agent-2026/fc/fc-control:latest" }
   }
 }
 ```

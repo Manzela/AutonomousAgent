@@ -1,0 +1,43 @@
+# deploy/docker-compose.canary.yml
+# A2A Day 9 — minimal canary peer for end-to-end A2A testing.
+#
+# Builds from app/a2a_canary/main.py — a standalone FastAPI that implements
+# message/send, message/stream, tasks/subscribe, /health.
+# Does NOT use the hermes image; no HERMES_A2A_CANARY_MODE dependency.
+#
+# Usage (local):
+#   docker compose -f deploy/docker-compose.yml up -d
+#   docker compose -f deploy/docker-compose.canary.yml up -d
+#
+# Canary reachable from main hermes at http://agent-canary:9001/ (internal network)
+# Reachable from host at http://localhost:9002/
+
+services:
+  agent-canary:
+    build:
+      context: ../
+      dockerfile_inline: |
+        FROM python:3.12-slim
+        RUN pip install --no-cache-dir "fastapi==0.115.12" "uvicorn[standard]==0.34.2"
+        COPY app/a2a_canary/ /app/
+        WORKDIR /app
+        CMD ["python", "main.py"]
+    container_name: agent-canary
+    ports:
+      - "9002:9001"
+    environment:
+      HERMES_A2A_PORT: "9001"
+    networks:
+      - internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9001/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  internal:
+    external: true
+    name: autonomous-agent_internal

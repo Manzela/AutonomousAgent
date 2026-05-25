@@ -271,7 +271,7 @@ The original draft of this tier was a single Qwen 3.6 Code endpoint with class-b
   - `docs/decisions/0008-multi-llm-specialization-mesh.md` — ADR formalizing the choice
 - **Effort**: 1 day.
 
-> **Status update (2026-05-15) — deviation #1: Google-family judge pulled forward from P3 to P1-2.** The completeness judge for the P1-2 evaluator panel now routes to a Google model on Vertex AI in `i-for-ai`, enabled and verified live on 2026-05-15. The actual model is **`vertex_ai/gemini-3.1-pro-preview`** (Preview tier; 1M ctx; thinking model — judges using this axis must allow generous `max_output_tokens` because thoughts count against the budget), reachable only via the `global` endpoint (us-central1 returns 404). The `gemini-2.5-pro` row in the table above remains the documented P3 mesh target — when P3 lands the row may be re-pointed to whatever the latest stable Gemini is at that time. LiteLLM `model_list` entry: `deploy/litellm/config.yaml` (commit `64ccdaf`, PR #16). Routing key in `lib/evaluators/orchestrator_hook.py` — `PER_AXIS_MODEL["completeness"]`.
+> **Status update (2026-05-15) — deviation #1: Google-family judge pulled forward from P3 to P1-2.** The completeness judge for the P1-2 evaluator panel now routes to a Google model on Vertex AI in `autonomous-agent-2026`, enabled and verified live on 2026-05-15. The actual model is **`vertex_ai/gemini-3.1-pro-preview`** (Preview tier; 1M ctx; thinking model — judges using this axis must allow generous `max_output_tokens` because thoughts count against the budget), reachable only via the `global` endpoint (us-central1 returns 404). The `gemini-2.5-pro` row in the table above remains the documented P3 mesh target — when P3 lands the row may be re-pointed to whatever the latest stable Gemini is at that time. LiteLLM `model_list` entry: `deploy/litellm/config.yaml` (commit `64ccdaf`, PR #16). Routing key in `lib/evaluators/orchestrator_hook.py` — `PER_AXIS_MODEL["completeness"]`.
 
 ### P3-2 · Provision GCP A100 80GB + Qwen Coder 32B vLLM service
 
@@ -385,7 +385,7 @@ This was the original spec's Phase 3 + Phase 4 — now numbered P4 since P3 (Qwe
 2. **Evaluator collapse** — if all judges share a model (Vertex AI Anthropic), they may share a failure mode and unanimously reject correct work. Mitigation: P3-1's routing — at least one judge runs on a *different model family* (e.g., Qwen 32B Coder for code-correctness judge, Anthropic for safety judge).
 3. **Checkpoint-storage explosion** — per-step checkpointing can fill the disk in 48h. Mitigation: rolling retention (keep last 50 checkpoints + every 100th), hourly compression to gzip.
 4. **REJECTED.md poisoning** — bad rejection entries can make the agent permanently avoid correct approaches. Mitigation: REJECTED.md TTL of 30 days per entry; user can `/forget <pattern>` via Telegram.
-5. **Concurrency vs. quota** — Anthropic Opus 4.7 per-minute token quota on `i-for-ai` is shared with Claude Code. Setting `max_parallel_subagents: 6` will frequently 429. Mitigation: `gcloud quotas update aiplatform.googleapis.com/online_prediction_input_tokens_per_minute_per_base_model` increase request, OR shift to Sonnet for sub-agent traffic.
+5. **Concurrency vs. quota** — Anthropic Opus 4.7 per-minute token quota on `autonomous-agent-2026` is shared with Claude Code. Setting `max_parallel_subagents: 6` will frequently 429. Mitigation: `gcloud quotas update aiplatform.googleapis.com/online_prediction_input_tokens_per_minute_per_base_model` increase request, OR shift to Sonnet for sub-agent traffic.
 
 ---
 
@@ -491,7 +491,7 @@ After pass 2.5 was synthesized with P3 = "single self-hosted Qwen + LiteLLM clas
 - **New ADR**: `docs/decisions/0008-multi-llm-specialization-mesh.md` formalizes the mesh choice + GCP ADK alignment.
 - **New architecture doc**: `docs/architecture/model-mesh.md` — taxonomy table + routing reasoning.
 - **P1-2 risk note resolved** — by P3-7, each judge in the consensus panel routes to a different model family. This was previously listed as an unresolved risk.
-- **Vertex AI Gemini 2.5 Pro added to the mesh** — new dependency: enable Gemini in the `i-for-ai` Vertex AI project (no cost until called).
+- **Vertex AI Gemini 2.5 Pro added to the mesh** — new dependency: enable Gemini in the `autonomous-agent-2026` Vertex AI project (no cost until called).
 - **Optional Qwen 7B 2nd vLLM** — deferred until A100 saturates; explicit decision rule given.
 
 ### What didn't change

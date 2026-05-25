@@ -192,7 +192,7 @@ resource "google_sql_database" "hermes" {
 # IAM database user — the VM runtime SA logs in via Cloud SQL Auth Proxy
 # using its Google IAM token. NOTE: for Cloud IAM service-account auth,
 # the Cloud SQL user name is the SA email WITHOUT the `.gserviceaccount.com`
-# suffix (`autonomousagent-vm-runtime@i-for-ai.iam`), and `type` MUST be
+# suffix (`autonomousagent-vm-runtime@autonomous-agent-2026.iam`), and `type` MUST be
 # CLOUD_IAM_SERVICE_ACCOUNT (NOT CLOUD_IAM_USER, which is for human users).
 resource "google_sql_user" "vm_runtime" {
   project  = var.project_id

@@ -26,7 +26,7 @@ Before moving these files into `terraform/phase-0a-gcp/`:
    ```
 
 2. **Variable Inheritance**: These files reference existing variables from `variables.tf`:
-   - `var.project_id` (default: "i-for-ai")
+   - `var.project_id` (default: "autonomous-agent-2026")
    - `var.region` (default: "us-central1")
 
    New variables defined in `terraform/variables.tf`:
@@ -73,7 +73,7 @@ terraform apply phase2-postgres.tfplan
 
 ## Terraform State
 
-- **Backend**: `gs://i-for-ai-autonomousagent-tfstate/phase-0a`
+- **Backend**: `gs://autonomous-agent-2026-autonomousagent-tfstate/phase-0a`
 - **New Resources**: 5 (instance, database, IAM user, secret, secret version)
 - **Modified Resources**: 2 (project IAM member for cloudsql.client, secret IAM member)
 

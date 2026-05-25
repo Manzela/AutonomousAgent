@@ -193,7 +193,7 @@ def build_agent_card() -> dict:
             "google_jwt": {
                 "openIdConnectSecurityScheme": {
                     # JWKS hosted automatically by Google for every SA. See auth-design.md §3.
-                    "openIdConnectUrl": "https://www.googleapis.com/service_accounts/v1/jwk/agent-runtime@i-for-ai.iam.gserviceaccount.com"
+                    "openIdConnectUrl": "https://www.googleapis.com/service_accounts/v1/jwk/agent-runtime@autonomous-agent-2026.iam.gserviceaccount.com"
                 }
             }
         },

@@ -11,9 +11,9 @@ Design decisions (locked via DEFAULTS-ACCEPTED.md):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,13 +28,45 @@ logger = logging.getLogger(__name__)
 _MINT_CACHE: cachetools.TTLCache[tuple[str, str], str] = cachetools.TTLCache(
     maxsize=10_000, ttl=240
 )
-_MINT_LOCK = threading.Lock()
-_JTI_CACHE: cachetools.TTLCache[tuple[str, str], bool] = cachetools.TTLCache(
-    maxsize=100_000, ttl=600
+_MINT_LOCK: asyncio.Lock | None = (
+    None  # initialized lazily (avoids event-loop-before-creation error)
 )
-_JTI_LOCK = threading.Lock()
-_JWKS_CACHE: cachetools.TTLCache[str, list[dict]] = cachetools.TTLCache(maxsize=1_000, ttl=3_600)
-_JWKS_LOCK = threading.Lock()
+_JTI_CACHE: cachetools.TTLCache[tuple[str, str], bool] = cachetools.TTLCache(
+    maxsize=100_000,
+    ttl=600,  # 2× the token lifetime (tokens expire in 300s) — ensures jti is tracked
+    # for the full replay window even if the entry was added near token exp
+)
+_JTI_LOCK: asyncio.Lock | None = (
+    None  # initialized lazily (avoids event-loop-before-creation error)
+)
+_JWKS_CACHE: cachetools.TTLCache[str, list[dict]] = cachetools.TTLCache(
+    maxsize=1_000,
+    ttl=900,  # 15 min — matches Google JWKS Cache-Control: max-age=900
+)
+_JWKS_LOCK: asyncio.Lock | None = (
+    None  # initialized lazily (avoids event-loop-before-creation error)
+)
+
+
+def _get_jwks_lock() -> asyncio.Lock:
+    global _JWKS_LOCK
+    if _JWKS_LOCK is None:
+        _JWKS_LOCK = asyncio.Lock()
+    return _JWKS_LOCK
+
+
+def _get_jti_lock() -> asyncio.Lock:
+    global _JTI_LOCK
+    if _JTI_LOCK is None:
+        _JTI_LOCK = asyncio.Lock()
+    return _JTI_LOCK
+
+
+def _get_mint_lock() -> asyncio.Lock:
+    global _MINT_LOCK
+    if _MINT_LOCK is None:
+        _MINT_LOCK = asyncio.Lock()
+    return _MINT_LOCK
 
 
 @dataclass(frozen=True)
@@ -56,18 +88,18 @@ _JWKS_URL_TEMPLATE = "https://www.googleapis.com/service_accounts/v1/jwk/{sa_ema
 
 
 async def _fetch_jwks(sa_email: str) -> list[dict]:
-    with _JWKS_LOCK:
+    lock = _get_jwks_lock()
+    async with lock:  # holds lock across fetch — single-flight, no thundering herd
         cached = _JWKS_CACHE.get(sa_email)
         if cached is not None:
             return cached
-    url = _JWKS_URL_TEMPLATE.format(sa_email=sa_email)
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.get(url)
-        resp.raise_for_status()
-    keys = resp.json().get("keys", [])
-    with _JWKS_LOCK:
+        url = _JWKS_URL_TEMPLATE.format(sa_email=sa_email)
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+        keys = resp.json().get("keys", [])
         _JWKS_CACHE[sa_email] = keys
-    return keys
+        return keys
 
 
 # ---------------------------------------------------------------------------
@@ -133,9 +165,13 @@ async def verify_token(
         _emit_audit_log("rejected_invalid_sig", None, None, None, None, peer_sa=issuer)
         raise ValueError(f"invalid signature: {exc}") from exc
 
-    jti: str = payload.get("jti") or str(uuid.uuid4())
+    jti: str | None = payload.get("jti")
+    if not jti:
+        _emit_audit_log("rejected_missing_jti", None, None, None, None, peer_sa=issuer)
+        raise ValueError("jti required in JWT payload")
     replay_key = (issuer, jti)
-    with _JTI_LOCK:
+    lock = _get_jti_lock()
+    async with lock:
         if _JTI_CACHE.get(replay_key):
             _emit_audit_log("rejected_replay", None, None, None, None, peer_sa=issuer)
             raise ValueError("jti replay")
@@ -183,24 +219,24 @@ async def _call_sign_jwt(our_sa: str, payload_json: str) -> str:
 async def mint_token(our_sa: str, target_audience: str, acting_for: dict[str, Any]) -> str:
     """Mint a signed JWT cached for 240s keyed on (target_audience, json(acting_for))."""
     cache_key = (target_audience, json.dumps(acting_for, sort_keys=True))
-    with _MINT_LOCK:
+    lock = _get_mint_lock()
+    async with lock:  # single-flight: holds lock across sign — avoids duplicate signJwt calls
         cached = _MINT_CACHE.get(cache_key)
         if cached is not None:
             return cached
-    now = int(time.time())
-    payload = {
-        "iss": our_sa,
-        "sub": our_sa,
-        "aud": target_audience,
-        "iat": now,
-        "exp": now + 300,
-        "jti": str(uuid.uuid4()),
-        "acting_for": acting_for,
-    }
-    token = await _call_sign_jwt(our_sa, json.dumps(payload))
-    with _MINT_LOCK:
+        now = int(time.time())
+        payload = {
+            "iss": our_sa,
+            "sub": our_sa,
+            "aud": target_audience,
+            "iat": now,
+            "exp": now + 300,
+            "jti": str(uuid.uuid4()),
+            "acting_for": acting_for,
+        }
+        token = await _call_sign_jwt(our_sa, json.dumps(payload))
         _MINT_CACHE[cache_key] = token
-    return token
+        return token
 
 
 # ---------------------------------------------------------------------------

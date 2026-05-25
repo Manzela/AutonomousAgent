@@ -101,19 +101,25 @@ def _make_preexec(*, cpu_seconds: int, memory_mb: int, max_files: int):
         as_bytes = memory_mb * 1024 * 1024
         try:
             resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            sys.stderr.write(
+                f"sandbox: WARNING: RLIMIT_AS ({as_bytes // (1024 * 1024)}MB) rejected by OS: {exc!r}; "
+                f"process will start WITHOUT memory isolation\n"
+            )
         # Max open files.
         try:
             resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, max_files))
-        except ValueError:
-            pass
+        except ValueError as exc:
+            sys.stderr.write(
+                f"sandbox: WARNING: RLIMIT_NOFILE ({max_files}) rejected by OS: {exc!r}; "
+                f"process will start WITHOUT file-descriptor isolation\n"
+            )
         # Detach from parent's stdio session (start_new_session already does
         # this when set on subprocess.create), but make doubly sure.
         try:
             os.setsid()
         except OSError:
-            pass
+            pass  # already a session leader — expected when start_new_session=True was set
 
     return preexec
 

@@ -33,7 +33,8 @@ class AbstractMemoryStore(ABC):
     """
 
     @abstractmethod
-    async def put(self, record: MemoryRecord) -> None: ...
+    async def put(self, record: MemoryRecord) -> None:
+        raise NotImplementedError(f"{self.__class__.__name__}.put() must be implemented")
 
     @abstractmethod
     async def search(
@@ -50,13 +51,17 @@ class AbstractMemoryStore(ABC):
         EmptyScope). To search CONSENSUS, pass `[None]`. To search across
         a project plus consensus, pass `[project_id, None]`.
         """
+        raise NotImplementedError(f"{self.__class__.__name__}.search() must be implemented")
 
     @abstractmethod
-    async def get(self, record_id: str) -> Optional[MemoryRecord]: ...
+    async def get(self, record_id: str) -> Optional[MemoryRecord]:
+        raise NotImplementedError(f"{self.__class__.__name__}.get() must be implemented")
 
     @abstractmethod
-    async def delete(self, record_id: str) -> bool: ...
+    async def delete(self, record_id: str) -> bool:
+        raise NotImplementedError(f"{self.__class__.__name__}.delete() must be implemented")
 
     @abstractmethod
     async def gc_expired(self, tier: MemoryTier, before_ts: float) -> int:
         """Remove `tier` records whose `expires_at <= before_ts`. Returns count."""
+        raise NotImplementedError(f"{self.__class__.__name__}.gc_expired() must be implemented")

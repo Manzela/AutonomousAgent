@@ -18,10 +18,12 @@ class AbstractEmbedder(ABC):
 
     @property
     @abstractmethod
-    def dim(self) -> int: ...
+    def dim(self) -> int:
+        raise NotImplementedError(f"{self.__class__.__name__}.dim must be implemented")
 
     @abstractmethod
-    def embed(self, text: str) -> np.ndarray: ...
+    def embed(self, text: str) -> np.ndarray:
+        raise NotImplementedError(f"{self.__class__.__name__}.embed() must be implemented")
 
     def embed_many(self, texts: Iterable[str]) -> np.ndarray:
         return np.stack([self.embed(t) for t in texts], axis=0)

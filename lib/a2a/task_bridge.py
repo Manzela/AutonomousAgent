@@ -13,14 +13,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-# Re-export SpecStatus from lib.anchors when available (for type consumers).
-# The bridge always returns its own TaskSpec dataclass regardless, because
 # lib.anchors.task_spec.TaskSpec is a Pydantic model with a different schema
 # (no owner/metadata fields) and is not the right shape for bridge outputs.
-try:
-    from lib.anchors.task_spec import SpecStatus  # type: ignore[import]
-except Exception:
-    SpecStatus = str  # type: ignore[assignment,misc]
+# SpecStatus import removed — unused (CodeQL py/unused-import).
 
 
 @dataclass

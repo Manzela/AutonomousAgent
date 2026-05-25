@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import base64
 import time
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cryptography.hazmat.primitives import hashes
@@ -94,27 +94,29 @@ def test_canonicalize_card_sorts_keys_recursively() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_sign_then_verify_round_trip() -> None:
+@pytest.mark.asyncio
+async def test_sign_then_verify_round_trip() -> None:
     """Sign a card with test key; verify_card_signature returns True."""
     from lib.a2a.agent_card import build_agent_card, sign_card, verify_card_signature
 
     card = build_agent_card(_AGENT_SA, _BASE_URL)
-    with patch("lib.a2a.agent_card._call_sign_blob", side_effect=_test_sign_bytes):
+    with patch("lib.a2a.agent_card._call_sign_blob", new=AsyncMock(side_effect=_test_sign_bytes)):
         with patch("lib.a2a.agent_card._fetch_public_key_for_sa", return_value=_TEST_PUBLIC_KEY):
-            signed_card = sign_card(card, _AGENT_SA)
+            signed_card = await sign_card(card, _AGENT_SA)
             result = verify_card_signature(signed_card, _AGENT_SA)
 
     assert result is True
 
 
-def test_tampered_card_rejected() -> None:
+@pytest.mark.asyncio
+async def test_tampered_card_rejected() -> None:
     """Tampered field after signing → verify_card_signature returns False."""
     from lib.a2a.agent_card import build_agent_card, sign_card, verify_card_signature
 
     card = build_agent_card(_AGENT_SA, _BASE_URL)
-    with patch("lib.a2a.agent_card._call_sign_blob", side_effect=_test_sign_bytes):
+    with patch("lib.a2a.agent_card._call_sign_blob", new=AsyncMock(side_effect=_test_sign_bytes)):
         with patch("lib.a2a.agent_card._fetch_public_key_for_sa", return_value=_TEST_PUBLIC_KEY):
-            signed_card = sign_card(card, _AGENT_SA)
+            signed_card = await sign_card(card, _AGENT_SA)
             tampered = {
                 **signed_card,
                 "id": "evil-agent@autonomous-agent-2026.iam.gserviceaccount.com",
@@ -124,18 +126,22 @@ def test_tampered_card_rejected() -> None:
     assert result is False
 
 
-def test_expired_card_rejected() -> None:
-    """Card with exp in the past → verify_card_signature raises ValueError."""
-    from lib.a2a.agent_card import build_agent_card, sign_card, verify_card_signature
+@pytest.mark.asyncio
+async def test_expired_card_rejected() -> None:
+    """Card with exp in the past → sign_card raises ValueError (H8).
+
+    With H8 in place, sign_card itself rejects an already-expired card before
+    calling signBlob, so verify_card_signature is never reached.
+    """
+    from lib.a2a.agent_card import build_agent_card, sign_card
 
     card = build_agent_card(_AGENT_SA, _BASE_URL)
     card["exp"] = int(time.time()) - 3600
 
-    with patch("lib.a2a.agent_card._call_sign_blob", side_effect=_test_sign_bytes):
+    with patch("lib.a2a.agent_card._call_sign_blob", new=AsyncMock(side_effect=_test_sign_bytes)):
         with patch("lib.a2a.agent_card._fetch_public_key_for_sa", return_value=_TEST_PUBLIC_KEY):
-            signed_card = sign_card(card, _AGENT_SA)
             with pytest.raises(ValueError, match="expired"):
-                verify_card_signature(signed_card, _AGENT_SA)
+                await sign_card(card, _AGENT_SA)
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +155,8 @@ def test_well_known_agent_card_route_returns_card() -> None:
 
     from lib.a2a.server import app as server_app
 
-    with patch("lib.a2a.agent_card._call_sign_blob", side_effect=_test_sign_bytes):
+    # _call_sign_blob is now async; use AsyncMock so await inside sign_card resolves correctly.
+    with patch("lib.a2a.agent_card._call_sign_blob", new=AsyncMock(side_effect=_test_sign_bytes)):
         tc = TestClient(server_app)
         resp = tc.get("/.well-known/agent-card.json")
 

@@ -66,20 +66,20 @@ def canonicalize_card(card: dict[str, Any]) -> bytes:
 # ---------------------------------------------------------------------------
 
 
-def _call_sign_blob(data: bytes, sa_email: str) -> str:
-    """Call GCP IAM signBlob. Returns base64url-encoded signature."""
+async def _call_sign_blob(data: bytes, sa_email: str) -> str:
+    """Call GCP IAM signBlob. Returns base64url-encoded signature. Now async."""
     import google.auth
     import google.auth.transport.requests
 
     credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
     credentials.refresh(google.auth.transport.requests.Request())
-    resp = httpx.post(
-        f"https://iam.googleapis.com/v1/projects/-/serviceAccounts/{sa_email}:signBlob",
-        json={"payload": base64.b64encode(data).decode()},
-        headers={"Authorization": f"Bearer {credentials.token}"},
-        timeout=10.0,
-    )
-    resp.raise_for_status()
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"https://iam.googleapis.com/v1/projects/-/serviceAccounts/{sa_email}:signBlob",
+            json={"payload": base64.b64encode(data).decode()},
+            headers={"Authorization": f"Bearer {credentials.token}"},
+        )
+        resp.raise_for_status()
     sig_bytes = base64.b64decode(resp.json()["signedBlob"])
     return base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode()
 
@@ -116,10 +116,24 @@ def _fetch_public_key_for_sa(sa_email: str):
 # ---------------------------------------------------------------------------
 
 
-def sign_card(card: dict[str, Any], our_sa: str) -> dict[str, Any]:
-    """Sign the canonicalized card via GCP signBlob."""
+async def sign_card(card: dict[str, Any], our_sa: str) -> dict[str, Any]:
+    """Sign the canonicalized card via GCP signBlob.
+
+    Validates exp bounds before signing (H8):
+      - Rejects cards that are already expired (exp <= now).
+      - Rejects cards whose exp exceeds the maximum allowed TTL by more than 60 s.
+    """
     unsigned = {k: v for k, v in card.items() if k != "signature"}
-    return {**unsigned, "signature": _call_sign_blob(canonicalize_card(unsigned), our_sa)}
+    now = int(time.time())
+    exp = unsigned.get("exp", 0)
+    if exp <= now:
+        raise ValueError(f"sign_card: card is already expired (exp={exp}, now={now})")
+    if exp - now > _CARD_TTL_SECONDS + 60:
+        raise ValueError(
+            f"sign_card: card exp exceeds maximum TTL "
+            f"(exp={exp}, max_allowed={now + _CARD_TTL_SECONDS + 60})"
+        )
+    return {**unsigned, "signature": await _call_sign_blob(canonicalize_card(unsigned), our_sa)}
 
 
 def verify_card_signature(card_with_sig: dict[str, Any], issuer_sa: str) -> bool:
@@ -138,5 +152,10 @@ def verify_card_signature(card_with_sig: dict[str, Any], issuer_sa: str) -> bool
         sig_bytes = base64.urlsafe_b64decode(sig_b64url + "=" * ((4 - len(sig_b64url) % 4) % 4))
         public_key.verify(sig_bytes, canonical_bytes, padding.PKCS1v15(), hashes.SHA256())
         return True
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "a2a: AgentCard signature verification failed for issuer=%s exc_type=%s",
+            issuer_sa,
+            type(exc).__name__,
+        )
         return False

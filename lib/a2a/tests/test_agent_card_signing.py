@@ -164,3 +164,31 @@ def test_well_known_agent_card_route_returns_card() -> None:
     body = resp.json()
     assert "id" in body
     assert "capabilities" in body
+
+
+def test_well_known_agent_card_returns_503_on_sign_failure() -> None:
+    """GET /.well-known/agent-card.json returns 503 when signBlob fails.
+
+    The endpoint must NOT serve an unsigned card — that exposes the agent
+    identity without cryptographic attestation. Instead, return 503 with
+    a JSON error body so callers know signing is temporarily unavailable.
+    """
+    from fastapi.testclient import TestClient
+
+    from lib.a2a.server import app as server_app
+
+    # Simulate signBlob failure (e.g. GCP ADC unavailable, network timeout)
+    with patch(
+        "lib.a2a.agent_card._call_sign_blob",
+        new=AsyncMock(side_effect=RuntimeError("signBlob unavailable")),
+    ):
+        tc = TestClient(server_app)
+        resp = tc.get("/.well-known/agent-card.json")
+
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["error"] == "agent_card_signing_unavailable"
+    assert "detail" in body
+    # Verify unsigned card is NOT served (no capabilities/id in error response)
+    assert "capabilities" not in body
+    assert "signature" not in body

@@ -301,7 +301,7 @@ async def health() -> dict[str, str]:
 
 @app.get("/.well-known/agent-card.json")
 async def agent_card_endpoint() -> JSONResponse:
-    """Serve signed AgentCard (Day 8). Falls back to unsigned card in dev.
+    """Serve signed AgentCard (Day 8). Returns 503 if signing fails.
 
     Env vars are read lazily inside the handler so test fixtures can set them
     after module import without triggering stale-capture surprises.
@@ -315,9 +315,13 @@ async def agent_card_endpoint() -> JSONResponse:
         signed = await _sign_card(card, agent_sa)
     except Exception as exc:
         logger.warning(
-            "a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", type(exc).__name__
+            "a2a: sign_card failed (%s) — returning 503; unsigned card not served",
+            type(exc).__name__,
         )
-        signed = card
+        return JSONResponse(
+            status_code=503,
+            content={"error": "agent_card_signing_unavailable", "detail": type(exc).__name__},
+        )
     return JSONResponse(content=signed)
 
 

@@ -29,7 +29,6 @@ from redis.asyncio import ConnectionPool
 from redis.exceptions import ConnectionError as RedisConnectionError
 
 import lib.a2a.auth as auth_mod
-from lib.a2a.auth import verify_token
 
 # ---------------------------------------------------------------------------
 # JWT scaffolding (same shape as test_auth.py — kept local so the

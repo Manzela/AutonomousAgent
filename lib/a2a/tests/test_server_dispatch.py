@@ -112,11 +112,12 @@ def test_health_endpoint_returns_ok() -> None:
 
 @pytest.mark.parametrize(
     "stub_method",
-    ["message/stream", "tasks/get", "tasks/subscribe", "tasks/cancel"],
+    ["message/stream", "tasks/subscribe"],
 )
 def test_stub_methods_return_unsupported_operation(stub_method: str) -> None:
     """A2A §5.4: Day 2 stubs MUST return -32004
     (UnsupportedOperationError) until their respective day lands them.
+    tasks/get and tasks/cancel are now implemented (Task 6) and removed from this list.
     """
     response = client.post(
         "/",

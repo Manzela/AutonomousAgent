@@ -100,3 +100,53 @@ def test_load_unknown_id_raises(tmp_path: Path):
     store = SpecStore(tmp_path)
     with pytest.raises(FileNotFoundError):
         store.load(uuid4())
+
+
+# --- Task 6: get_by_id + cancel_by_id ---
+
+
+def test_get_by_id_returns_none_for_missing(tmp_path: Path):
+    """get_by_id returns None for an unknown spec_id."""
+    store = SpecStore(tmp_path)
+    result = store.get_by_id("00000000-0000-0000-0000-000000000000")
+    assert result is None
+
+
+def test_get_by_id_returns_none_for_invalid_uuid(tmp_path: Path):
+    """get_by_id returns None for a non-UUID string (ValueError swallowed)."""
+    store = SpecStore(tmp_path)
+    result = store.get_by_id("not-a-valid-uuid")
+    assert result is None
+
+
+def test_get_by_id_returns_saved_spec(tmp_path: Path):
+    """get_by_id returns the spec that was previously saved."""
+    store = SpecStore(tmp_path)
+    spec = _draft_spec()
+    saved = store.save(spec)
+    result = store.get_by_id(str(saved.spec_id))
+    assert result is not None
+    assert result.spec_id == saved.spec_id
+    assert result.title == saved.title
+
+
+def test_cancel_by_id_returns_false_for_missing(tmp_path: Path):
+    """cancel_by_id returns False when spec_id is not found."""
+    store = SpecStore(tmp_path)
+    result = store.cancel_by_id("00000000-0000-0000-0000-000000000000")
+    assert result is False
+
+
+def test_cancel_by_id_marks_spec_superseded(tmp_path: Path):
+    """cancel_by_id marks an existing spec as superseded and returns True."""
+    store = SpecStore(tmp_path)
+    spec = _draft_spec()
+    saved = store.save(spec)
+    assert saved.status == "draft"
+
+    result = store.cancel_by_id(str(saved.spec_id))
+    assert result is True
+
+    loaded = store.get_by_id(str(saved.spec_id))
+    assert loaded is not None
+    assert loaded.status == "superseded"

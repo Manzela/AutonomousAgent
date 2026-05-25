@@ -51,9 +51,9 @@ def register(ctx) -> None:  # type: ignore[type-arg]
     enabled_raw = os.getenv("HERMES_A2A_ENABLED")
 
     # Deprecation: default is currently true; will flip to false next release.
-    if enabled_raw is None:
+    if not enabled_raw:
         logger.warning(
-            "a2a: HERMES_A2A_ENABLED env var not set; defaulting true "
+            "a2a: HERMES_A2A_ENABLED env var not set or empty; defaulting true "
             "(will change to false in next release — set explicitly to suppress this warning)"
         )
 

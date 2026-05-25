@@ -26,14 +26,10 @@
 | Gap | Location | Production fix |
 |-----|----------|----------------|
 | jti replay cache is per-process | `lib/a2a/auth.py` | Redis-backed `TTLCache` shared across replicas |
-| JWKS fetch has no TTL cache | `lib/a2a/auth.py` | `cachetools.TTLCache(maxsize=256, ttl=300)` keyed on SA email |
 | SSE events are synthetic (3 hardcoded frames) | `lib/a2a/server.py` | Wire to `lib.anchors` event bus |
 | `tasks/get`, `tasks/cancel` → `-32004` | `lib/a2a/server.py` | Implement via `lib.anchors` queries |
-| `mint_token` not wired in outbound client | `lib/a2a/client.py` | Call before every `send_message` |
-| Scrubber not wired in `jsonrpc_dispatch` | `lib/a2a/server.py` | `params = scrub_inbound_params(params)` before handler |
-| Unsigned AgentCard fallback | `lib/a2a/server.py` | Remove fallback; return 503 on GCP signBlob error |
+| Unsigned AgentCard fallback | `lib/a2a/server.py` | Return 503 on GCP signBlob error (AG-3) |
 | Peer discovery out-of-band | `config/a2a/peers.yaml` | AgentCard discovery feed |
-| `alert_strategy.auto_close` missing | `terraform/phase-0a-gcp/monitoring.tf` | Add `auto_close = "1800s"` to both alert policies |
 
 ---
 
@@ -49,12 +45,11 @@
 
 - [ ] Redis-backed jti replay cache replacing `cachetools.TTLCache`
 - [x] JWKS TTL cache in `verify_token` (5-min TTL keyed on SA email) — PR #130
-- [ ] Wire `scrub_inbound_params` into `jsonrpc_dispatch` before handler dispatch
-- [ ] Wire `scrub_inbound_params` before OTel span attribute attachment
+- [x] Wire `scrub_inbound_params` into `jsonrpc_dispatch` before handler dispatch — done: `lib/a2a/server.py:439`
+- [x] Wire `scrub_inbound_params` before OTel span attribute attachment — done / N/A: no `span.set_attribute()` calls expose params in `server.py`; PHI does not reach OTel spans
 - [ ] Real SSE event stream from `lib.anchors` event bus (not synthetic 3-frame generator)
 - [ ] Implement `tasks/get` and `tasks/cancel` via lib.anchors API
-- [ ] Wire `mint_token` into `client.py` `send_message` outbound path
-- [ ] Remove unsigned AgentCard fallback; add 503 circuit-break
+- [x] Wire `mint_token` into `client.py` `send_message` outbound path — done: `_build_auth_headers()` in `lib/a2a/client.py:160-186` calls `mint_token`; wired into `send_message` at line 269
 - [x] Add `alert_strategy { auto_close = "1800s" }` to monitoring alert policies — PR #133
 - [ ] Hard Cloud Trace assertion in e2e demo (not best-effort warn)
 - [ ] Peer federation: move from static `peers.yaml` to AgentCard discovery feed
@@ -62,14 +57,13 @@
 - [ ] Load test: JWT mint/verify at 100 RPS sustained; SSE hold-open at 50 concurrent
 - [ ] Tag spike commit: `spike/a2a-v0.1`
 - [x] `HERMES_A2A_ENABLED` feature flag: gates `register()` in `lib/a2a/__init__.py`; default=true with deprecation warn (flips to false next release) — PR fix/a2a-audit-h6-h10-l3-l4; **operator: set explicitly to suppress warning**
-- [ ] Body size limits: add ASGI middleware to reject requests >1MB on `POST /`, `/stream`, `/subscribe`
-- [ ] Negative JWKS caching: cache failed JWKS fetches (429/503) for 30s with jitter
-- [ ] `_call_sign_blob` async: convert from `httpx.post` (sync) to `AsyncClient.post` (async)
+- [x] Body size limits: add ASGI middleware to reject requests >1MB on `POST /`, `/stream`, `/subscribe` — done PR #142 (M3)
+- [x] Negative JWKS caching: cache failed JWKS fetches (429/503) for 30s with jitter — done PR #142 (M6), `lib/a2a/auth.py:_JWKS_FAIL_CACHE`
+- [x] `_call_sign_blob` async: convert from `httpx.post` (sync) to `AsyncClient.post` (async) — done: `lib/a2a/agent_card.py:69`
 - [x] `HERMES_A2A_SA` validation: format-only validation at startup (GCP SA email regex `^[a-z][a-z0-9-]{4,28}[a-z0-9]@...\.iam\.gserviceaccount\.com$`); raises RuntimeError on bad/missing value — PR fix/a2a-audit-h6-h10-l3-l4; **ADC live-check deferred (breaks CI/test envs)**
-- [ ] Redis jti replay cache: replace per-process `TTLCache` with Redis atomic `SET NX`
 - [ ] Remove unsigned AgentCard fallback: return 503 on signBlob error, not unsigned card
-- [ ] PHI scrubber on SSE routes: wired in PR #139 — verify and mark done after PR #139 CI
-- [ ] JWT auth on SSE routes: wired in PR #139 — verify and mark done after PR #139 CI
+- [x] PHI scrubber on SSE routes: wired in PR #139 — confirmed: `server.py:349,377`
+- [x] JWT auth on SSE routes: wired in PR #139 — confirmed: `_jwt_guard` Depends on both SSE route handlers
 - [x] `a2a.audit` logger: `_emit_audit_log` now emits via `logging.getLogger("a2a.audit")` (NullHandler, propagate=True); **operator: ensure root handler routes INFO to Cloud Logging, or attach dedicated handler to `a2a.audit`** — PR fix/a2a-audit-h6-h10-l3-l4
 
 ---

@@ -43,7 +43,7 @@
 
 - [ ] Redis-backed jti replay cache replacing `cachetools.TTLCache`
 - [x] JWKS TTL cache in `verify_token` (5-min TTL keyed on SA email) — PR #130
-- [x] Wire `scrub_inbound_params` into `jsonrpc_dispatch` before handler dispatch — done: `lib/a2a/server.py:439`
+- [x] Wire `scrub_inbound_params` into `jsonrpc_dispatch` before handler dispatch — done: `lib/a2a/server.py:444`
 - [x] Wire `scrub_inbound_params` before OTel span attribute attachment — done / N/A: no `span.set_attribute()` calls expose params in `server.py`; PHI does not reach OTel spans
 - [ ] Real SSE event stream from `lib.anchors` event bus (not synthetic 3-frame generator)
 - [ ] Implement `tasks/get` and `tasks/cancel` via lib.anchors API
@@ -60,7 +60,7 @@
 - [x] `_call_sign_blob` async: convert from `httpx.post` (sync) to `AsyncClient.post` (async) — done: `lib/a2a/agent_card.py:69`
 - [x] `HERMES_A2A_SA` validation: format-only validation at startup (GCP SA email regex `^[a-z][a-z0-9-]{4,28}[a-z0-9]@...\.iam\.gserviceaccount\.com$`); raises RuntimeError on bad/missing value — PR fix/a2a-audit-h6-h10-l3-l4; **ADC live-check deferred (breaks CI/test envs)**
 - [x] Remove unsigned AgentCard fallback: return 503 on signBlob error, not unsigned card — done PR #147
-- [x] PHI scrubber on SSE routes: wired in PR #139 — confirmed: `server.py:349,377`
+- [x] PHI scrubber on SSE routes: wired in PR #139 — confirmed: `server.py:354,382`
 - [x] JWT auth on SSE routes: wired in PR #139 — confirmed: `_jwt_guard` Depends on both SSE route handlers
 - [x] `a2a.audit` logger: `_emit_audit_log` now emits via `logging.getLogger("a2a.audit")` (NullHandler, propagate=True); **operator: ensure root handler routes INFO to Cloud Logging, or attach dedicated handler to `a2a.audit`** — PR fix/a2a-audit-h6-h10-l3-l4
 

@@ -249,9 +249,7 @@ async def agent_card_endpoint() -> JSONResponse:
     try:
         signed = _sign_card(card, agent_sa)
     except Exception as exc:
-        logger.warning(
-            "a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", type(exc).__name__
-        )
+        logger.warning("a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", exc)
         signed = card
     return JSONResponse(content=signed)
 
@@ -361,18 +359,16 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
                 f"Method '{exc.method_name}' not yet implemented in Day 2 spike",
             )
         )
-    except ValueError:
+    except ValueError as exc:
         return JSONResponse(
-            content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, "Invalid params")
+            content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, f"Invalid params: {exc}")
         )
     except Exception as exc:
-        # Log type only — exception messages can contain caller data; stack
-        # trace is logged separately via structured logging if DEBUG is on.
-        logger.error(  # noqa: G201 — method is internal, not user-controlled
-            "a2a: unhandled exception in handler for method=%s exc_type=%s",
-            method,
-            type(exc).__name__,
-        )
+        # Use logger.exception (not .error) to capture the traceback. The
+        # data field carries only the exception *type*, not the message —
+        # message bodies can carry caller data and we don't want to echo
+        # that back unbounded over the wire.
+        logger.exception("a2a: unhandled exception in handler for method=%s", method)
         return JSONResponse(
             content=_jsonrpc_error(
                 req_id,

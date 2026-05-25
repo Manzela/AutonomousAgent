@@ -227,6 +227,8 @@ async def handle_tasks_get(params: dict[str, Any]) -> dict[str, Any]:
     # UUID can read this task. Production: verify identity.sub == spec.owner.
     """
     task_id = params.get("id", "")
+    # SECURITY(spike): no ownership check — any authenticated peer with a task UUID
+    # can read this task. Production: verify identity.sub == spec.owner.
     spec = _TASK_REGISTRY.get(task_id)
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
@@ -243,6 +245,8 @@ async def handle_tasks_cancel(params: dict[str, Any]) -> dict[str, Any]:
     # UUID can cancel this task. Production: verify identity.sub == spec.owner.
     """
     task_id = params.get("id", "")
+    # SECURITY(spike): no ownership check — any authenticated peer with a task UUID
+    # can cancel this task. Production: verify identity.sub == spec.owner.
     spec = _TASK_REGISTRY.get(task_id)
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")

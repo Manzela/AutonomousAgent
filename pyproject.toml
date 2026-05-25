@@ -28,13 +28,27 @@ dev = [
   "pytest-mock>=3.14",
   "ruff>=0.6.9",
   "opentelemetry-sdk>=1.20",
+  # P-2: CloudSqlPgvectorStore contract tests via testcontainers.
+  "testcontainers[postgres]>=4.8,<5",
+  # Redis jti: in-process fakeredis for distributed replay cache tests.
+  "fakeredis[asyncio]>=2.20",
+]
+# Phase 2 production memory store — Cloud SQL + pgvector.
+# P-2 work item per docs/research/autonomous-agent-seed-orchestrator/INTEGRATION.md.
+# Lazy-imported in app/adapters/gcp/memory.py; the in-memory store
+# (app/adapters/inmemory/memory.py) does not pull these.
+# Install on production: `uv sync --extra gcp`
+gcp = [
+  "asyncpg>=0.29,<0.30",
+  "pgvector>=0.3,<0.4",
 ]
 # A2A spike extra — Day 1 scaffolding pulls the runtime deps the Day 2-10
 # build-out will use (FastAPI/uvicorn for the JSON-RPC server, httpx + httpx-sse
 # for the client + streaming, pyjwt[crypto] + cryptography for JWT mint/verify
 # per the auth-design.md GCP-only federation choice, cachetools for TTL caches,
 # python-ulid for trace-friendly task IDs, python-multipart for FastAPI's
-# multipart form support). Install with: `uv sync --extra a2a` on the spike
+# multipart form support, redis[asyncio] for the distributed jti replay cache).
+# Install with: `uv sync --extra a2a` on the spike
 # branch; this extra is feature-flag gated and does NOT pull into production.
 a2a = [
   "fastapi>=0.115",
@@ -47,6 +61,9 @@ a2a = [
   "python-multipart>=0.0.20",
   "opentelemetry-api>=1.20",
   "jcs>=0.2",
+  # Distributed jti replay cache — Redis-backed per
+  # docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md
+  "redis[asyncio]>=5.0,<6",
 ]
 
 [tool.setuptools.packages.find]

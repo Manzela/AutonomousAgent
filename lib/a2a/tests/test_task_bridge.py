@@ -31,15 +31,11 @@ _IDENTITY = _AgentIdentity(
 _A2A_TASK = {"id": "task-abc123", "status": "SUBMITTED", "metadata": {}}
 _TRACE_ID = "4bf92f3577b34da6a3ce929d0e0e4736"
 
-from lib.a2a.task_bridge import (  # noqa: E402
-    bridge_inbound_to_taskspec,
-    bridge_taskspec_status_to_a2a,
-    cancel_dispatch,
-)
+import lib.a2a.task_bridge as tb  # noqa: E402
 
 
 def test_bridge_inbound_creates_taskspec() -> None:
-    spec = bridge_inbound_to_taskspec(_A2A_TASK, _IDENTITY)
+    spec = tb.bridge_inbound_to_taskspec(_A2A_TASK, _IDENTITY)
     assert (
         spec.owner == "pseudonym:user-001"
     ), f"expected owner 'pseudonym:user-001', got {spec.owner!r}"
@@ -58,7 +54,7 @@ def test_bridge_inbound_creates_taskspec() -> None:
 
 
 @pytest.mark.parametrize(
-    "spec_status,expected_a2a_state",
+    "spec_status, expected_a2a_state",
     [
         ("draft", "SUBMITTED"),
         ("draft_locked", "WORKING"),
@@ -67,23 +63,23 @@ def test_bridge_inbound_creates_taskspec() -> None:
     ],
 )
 def test_mapping_table_completeness(spec_status: str, expected_a2a_state: str) -> None:
-    spec = bridge_inbound_to_taskspec(_A2A_TASK, _IDENTITY)
+    spec = tb.bridge_inbound_to_taskspec(_A2A_TASK, _IDENTITY)
     if hasattr(spec, "__dataclass_fields__"):
         import dataclasses
 
         spec = dataclasses.replace(spec, status=spec_status)
     else:
         spec = spec.model_copy(update={"status": spec_status})
-    result = bridge_taskspec_status_to_a2a(spec)
+    result = tb.bridge_taskspec_status_to_a2a(spec)
     assert (
         result == expected_a2a_state
     ), f"SpecStatus.{spec_status} -> expected {expected_a2a_state!r}, got {result!r}"
 
 
 def test_bridge_round_trip() -> None:
-    spec = bridge_inbound_to_taskspec(_A2A_TASK, _IDENTITY)
+    spec = tb.bridge_inbound_to_taskspec(_A2A_TASK, _IDENTITY)
     assert spec.status == "draft", f"expected initial status 'draft', got {spec.status!r}"
-    a2a_state = bridge_taskspec_status_to_a2a(spec)
+    a2a_state = tb.bridge_taskspec_status_to_a2a(spec)
     assert a2a_state == "SUBMITTED", f"round-trip: draft should map to SUBMITTED, got {a2a_state!r}"
 
 
@@ -94,10 +90,8 @@ def test_cancel_dispatch(monkeypatch: pytest.MonkeyPatch) -> None:
         calls.append(raw_args)
         return "cancelled"
 
-    import lib.a2a.task_bridge as tb
-
     monkeypatch.setattr(tb, "_anchors_cancel", _fake_cancel)
-    result = cancel_dispatch("task-abc123")
+    result = tb.cancel_dispatch("task-abc123")
     assert calls == [
         "task-abc123"
     ], f"cancel_dispatch should pass task_id to _anchors_cancel; calls={calls!r}"
@@ -109,7 +103,7 @@ def test_trace_id_in_taskspec_metadata() -> None:
         **_A2A_TASK,
         "metadata": {"traceparent": f"00-{_TRACE_ID}-00f067aa0ba902b7-01"},
     }
-    spec = bridge_inbound_to_taskspec(task_with_trace, _IDENTITY, trace_id=_TRACE_ID)
+    spec = tb.bridge_inbound_to_taskspec(task_with_trace, _IDENTITY, trace_id=_TRACE_ID)
     raw_meta = (
         spec.metadata if hasattr(spec, "metadata") and isinstance(spec.metadata, dict) else {}
     )

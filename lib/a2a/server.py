@@ -364,7 +364,7 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
             content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, "Invalid params")
         )
     except Exception as exc:
-        # Log type only — 'method' is user-controlled so excluded (py/log-injection).
+        # Log type only — exception messages can contain caller data; method is user-controlled.
         logger.error("a2a: unhandled exception in handler exc_type=%s", type(exc).__name__)
         return JSONResponse(
             content=_jsonrpc_error(

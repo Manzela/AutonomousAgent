@@ -483,6 +483,13 @@ services:
     container_name: autonomous-agent-cloud-sql-proxy-1
     command:
       - --auto-iam-authn
+      # SECURITY NOTE: In Docker Compose, hermes and cloud-sql-proxy are
+      # separate containers on the 'internal' bridge network. The proxy
+      # MUST bind 0.0.0.0 so hermes can reach it via the service name
+      # (cloud-sql-proxy:5432). In Cloud Run production, sidecars share
+      # localhost — 127.0.0.1 is implicit. Docker bridge network isolation
+      # (only containers on 'internal' can reach 5432) is the access
+      # control boundary in this docker-compose config.
       - --address=0.0.0.0
       - --port=5432
       - ${CLOUD_SQL_CONNECTION_NAME:-autonomous-agent-2026:us-central1:autonomousagent-postgres-vector}

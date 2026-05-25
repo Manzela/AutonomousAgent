@@ -34,8 +34,13 @@ pytestmark = [
 ]
 
 
-import app.adapters.gcp.memory as gcp_memory  # noqa: E402
-from app.adapters.gcp.memory import CloudSqlPgvectorStore  # noqa: E402
+if _HAS_TESTCONTAINERS:
+    import app.adapters.gcp.memory as gcp_memory  # noqa: E402
+    from app.adapters.gcp.memory import CloudSqlPgvectorStore  # noqa: E402
+else:
+    gcp_memory = None  # type: ignore[assignment]
+    CloudSqlPgvectorStore = None  # type: ignore[assignment]
+
 from app.core.memory import EmptyScope  # noqa: E402
 from app.core.schemas import MemoryRecord, MemoryTier  # noqa: E402
 

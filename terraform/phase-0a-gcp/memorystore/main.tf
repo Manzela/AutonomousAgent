@@ -73,3 +73,30 @@ resource "google_redis_instance" "jti_replay_cache" {
     prevent_destroy = true
   }
 }
+
+# ---------------------------------------------------------------------------
+# Firewall: allow Cloud Run Direct VPC Egress → Memorystore Redis TLS (6380).
+#
+# Cloud Memorystore is on a VPC-peered network; VPC firewall rules control
+# access. This EGRESS rule explicitly allows outbound TCP/6380 to the
+# Memorystore IP from any instance on the VPC. For additional scoping,
+# add target_service_accounts to restrict to the Cloud Run runtime SA.
+#
+# Direction=EGRESS: destination_ranges is valid; source_ranges is NOT.
+# ---------------------------------------------------------------------------
+resource "google_compute_firewall" "allow_cloudrun_to_redis" {
+  name      = "autonomousagent-allow-cloudrun-to-redis"
+  project   = var.project_id
+  network   = data.google_compute_network.vpc.id
+  direction = "EGRESS"
+
+  allow {
+    protocol = "tcp"
+    ports    = ["6380"]
+  }
+
+  # Destination: Memorystore Redis instance private IP (/32 host route).
+  destination_ranges = ["${google_redis_instance.jti_replay_cache.host}/32"]
+
+  description = "Allow VPC egress to Memorystore Redis TLS (port 6380)"
+}

@@ -64,15 +64,6 @@ DDL_BLOCKS: tuple[tuple[str, str], ...] = (
         """,
     ),
     (
-        "index_embedding_hnsw",
-        """
-        CREATE INDEX IF NOT EXISTS memory_records_embedding_hnsw
-            ON memory_records
-            USING hnsw (embedding vector_cosine_ops)
-            WITH (m = 16, ef_construction = 64)
-        """,
-    ),
-    (
         "index_metadata_gin",
         """
         CREATE INDEX IF NOT EXISTS memory_records_metadata_gin
@@ -85,6 +76,13 @@ DDL_BLOCKS: tuple[tuple[str, str], ...] = (
         CREATE INDEX IF NOT EXISTS memory_records_gc_idx
             ON memory_records (tier, expires_at)
             WHERE expires_at IS NOT NULL
+        """,
+    ),
+    (
+        "index_scope",
+        """
+        CREATE INDEX IF NOT EXISTS memory_records_scope_idx
+            ON memory_records (project_id, tier)
         """,
     ),
     (

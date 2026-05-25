@@ -249,7 +249,9 @@ async def agent_card_endpoint() -> JSONResponse:
     try:
         signed = _sign_card(card, agent_sa)
     except Exception as exc:
-        logger.warning("a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", exc)
+        logger.warning(
+            "a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", type(exc).__name__
+        )
         signed = card
     return JSONResponse(content=signed)
 
@@ -301,10 +303,8 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
     try:
         body_bytes = await request.body()
         envelope = json.loads(body_bytes)
-    except json.JSONDecodeError as exc:
-        return JSONResponse(
-            content=_jsonrpc_error(None, JSONRPC_PARSE_ERROR, f"Parse error: {exc}")
-        )
+    except json.JSONDecodeError:
+        return JSONResponse(content=_jsonrpc_error(None, JSONRPC_PARSE_ERROR, "Parse error"))
 
     # Stage 2: validate the envelope shape.
     req_id = envelope.get("id") if isinstance(envelope, dict) else None
@@ -359,16 +359,13 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
                 f"Method '{exc.method_name}' not yet implemented in Day 2 spike",
             )
         )
-    except ValueError as exc:
+    except ValueError:
         return JSONResponse(
-            content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, f"Invalid params: {exc}")
+            content=_jsonrpc_error(req_id, JSONRPC_INVALID_PARAMS, "Invalid params")
         )
     except Exception as exc:
-        # Use logger.exception (not .error) to capture the traceback. The
-        # data field carries only the exception *type*, not the message —
-        # message bodies can carry caller data and we don't want to echo
-        # that back unbounded over the wire.
-        logger.exception("a2a: unhandled exception in handler for method=%s", method)
+        # Log type only — exception messages can contain caller data; method is user-controlled.
+        logger.error("a2a: unhandled exception in handler exc_type=%s", type(exc).__name__)
         return JSONResponse(
             content=_jsonrpc_error(
                 req_id,

@@ -264,7 +264,12 @@ def _emit_audit_log(
     trace_id: str | None,
     peer_sa: str | None = None,
 ) -> None:
-    """Emit one HIPAA-compliant structured log entry to stdout (gcplogs picks it up)."""
+    """Emit one HIPAA-compliant structured log entry via the 'a2a.audit' logger.
+
+    Application startup must route logging.getLogger('a2a.audit') to a sink
+    (e.g. Cloud Logging). propagate=True (default) ensures records reach the
+    root handler if no dedicated sink is configured.
+    """
     entry: dict[str, Any] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "level": "INFO",

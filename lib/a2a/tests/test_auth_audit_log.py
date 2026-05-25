@@ -42,10 +42,11 @@ def test_emit_audit_log_message_is_valid_json_with_correct_shape(caplog) -> None
     assert "ts" in entry
 
 
-def test_emit_audit_log_does_not_write_to_stdout(capsys) -> None:
-    """After replacing print(), _emit_audit_log must not write directly to stdout."""
+def test_emit_audit_log_does_not_write_to_stdout_or_stderr(capsys) -> None:
+    """After replacing print(), _emit_audit_log must not write directly to any stream."""
     from lib.a2a.auth import _emit_audit_log
 
     _emit_audit_log("accepted", None, None, None, None)
     captured = capsys.readouterr()
-    assert captured.out == "", f"print() detected in _emit_audit_log output: {captured.out!r}"
+    assert captured.out == "", f"stdout write detected in _emit_audit_log: {captured.out!r}"
+    assert captured.err == "", f"stderr write detected in _emit_audit_log: {captured.err!r}"

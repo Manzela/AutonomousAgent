@@ -483,7 +483,7 @@ services:
     container_name: autonomous-agent-cloud-sql-proxy-1
     command:
       - --auto-iam-authn
-      - --address=0.0.0.0
+      - --address=127.0.0.1
       - --port=5432
       - ${CLOUD_SQL_CONNECTION_NAME:-autonomous-agent-2026:us-central1:autonomousagent-postgres-vector}
     environment:

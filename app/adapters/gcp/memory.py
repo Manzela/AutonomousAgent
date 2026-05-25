@@ -26,9 +26,17 @@ import os
 import time
 from typing import Iterable, Optional
 
-import asyncpg
+try:
+    import asyncpg
+    from pgvector.asyncpg import register_vector
+
+    _HAS_ASYNCPG = True
+except ImportError:  # pragma: no cover
+    asyncpg = None  # type: ignore[assignment]
+    register_vector = None  # type: ignore[assignment]
+    _HAS_ASYNCPG = False
+
 import numpy as np
-from pgvector.asyncpg import register_vector
 
 from app.core.memory import AbstractMemoryStore, EmptyScope
 from app.core.schemas import (
@@ -60,7 +68,11 @@ async def _get_pool(dsn: Optional[str] = None) -> asyncpg.Pool:
     ``dsn`` is read once from the CLOUD_SQL_DSN env var if not provided.
     In production, set CLOUD_SQL_DSN from the
     autonomousagent-db-connection Secret Manager secret at boot.
+
+    Raises RuntimeError if asyncpg is not installed (run: uv sync --extra gcp).
     """
+    if not _HAS_ASYNCPG:
+        raise RuntimeError("asyncpg / pgvector not installed. " "Install with: uv sync --extra gcp")
     global _POOL
     if _POOL is not None:
         return _POOL

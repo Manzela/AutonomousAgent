@@ -14,21 +14,19 @@ version: 1
 
 # Per-peer allowlist. Each entry gates inbound JSON-RPC calls and outbound
 # discovery. Empty list = no peers allowed (closed-by-default posture).
-peers: []
-# Example structure (uncomment + fill on Day 5):
-# peers:
-#   - name: canary
-#     # Outbound: where to POST JSON-RPC requests. Used by client.send_message.
-#     base_url: http://agent-canary:9001/
-#     # Inbound auth: the SA whose JWT this peer signs with. Used by
-#     # server.verify_token to gate accept/reject.
-#     issuer: agent-canary-spike@autonomous-agent-2026.iam.gserviceaccount.com
-#     # Audience required on outbound JWTs we mint targeting this peer.
-#     audience: https://agent-canary.example.test
-#     # AgentCard URL for discovery (Day 8). Optional in Day 5; required Day 8+.
-#     agent_card_url: http://agent-canary:9001/.well-known/agent-card.json
-#     # Capability filter — narrow which RPC methods this peer can invoke on us.
-#     allowed_methods: [message/send, message/stream, tasks/get, tasks/subscribe, tasks/cancel]
+peers:
+  - name: canary
+    # Outbound: where to POST JSON-RPC requests. Used by client.send_message.
+    base_url: http://agent-canary:9001/
+    # Inbound auth: the SA whose JWT this peer signs with. Used by
+    # server.verify_token to gate accept/reject.
+    issuer: agent-canary-spike@autonomous-agent-2026.iam.gserviceaccount.com
+    # Audience required on outbound JWTs we mint targeting this peer.
+    audience: https://agent-canary.example.test
+    # AgentCard URL for discovery (Day 8). Optional in Day 5; required Day 8+.
+    agent_card_url: http://agent-canary:9001/.well-known/agent-card.json
+    # Capability filter — narrow which RPC methods this peer can invoke on us.
+    allowed_methods: [message/send, message/stream, tasks/get, tasks/subscribe, tasks/cancel]
 
 # Defaults applied to every peer entry unless overridden per-peer.
 defaults:

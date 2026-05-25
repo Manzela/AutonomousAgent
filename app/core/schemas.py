@@ -129,6 +129,10 @@ class AgentCapability(BaseModel):
     `invoke` is the runtime hook the orchestrator calls; everything else is
     metadata that goes into the bilinear router's capability matrix
     (E ∈ ℝ^(K×256)) via the embedder.
+
+    When `peer_endpoint` is set, the orchestrator routes this capability's
+    tasks via the A2A boundary (`lib.a2a.client.send_message`) instead of
+    local dispatch. See INTEGRATION.md §P-3.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
@@ -144,8 +148,19 @@ class AgentCapability(BaseModel):
     invoke: Callable[..., Awaitable["ExecutionResult"]] | None = None
     source_sha256: NonEmptyStr = "0" * 64
     spawned_at: float = Field(default_factory=time.time)
-    # For A2A peer execution (work item P-3 in INTEGRATION.md).
+    # A2A peer-execution endpoint (P-3). None = local dispatch (default).
+    # When set, _execute() routes tasks via lib.a2a.client.send_message.
     peer_endpoint: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _validate_peer_endpoint(self) -> "AgentCapability":
+        if self.peer_endpoint is not None:
+            if not self.peer_endpoint.startswith(("http://", "https://")):
+                raise ValueError(
+                    f"peer_endpoint must start with http:// or https://, "
+                    f"got {self.peer_endpoint!r}"
+                )
+        return self
 
 
 class ExecutionResult(BaseModel):

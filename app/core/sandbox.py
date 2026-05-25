@@ -37,4 +37,5 @@ class AbstractSandbox(ABC):
         memory_mb: int = 512,
         max_files: int = 256,
         network_allowed: bool = False,
-    ) -> SandboxResult: ...
+    ) -> SandboxResult:
+        raise NotImplementedError(f"{self.__class__.__name__}.run() must be implemented")

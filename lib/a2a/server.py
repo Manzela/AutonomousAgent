@@ -128,7 +128,7 @@ _DISPATCH = {
 
 app = FastAPI(
     title="A2A Spike Agent",
-    description=("JSON-RPC 2.0 / SSE agent-to-agent protocol — " "spike Day 2 minimal dispatch"),
+    description=("JSON-RPC 2.0 / SSE agent-to-agent protocol — spike Day 2 minimal dispatch"),
     version="0.1.0-spike-day2",
 )
 
@@ -200,7 +200,7 @@ async def jsonrpc_dispatch(request: Request) -> JSONResponse:
             content=_jsonrpc_error(
                 req_id,
                 A2A_UNSUPPORTED_OPERATION,
-                f"Method '{exc.method_name}' not yet implemented " "in Day 2 spike",
+                f"Method '{exc.method_name}' not yet implemented in Day 2 spike",
             )
         )
     except ValueError as exc:

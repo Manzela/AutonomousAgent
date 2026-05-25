@@ -258,7 +258,7 @@ async def agent_card_endpoint() -> JSONResponse:
     base_url = os.environ.get("A2A_BASE_URL", "http://localhost:9001")
     card = _build_agent_card(agent_sa, base_url)
     try:
-        signed = _sign_card(card, agent_sa)
+        signed = await _sign_card(card, agent_sa)
     except Exception as exc:
         logger.warning(
             "a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", type(exc).__name__

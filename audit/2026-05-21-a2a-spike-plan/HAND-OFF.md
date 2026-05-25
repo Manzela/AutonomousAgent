@@ -55,7 +55,7 @@
 - [ ] Peer federation: move from static `peers.yaml` to AgentCard discovery feed
 - [ ] Security review: assess mTLS overlay requirement for HIPAA posture
 - [ ] Load test: JWT mint/verify at 100 RPS sustained; SSE hold-open at 50 concurrent
-- [ ] Tag spike commit: `spike/a2a-v0.1`
+- [x] Tag spike commit: `spike/a2a-v0.1` — tagged on main HEAD f885f4c
 - [x] `HERMES_A2A_ENABLED` feature flag: gates `register()` in `lib/a2a/__init__.py`; default=true with deprecation warn (flips to false next release) — PR fix/a2a-audit-h6-h10-l3-l4; **operator: set explicitly to suppress warning**
 - [x] Body size limits: add ASGI middleware to reject requests >1MB on `POST /`, `/stream`, `/subscribe` — done PR #142 (M3)
 - [x] Negative JWKS caching: cache failed JWKS fetches (429/503) for 30s with jitter — done PR #142 (M6), `lib/a2a/auth.py:_JWKS_FAIL_CACHE`

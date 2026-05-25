@@ -46,6 +46,7 @@ a2a = [
   "cryptography>=43.0",
   "python-multipart>=0.0.20",
   "opentelemetry-api>=1.20",
+  "jcs>=0.2",
 ]
 
 [tool.setuptools.packages.find]

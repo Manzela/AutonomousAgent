@@ -32,6 +32,8 @@ import yaml
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from lib.a2a.agent_card import build_agent_card as _build_agent_card
+from lib.a2a.agent_card import sign_card as _sign_card
 from lib.a2a.auth import AgentIdentity, verify_token
 from lib.a2a.task_bridge import bridge_inbound_to_taskspec, bridge_taskspec_status_to_a2a
 from opentelemetry import context as otel_context
@@ -227,9 +229,25 @@ app = FastAPI(
 )
 
 
+_AGENT_SA = os.environ.get("A2A_AGENT_SA", "agent-a@autonomous-agent-2026.iam.gserviceaccount.com")
+_A2A_BASE_URL = os.environ.get("A2A_BASE_URL", "http://localhost:9001")
+
+
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/.well-known/agent-card.json")
+async def agent_card_endpoint() -> JSONResponse:
+    """Serve signed AgentCard (Day 8). Falls back to unsigned card in dev."""
+    card = _build_agent_card(_AGENT_SA, _A2A_BASE_URL)
+    try:
+        signed = _sign_card(card, _AGENT_SA)
+    except Exception as exc:
+        logger.warning("a2a: sign_card failed (%s) — serving unsigned card (dev fallback)", exc)
+        signed = card
+    return JSONResponse(content=signed)
 
 
 # --- Day 4: SSE streaming routes -----------------------------------------

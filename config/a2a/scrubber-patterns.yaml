@@ -1,0 +1,22 @@
+# A2A inbound message scrubber patterns (Day 9).
+#
+# Applied recursively to all string values in inbound A2A message params.
+# Matched substrings are replaced with [REDACTED].
+# Per spike-plan.md §Day 9 and integration-points.md §10.
+
+patterns:
+  # US Social Security Numbers: NNN-NN-NNNN
+  - "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+  # Email addresses
+  - "[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}"
+  # US phone numbers: (NNN) NNN-NNNN or NNN-NNN-NNNN
+  - "\\(?\\d{3}\\)?[\\s.\\-]\\d{3}[\\s.\\-]\\d{4}"
+  # Credit card numbers (16 digits with optional separators)
+  - "\\b(?:\\d[ \\-]?){15,16}\\b"
+  # Date of birth: MM/DD/YYYY (scoped to slash-delimited format only)
+  - "\\b\\d{1,2}/\\d{1,2}/\\d{4}\\b"
+  # ISO date pattern REMOVED: \b\d{4}-\d{2}-\d{2}\b matched task IDs, trace IDs,
+  # and ULID date segments — unacceptable false-positive rate at A2A observability
+  # boundary. Bare ISO dates are not PHI. Re-add as field-scoped rule if needed.
+  # MRN / patient ID
+  - "\\bMRN[:\\s]?\\d{6,10}\\b"

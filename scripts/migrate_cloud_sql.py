@@ -64,12 +64,10 @@ DDL_BLOCKS: tuple[tuple[str, str], ...] = (
         """,
     ),
     (
-        "index_embedding_hnsw",
+        "index_scope",
         """
-        CREATE INDEX IF NOT EXISTS memory_records_embedding_hnsw
-            ON memory_records
-            USING hnsw (embedding vector_cosine_ops)
-            WITH (m = 16, ef_construction = 64)
+        CREATE INDEX IF NOT EXISTS memory_records_scope_idx
+            ON memory_records (project_id, tier)
         """,
     ),
     (

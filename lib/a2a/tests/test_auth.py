@@ -123,19 +123,21 @@ async def test_verify_token_jti_replay_rejected():
 
 
 @pytest.mark.asyncio
-async def test_verify_token_expired_rejected(capsys):
+async def test_verify_token_expired_rejected(caplog):
     from lib.a2a.auth import _JTI_CACHE
+    import logging
 
     _JTI_CACHE.clear()
     token = _make_token(exp_offset=-10, jti="exp-jti")
-    with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
-        with pytest.raises(ValueError, match="expired"):
-            await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
-    captured = capsys.readouterr()
-    assert captured.out.strip(), "expected audit log line on stdout"
+    with caplog.at_level(logging.INFO, logger="a2a.audit"):
+        with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
+            with pytest.raises(ValueError, match="expired"):
+                await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
     import json as _json
 
-    entry = _json.loads(captured.out.strip().splitlines()[-1])
+    audit_records = [r for r in caplog.records if r.name == "a2a.audit"]
+    assert audit_records, "expected audit log record"
+    entry = _json.loads(audit_records[-1].getMessage())
     assert entry.get("decision") in (
         "rejected_expired",
         "rejected_invalid_sig",
@@ -145,19 +147,21 @@ async def test_verify_token_expired_rejected(capsys):
 
 
 @pytest.mark.asyncio
-async def test_verify_token_audience_mismatch_rejected(capsys):
+async def test_verify_token_audience_mismatch_rejected(caplog):
     from lib.a2a.auth import _JTI_CACHE
+    import logging
 
     _JTI_CACHE.clear()
     token = _make_token(aud="peer-b@autonomous-agent-2026.iam.gserviceaccount.com", jti="aud-jti")
-    with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
-        with pytest.raises(ValueError, match="audience"):
-            await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
-    captured = capsys.readouterr()
-    assert captured.out.strip(), "expected audit log line on stdout"
+    with caplog.at_level(logging.INFO, logger="a2a.audit"):
+        with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
+            with pytest.raises(ValueError, match="audience"):
+                await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
     import json as _json
 
-    entry = _json.loads(captured.out.strip().splitlines()[-1])
+    audit_records = [r for r in caplog.records if r.name == "a2a.audit"]
+    assert audit_records, "expected audit log record"
+    entry = _json.loads(audit_records[-1].getMessage())
     assert entry.get("decision") in (
         "rejected_expired",
         "rejected_invalid_sig",
@@ -167,19 +171,21 @@ async def test_verify_token_audience_mismatch_rejected(capsys):
 
 
 @pytest.mark.asyncio
-async def test_verify_token_non_allowlisted_issuer_rejected(capsys):
+async def test_verify_token_non_allowlisted_issuer_rejected(caplog):
     from lib.a2a.auth import _JTI_CACHE
+    import logging
 
     _JTI_CACHE.clear()
     token = _make_token(iss="rogue@other-project.iam.gserviceaccount.com", jti="rogue-jti")
-    with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
-        with pytest.raises(ValueError, match="not allowlisted"):
-            await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
-    captured = capsys.readouterr()
-    assert captured.out.strip(), "expected audit log line on stdout"
+    with caplog.at_level(logging.INFO, logger="a2a.audit"):
+        with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
+            with pytest.raises(ValueError, match="not allowlisted"):
+                await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
     import json as _json
 
-    entry = _json.loads(captured.out.strip().splitlines()[-1])
+    audit_records = [r for r in caplog.records if r.name == "a2a.audit"]
+    assert audit_records, "expected audit log record"
+    entry = _json.loads(audit_records[-1].getMessage())
     assert entry.get("decision") in (
         "rejected_expired",
         "rejected_invalid_sig",
@@ -230,8 +236,9 @@ async def test_mint_token_uses_cache_on_repeat_call():
 # ---------------------------------------------------------------------------
 
 
-def test_emit_audit_log_hipaa_fields(capsys):
+def test_emit_audit_log_hipaa_fields(caplog):
     from lib.a2a.auth import _JTI_CACHE
+    import logging
 
     _JTI_CACHE.clear()
     identity = AgentIdentity(
@@ -241,17 +248,17 @@ def test_emit_audit_log_hipaa_fields(capsys):
         expiry=int(time.time()) + 300,
         jti="audit-jti-001",
     )
-    _emit_audit_log(
-        decision="accepted",
-        identity=identity,
-        method="message/send",
-        task_id="task-abc",
-        trace_id="00-traceid-spanid-01",
-    )
-    captured = capsys.readouterr()
-    line = captured.out.strip()
-    assert line, "expected one JSON log line on stdout"
-    entry = json.loads(line)
+    with caplog.at_level(logging.INFO, logger="a2a.audit"):
+        _emit_audit_log(
+            decision="accepted",
+            identity=identity,
+            method="message/send",
+            task_id="task-abc",
+            trace_id="00-traceid-spanid-01",
+        )
+    audit_records = [r for r in caplog.records if r.name == "a2a.audit"]
+    assert audit_records, "expected one audit log record"
+    entry = json.loads(audit_records[0].getMessage())
     assert entry["decision"] == "accepted"
     assert entry["peer_agent_id"] == _CANARY_SA
     assert "peer_human_sub" in entry

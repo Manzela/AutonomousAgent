@@ -24,6 +24,8 @@ import httpx
 import jwt
 
 logger = logging.getLogger(__name__)
+_audit_logger = logging.getLogger("a2a.audit")
+_audit_logger.addHandler(logging.NullHandler())
 
 _MINT_CACHE: cachetools.TTLCache[tuple[str, str], str] = cachetools.TTLCache(
     maxsize=10_000, ttl=240
@@ -275,4 +277,4 @@ def _emit_audit_log(
         "jti": (identity.jti if identity else "") or "",
         "trace_id": trace_id or "",
     }
-    print(json.dumps(entry), flush=True)
+    _audit_logger.info(json.dumps(entry))

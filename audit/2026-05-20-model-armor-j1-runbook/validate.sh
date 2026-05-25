@@ -1,8 +1,8 @@
 #!/bin/bash
-# Validation script for Model Armor configuration on project i-for-ai
+# Validation script for Model Armor configuration on project autonomous-agent-2026
 # This script verifies that the floor settings and SDP templates are correctly configured.
 
-PROJECT_ID="i-for-ai"
+PROJECT_ID="autonomous-agent-2026"
 LOCATION="global"
 TEMPLATE_ID="j1-trajectory-shipper"
 REGIONAL_LOCATION="us-central1"

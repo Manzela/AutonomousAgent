@@ -1,7 +1,7 @@
 variable "project_id" {
   description = "GCP project ID hosting Model Armor + SDP resources for the J1 trajectory shipper."
   type        = string
-  default     = "i-for-ai"
+  default     = "autonomous-agent-2026"
 }
 
 variable "region" {

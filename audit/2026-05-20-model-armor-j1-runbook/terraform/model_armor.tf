@@ -5,7 +5,7 @@
 # (carved into a sub-module to isolate the google-beta ~> 6.43 provider pin).
 # Do NOT terraform apply from this directory — it has no backend + no state.
 #
-# This file defines the Model Armor floor settings and SDP templates for project i-for-ai.
+# This file defines the Model Armor floor settings and SDP templates for project autonomous-agent-2026.
 # It follows the conventions of terraform/phase-0a-gcp/.
 
 resource "google_project_service" "model_armor_apis" {

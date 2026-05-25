@@ -48,20 +48,28 @@
 ## Production checklist
 
 - [ ] Redis-backed jti replay cache replacing `cachetools.TTLCache`
-- [ ] JWKS TTL cache in `verify_token` (5-min TTL keyed on SA email)
+- [x] JWKS TTL cache in `verify_token` (5-min TTL keyed on SA email) — PR #130
 - [ ] Wire `scrub_inbound_params` into `jsonrpc_dispatch` before handler dispatch
 - [ ] Wire `scrub_inbound_params` before OTel span attribute attachment
 - [ ] Real SSE event stream from `lib.anchors` event bus (not synthetic 3-frame generator)
 - [ ] Implement `tasks/get` and `tasks/cancel` via lib.anchors API
 - [ ] Wire `mint_token` into `client.py` `send_message` outbound path
 - [ ] Remove unsigned AgentCard fallback; add 503 circuit-break
-- [ ] Add `alert_strategy { auto_close = "1800s" }` to monitoring alert policies
+- [x] Add `alert_strategy { auto_close = "1800s" }` to monitoring alert policies — PR #133
 - [ ] Hard Cloud Trace assertion in e2e demo (not best-effort warn)
 - [ ] Peer federation: move from static `peers.yaml` to AgentCard discovery feed
 - [ ] Security review: assess mTLS overlay requirement for HIPAA posture
 - [ ] Load test: JWT mint/verify at 100 RPS sustained; SSE hold-open at 50 concurrent
 - [ ] Tag spike commit: `spike/a2a-v0.1`
-- [ ] `HERMES_A2A_ENABLED` feature flag: default `false`, gated by ops runbook before deploy
+- [ ] `HERMES_A2A_ENABLED` feature flag: missing — A2A always active when module imported; add env var (default false)
+- [ ] Body size limits: add ASGI middleware to reject requests >1MB on `POST /`, `/stream`, `/subscribe`
+- [ ] Negative JWKS caching: cache failed JWKS fetches (429/503) for 30s with jitter
+- [ ] `_call_sign_blob` async: convert from `httpx.post` (sync) to `AsyncClient.post` (async)
+- [ ] `HERMES_A2A_SA` validation: validate env var at startup against ADC identity
+- [ ] Redis jti replay cache: replace per-process `TTLCache` with Redis atomic `SET NX`
+- [ ] Remove unsigned AgentCard fallback: return 503 on signBlob error, not unsigned card
+- [ ] PHI scrubber on SSE routes: wired in PR #139 — verify and mark done after PR #139 CI
+- [ ] JWT auth on SSE routes: wired in PR #139 — verify and mark done after PR #139 CI
 
 ---
 

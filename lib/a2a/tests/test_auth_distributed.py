@@ -128,11 +128,13 @@ async def test_first_jti_accepted_second_rejected(fake_redis_pool):
     """SET NX EX semantics: first verify accepts, second raises 'jti replay'."""
     token = _make_token(jti="dist-first-rep-001")
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
-        identity = await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+        identity = await auth_mod.verify_token(
+            token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA]
+        )
         assert identity.jti == "dist-first-rep-001"
 
         with pytest.raises(ValueError, match="jti replay"):
-            await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+            await auth_mod.verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
 
 
 @pytest.mark.asyncio
@@ -143,7 +145,9 @@ async def test_redis_down_fail_open_accepts(redis_down, monkeypatch):
 
     token = _make_token(jti="dist-failopen-001")
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
-        identity = await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+        identity = await auth_mod.verify_token(
+            token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA]
+        )
     assert identity.jti == "dist-failopen-001"
 
 
@@ -155,7 +159,7 @@ async def test_redis_down_fail_closed_rejects(redis_down, monkeypatch):
     token = _make_token(jti="dist-failclosed-001")
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
         with pytest.raises(ValueError, match="unavailable"):
-            await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+            await auth_mod.verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
 
 
 @pytest.mark.asyncio
@@ -166,9 +170,11 @@ async def test_l1_replay_detection_during_redis_down(redis_down, monkeypatch):
     token = _make_token(jti="dist-l1-replay-001")
     with patch("lib.a2a.auth._fetch_jwks", new=AsyncMock(return_value=[_fake_jwk()])):
         # First call: accepted via L1 fallback.
-        identity = await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+        identity = await auth_mod.verify_token(
+            token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA]
+        )
         assert identity.jti == "dist-l1-replay-001"
 
         # Second call: L1 has the entry — must reject with 'replay' message.
         with pytest.raises(ValueError, match="replay"):
-            await verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])
+            await auth_mod.verify_token(token, our_sa=_AGENT_SA, peers_allowlist=[_CANARY_SA])

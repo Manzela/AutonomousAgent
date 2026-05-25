@@ -65,6 +65,22 @@ class SpecStore:
             raise FileNotFoundError(f"TaskSpec not found: {path}")
         return TaskSpec.model_validate_json(path.read_text())
 
+    def get_by_id(self, spec_id: str) -> "TaskSpec | None":
+        """Return TaskSpec by string spec_id, or None if not found or invalid UUID."""
+        try:
+            return self.load(UUID(spec_id))
+        except (FileNotFoundError, ValueError):
+            return None
+
+    def cancel_by_id(self, spec_id: str) -> bool:
+        """Mark a TaskSpec as superseded. Returns True if found+cancelled, False if not found."""
+        spec = self.get_by_id(spec_id)
+        if spec is None:
+            return False
+        cancelled = spec.model_copy(update={"status": "superseded"})
+        self.save(cancelled)
+        return True
+
     def list_active(self) -> list[TaskSpec]:
         """Return all specs with status in {'draft', 'draft_locked', 'locked'}.
 

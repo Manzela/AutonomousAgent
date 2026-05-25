@@ -65,6 +65,10 @@ _PEERS_CACHE: list[str] | None = None
 _PEERS_CACHE_AT: float = 0.0
 _PEERS_CACHE_TTL = 60.0
 
+# Task 6: in-process task registry — maps A2A task_id (str) → bridge TaskSpec.
+# Cleared only by explicit tasks/cancel or process restart (spike-grade store).
+_TASK_REGISTRY: dict[str, Any] = {}
+
 # --- OTel tracer ----------------------------------------------------------
 
 # Tracer is fetched lazily so test fixtures can swap in a TracerProvider
@@ -187,6 +191,14 @@ class _A2AUnsupportedOperation(Exception):
         self.method_name = method_name
 
 
+class _A2ATaskNotFound(Exception):
+    """Raised by tasks/get and tasks/cancel when the task_id is not in the registry.
+
+    The dispatcher catches this and emits the A2A `-32001` error code
+    (A2ATaskNotFoundError per protocol-survey.md §11).
+    """
+
+
 async def handle_send_message(
     params: dict[str, Any],
     identity: Any | None = None,
@@ -195,29 +207,56 @@ async def handle_send_message(
 
     Spec contract (§7.6.1): params MUST include a `message` object with
     `parts` array. bridge_inbound_to_taskspec validates and creates the TaskSpec.
+    Task 6: stores the spec in _TASK_REGISTRY keyed by spec.id.
     """
     message = params.get("message")
     if not isinstance(message, dict) or "parts" not in message:
         raise ValueError("params.message.parts is required")
     spec = bridge_inbound_to_taskspec(params, identity)
+    _TASK_REGISTRY[spec.id] = spec
     status = bridge_taskspec_status_to_a2a(spec)
     return {"id": spec.id, "status": status}
+
+
+async def handle_tasks_get(params: dict[str, Any]) -> dict[str, Any]:
+    """Task 6: return the status of a previously submitted task by id.
+
+    Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry.
+    """
+    task_id = params.get("id", "")
+    spec = _TASK_REGISTRY.get(task_id)
+    if spec is None:
+        raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
+    return {"id": task_id, "status": bridge_taskspec_status_to_a2a(spec)}
+
+
+async def handle_tasks_cancel(params: dict[str, Any]) -> dict[str, Any]:
+    """Task 6: cancel a task by marking it superseded in the registry.
+
+    Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry.
+    The spec is immutably updated via model_copy (dataclass replace pattern).
+    """
+    task_id = params.get("id", "")
+    spec = _TASK_REGISTRY.get(task_id)
+    if spec is None:
+        raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")
+    from dataclasses import replace as _dc_replace
+
+    try:
+        cancelled = _dc_replace(spec, status="superseded")
+    except TypeError:
+        # Fallback for Pydantic-based TaskSpec (model_copy)
+        cancelled = spec.model_copy(update={"status": "superseded"})
+    _TASK_REGISTRY[task_id] = cancelled
+    return {"id": task_id, "status": bridge_taskspec_status_to_a2a(cancelled)}
 
 
 async def _handle_unsupported_stream(_params: dict[str, Any]) -> None:
     raise _A2AUnsupportedOperation("message/stream")
 
 
-async def _handle_unsupported_get(_params: dict[str, Any]) -> None:
-    raise _A2AUnsupportedOperation("tasks/get")
-
-
 async def _handle_unsupported_subscribe(_params: dict[str, Any]) -> None:
     raise _A2AUnsupportedOperation("tasks/subscribe")
-
-
-async def _handle_unsupported_cancel(_params: dict[str, Any]) -> None:
-    raise _A2AUnsupportedOperation("tasks/cancel")
 
 
 # Dispatch table — method name → coroutine. New methods land here as the
@@ -225,9 +264,9 @@ async def _handle_unsupported_cancel(_params: dict[str, Any]) -> None:
 _DISPATCH = {
     "message/send": handle_send_message,
     "message/stream": _handle_unsupported_stream,
-    "tasks/get": _handle_unsupported_get,
+    "tasks/get": handle_tasks_get,
     "tasks/subscribe": _handle_unsupported_subscribe,
-    "tasks/cancel": _handle_unsupported_cancel,
+    "tasks/cancel": handle_tasks_cancel,
 }
 
 
@@ -456,6 +495,14 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
                 req_id,
                 A2A_UNSUPPORTED_OPERATION,
                 f"Method '{exc.method_name}' not yet implemented in Day 2 spike",
+            )
+        )
+    except _A2ATaskNotFound as exc:
+        return JSONResponse(
+            content=_jsonrpc_error(
+                req_id,
+                A2A_TASK_NOT_FOUND,
+                str(exc),
             )
         )
     except ValueError:

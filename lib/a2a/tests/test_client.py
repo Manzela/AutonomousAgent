@@ -24,7 +24,6 @@ from lib.a2a.client import (
     A2AInvalidAgentResponse,
     A2ARPCError,
     A2ATaskNotFound,
-    A2AUnsupportedOperation,
     cancel_task,
     get_task,
     send_message,
@@ -114,29 +113,35 @@ async def test_send_message_malformed_result_raises_invalid_agent_response() -> 
 
 
 @pytest.mark.asyncio
-async def test_tasks_get_unsupported_raises_a2a_unsupported_operation() -> None:
-    """tasks/get is a Day-2 stub → server returns -32004."""
+async def test_tasks_get_unknown_raises_a2a_task_not_found() -> None:
+    """tasks/get with an unknown id → server returns -32001 (A2ATaskNotFound).
+
+    Task 6: tasks/get is now implemented; unknown task_id yields -32001, not -32004.
+    """
     async with httpx.AsyncClient(transport=_transport(), base_url=_BASE) as client:
         with patch("lib.a2a.client.httpx.AsyncClient") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=client)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            with pytest.raises(A2AUnsupportedOperation) as exc_info:
+            with pytest.raises(A2ATaskNotFound) as exc_info:
                 await get_task(_BASE, "task-does-not-exist")
 
-    assert exc_info.value.code == -32004
+    assert exc_info.value.code == -32001
 
 
 @pytest.mark.asyncio
-async def test_cancel_task_unsupported_raises_a2a_unsupported_operation() -> None:
-    """tasks/cancel is a Day-2 stub → server returns -32004."""
+async def test_cancel_task_unknown_raises_a2a_task_not_found() -> None:
+    """tasks/cancel with an unknown id → server returns -32001 (A2ATaskNotFound).
+
+    Task 6: tasks/cancel is now implemented; unknown task_id yields -32001, not -32004.
+    """
     async with httpx.AsyncClient(transport=_transport(), base_url=_BASE) as client:
         with patch("lib.a2a.client.httpx.AsyncClient") as mock_cls:
             mock_cls.return_value.__aenter__ = AsyncMock(return_value=client)
             mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-            with pytest.raises(A2AUnsupportedOperation) as exc_info:
+            with pytest.raises(A2ATaskNotFound) as exc_info:
                 await cancel_task(_BASE, "task-does-not-exist")
 
-    assert exc_info.value.code == -32004
+    assert exc_info.value.code == -32001
 
 
 @pytest.mark.asyncio

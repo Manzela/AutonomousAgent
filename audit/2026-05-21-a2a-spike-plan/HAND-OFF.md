@@ -27,7 +27,6 @@
 |-----|----------|----------------|
 | jti replay cache is per-process | `lib/a2a/auth.py` | Redis-backed `TTLCache` shared across replicas — **Memorystore provisioned** (`autonomousagent-jti-replay`, `10.184.94.28:6378`, STANDARD_HA 1GB); auth.py wiring pending (`lib/a2a/auth.py` → redis spec) |
 | SSE events are synthetic (3 hardcoded frames) | `lib/a2a/server.py` | Wire to `lib.anchors` event bus |
-| `tasks/get`, `tasks/cancel` → `-32004` | `lib/a2a/server.py` | Implement via `lib.anchors` queries |
 | Peer discovery out-of-band | `config/a2a/peers.yaml` | AgentCard discovery feed |
 
 ---
@@ -37,6 +36,7 @@
 - **Allow-unauthenticated transport**: Cloud Run set to allow-all so we can iterate without IAM churn. JWT guard at the application layer + HIPAA audit log are the compensating controls. mTLS at the transport layer is deferred to v2 per auth-design.md §7.3.
 - **Single-instance JWT replay cache**: OOM-proof at spike load but replays across replicas. Memorystore STANDARD_HA provisioned (`autonomousagent-jti-replay`, `10.184.94.28:6378`). `lib/a2a/auth.py` wiring pending — see `docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md`.
 - **PostgresStore not wired**: Cloud SQL provisioned (`autonomousagent-postgres-vector`, `10.120.0.2`, `db-custom-16-64000`). `CloudSqlPgvectorStore` implemented in `app/adapters/gcp/memory.py` (PR #150); migration script at `scripts/migrate_cloud_sql.py`; HNSW index build at `scripts/build-hnsw-index.sh`.
+- **In-process task registry (`_TASK_REGISTRY`, `lib/a2a/server.py:70`)**: Tasks submitted to one Cloud Run replica are invisible to others. Under round-robin load balancing, `tasks/get` and `tasks/cancel` will return -32001 (task not found) for cross-replica calls. The registry is also unbounded (no TTL or size cap) and is cleared on process restart. Production fix: Redis-backed registry with TTL=600s, keyed on A2A task UUID.
 
 ---
 
@@ -47,7 +47,7 @@
 - [x] Wire `scrub_inbound_params` into `jsonrpc_dispatch` before handler dispatch — done: `lib/a2a/server.py:444`
 - [x] Wire `scrub_inbound_params` before OTel span attribute attachment — done / N/A: no `span.set_attribute()` calls expose params in `server.py`; PHI does not reach OTel spans
 - [ ] Real SSE event stream from `lib.anchors` event bus (not synthetic 3-frame generator)
-- [ ] Implement `tasks/get` and `tasks/cancel` via lib.anchors API
+- [x] Implement `tasks/get` and `tasks/cancel` — done via in-process `_TASK_REGISTRY` (PR #151); production upgrade to Redis-backed registry pending when multi-replica deployment is required
 - [x] Wire `mint_token` into `client.py` `send_message` outbound path — done: `_build_auth_headers()` in `lib/a2a/client.py:160-186` calls `mint_token`; wired into `send_message` at line 269
 - [x] Add `alert_strategy { auto_close = "1800s" }` to monitoring alert policies — PR #133
 - [ ] Hard Cloud Trace assertion in e2e demo (not best-effort warn)

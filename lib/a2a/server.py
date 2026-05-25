@@ -224,6 +224,8 @@ async def handle_tasks_get(params: dict[str, Any]) -> dict[str, Any]:
     Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry.
     """
     task_id = params.get("id", "")
+    # SECURITY(spike): no ownership check — any authenticated peer with a task UUID
+    # can read this task. Production: verify identity.sub == spec.owner.
     spec = _TASK_REGISTRY.get(task_id)
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
@@ -237,6 +239,8 @@ async def handle_tasks_cancel(params: dict[str, Any]) -> dict[str, Any]:
     The spec is immutably updated via model_copy (dataclass replace pattern).
     """
     task_id = params.get("id", "")
+    # SECURITY(spike): no ownership check — any authenticated peer with a task UUID
+    # can cancel this task. Production: verify identity.sub == spec.owner.
     spec = _TASK_REGISTRY.get(task_id)
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")

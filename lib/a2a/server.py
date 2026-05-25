@@ -85,12 +85,22 @@ def _jsonrpc_result(req_id: Any, result: Any) -> dict[str, Any]:
 
 
 def _load_peers_config() -> list[str]:
-    """Load peers.yaml allowlist. Falls back to empty list if file missing."""
+    """Load peers.yaml allowlist. Falls back to empty list if file missing/malformed."""
     try:
         with open("config/a2a/peers.yaml") as f:
             data = yaml.safe_load(f)
         return [p["issuer"] for p in (data.get("peers") or []) if "issuer" in p]
-    except Exception:
+    except FileNotFoundError:
+        logger.warning(
+            "a2a: config/a2a/peers.yaml not found — no peers allowlisted; all inbound JWTs will be rejected"
+        )
+        return []
+    except Exception as exc:
+        logger.error(
+            "a2a: failed to load peers.yaml (%s: %s) — all inbound JWTs will be rejected",
+            type(exc).__name__,
+            exc,
+        )
         return []
 
 

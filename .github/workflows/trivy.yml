@@ -10,12 +10,6 @@ name: Trivy
 on:
   push:
     tags: ['v*']
-  pull_request:
-    branches: [main]
-    paths:
-      - 'deploy/Dockerfile.*'
-      - 'pyproject.toml'
-      - 'uv.lock'
   workflow_dispatch:
 
 permissions:

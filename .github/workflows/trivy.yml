@@ -4,11 +4,6 @@
 # CRITICAL + HIGH OS-package and library CVEs. Exits non-zero on any
 # CRITICAL/HIGH finding so release tags can't ship known-vulnerable
 # images.
-#
-# Trigger model: release tags only (cheap, late-stage gate). Adding it to
-# every PR would 4x the CI duration of any Dockerfile-touching PR with
-# little extra signal — Dependabot + OSV-Scanner already catch
-# package-manager-level CVEs on the PR.
 
 name: Trivy
 
@@ -16,7 +11,6 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
-  # Allow manual scan from a release branch.
 
 permissions:
   contents: read
@@ -37,6 +31,19 @@ jobs:
         with:
           submodules: recursive  # hermes-agent submodule is needed for the build
 
+      - name: Install Trivy
+        run: |
+          TRIVY_VERSION=0.70.0
+          TARBALL="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${TARBALL}" \
+            -o "${TARBALL}"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            -o checksums.txt
+          grep "${TARBALL}" checksums.txt | sha256sum -c -
+          tar -xzf "${TARBALL}" trivy
+          chmod +x trivy
+          ./trivy version
+
       - name: Build Hermes image (local, no push)
         run: |
           docker build \
@@ -44,17 +51,16 @@ jobs:
             --tag autonomousagent/hermes:scan-${{ github.sha }} \
             .
 
-      # Use Aqua Security's official Trivy action, SHA-pinned.
       - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8  # v0.36.0
-        with:
-          image-ref: 'autonomousagent/hermes:scan-${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-          severity: 'CRITICAL,HIGH'
-          exit-code: '1'             # fail the job on CRITICAL/HIGH
-          ignore-unfixed: true       # don't fail on CVEs with no patch yet
-          vuln-type: 'os,library'
+        run: |
+          ./trivy image \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity CRITICAL,HIGH \
+            --exit-code 1 \
+            --ignore-unfixed \
+            --vuln-type os,library \
+            autonomousagent/hermes:scan-${{ github.sha }}
 
       - name: Upload Trivy scan results to Security tab
         if: always()

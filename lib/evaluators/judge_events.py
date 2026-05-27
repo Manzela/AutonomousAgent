@@ -36,7 +36,9 @@ from lib.evaluators.judge import JudgeResult
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
-DEFAULT_PATH = Path("trajectories/judge-events.jsonl")
+# Anchor to repo root, not CWD (CWD varies by launch context).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PATH = _REPO_ROOT / "trajectories" / "judge-events.jsonl"
 WORKER_SUMMARY_MAX_CHARS = 500
 JUDGE_REASONING_MAX_CHARS = 1000
 

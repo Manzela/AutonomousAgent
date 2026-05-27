@@ -51,7 +51,18 @@ async def _http_check(
 
 async def run_checks(deps: dict[str, str]) -> HealthReport:
     async with httpx.AsyncClient() as client:
-        results = await asyncio.gather(*[_http_check(client, n, u) for n, u in deps.items()])
+        raw_results = await asyncio.gather(
+            *[_http_check(client, n, u) for n, u in deps.items()],
+            return_exceptions=True,  # don't cancel sibling checks on single failure
+        )
+    # Filter out exceptions — treat them as DOWN.
+    results: list[CheckResult] = []
+    dep_names = list(deps.keys())
+    for i, r in enumerate(raw_results):
+        if isinstance(r, BaseException):
+            results.append(CheckResult(dep_names[i], Status.DOWN, repr(r)))
+        else:
+            results.append(r)
     if all(r.status == Status.OK for r in results):
         overall = Status.OK
     elif any(r.status == Status.DOWN for r in results):

@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 30
 
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         language: [python]
 
@@ -67,21 +67,29 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
-      # Initialize CodeQL — autobuild handles Python without manual hints.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
         with:
           languages: ${{ matrix.language }}
-          # security-extended adds CWE coverage beyond the default suite;
-          # quality adds maintainability queries. Both are still detection-only.
           queries: security-extended,security-and-quality
-          # paths-ignore lives in the config file so it applies to the
-          # ANALYSIS step (which files get scanned), not just to workflow
-          # triggering. Workflow-level paths-ignore above only controls
-          # whether the job RUNS for a given PR.
           config-file: ./.github/codeql/codeql-config.yml
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@458d36d7d4f47d0dd16ca424c1d3cda0060f1360  # v3
         with:
           category: "/language:${{ matrix.language }}"
+
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@713efdd345f3035192eaa63f56867b654e8a504a  # v1
+        with:
+          config: >-
+            p/python p/security-audit p/owasp-top-ten p/jwt

@@ -51,23 +51,38 @@ from opentelemetry.propagate import extract as otel_extract
 
 logger = logging.getLogger(__name__)
 
-# H5: unauthenticated-request posture.
-# Spike default: open (A2A_REQUIRE_AUTH unset). Production: set A2A_REQUIRE_AUTH=true.
-_A2A_REQUIRE_AUTH: bool = os.getenv("A2A_REQUIRE_AUTH", "false").lower() == "true"
-if not _A2A_REQUIRE_AUTH:
+# Secure-by-default authentication posture.
+# In development, set A2A_DEV_INSECURE=1 to disable auth (opt-in insecure).
+# Production deployments must NOT set this variable.
+_A2A_DEV_INSECURE: bool = os.getenv("A2A_DEV_INSECURE", "").lower() in ("1", "true")
+_A2A_REQUIRE_AUTH: bool = not _A2A_DEV_INSECURE
+if _A2A_DEV_INSECURE:
     logger.warning(
-        "a2a: A2A_REQUIRE_AUTH not set — unauthenticated requests ALLOWED (spike posture). "
-        "Set A2A_REQUIRE_AUTH=true before any production deploy."
+        "a2a: A2A_DEV_INSECURE=1 — unauthenticated requests ALLOWED (dev-only). "
+        "Do NOT use in production."
     )
+if not _A2A_DEV_INSECURE and os.getenv("PRODUCTION", "").lower() in ("1", "true"):
+    # Guard: if somehow auth is off in production, crash immediately.
+    if not _A2A_REQUIRE_AUTH:
+        raise RuntimeError(
+            "A2A auth is disabled in production (PRODUCTION=1). "
+            "Remove A2A_DEV_INSECURE or set A2A_REQUIRE_AUTH=true."
+        )
 
-# M11: peers.yaml TTL cache (60s) — avoids per-request file reads
-_PEERS_CACHE: list[str] | None = None
+# Peers.yaml TTL cache (60s) — avoids per-request file reads.
+_PEERS_CACHE: list[dict[str, Any]] | None = None
 _PEERS_CACHE_AT: float = 0.0
 _PEERS_CACHE_TTL = 60.0
+_PEERS_CACHE_LOCK = asyncio.Lock()
+_PEERS_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "../../config/a2a/peers.yaml")
+_PEERS_METHODS_MAP: dict[str, list[str]] = {}  # issuer -> allowed_methods
 
-# Task 6: in-process task registry — maps A2A task_id (str) → bridge TaskSpec.
-# Cleared only by explicit tasks/cancel or process restart (spike-grade store).
-_TASK_REGISTRY: dict[str, Any] = {}
+# TTL-bounded task registry — maps A2A task_id (str) -> bridge TaskSpec.
+# Bounded to prevent unbounded memory growth; entries expire after 1 hour.
+from cachetools import TTLCache  # noqa: E402
+
+_TASK_REGISTRY: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
+_REGISTRY_LOCK = asyncio.Lock()
 
 # --- OTel tracer ----------------------------------------------------------
 
@@ -112,19 +127,29 @@ def _jsonrpc_result(req_id: Any, result: Any) -> dict[str, Any]:
 
 
 def _load_peers_config() -> list[str]:
-    """Load peers.yaml allowlist with 60s TTL cache. Falls back to empty list on error."""
-    global _PEERS_CACHE, _PEERS_CACHE_AT
+    """Load peers.yaml allowlist with 60s TTL cache. Falls back to empty list on error.
+
+    Also populates ``_PEERS_METHODS_MAP`` for per-peer method enforcement.
+    Uses a module-anchored path so the file is found regardless of CWD.
+    """
+    global _PEERS_CACHE, _PEERS_CACHE_AT, _PEERS_METHODS_MAP
     now = time.monotonic()
     if _PEERS_CACHE is not None and (now - _PEERS_CACHE_AT) < _PEERS_CACHE_TTL:
-        return _PEERS_CACHE
+        return [p["issuer"] for p in _PEERS_CACHE if "issuer" in p]
     try:
-        with open("config/a2a/peers.yaml") as f:
+        with open(_PEERS_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
-        result = [p["issuer"] for p in (data.get("peers") or []) if "issuer" in p]
+        peers_list = data.get("peers") or []
+        result = [p["issuer"] for p in peers_list if "issuer" in p]
+        # Build issuer -> allowed_methods map for per-peer enforcement.
+        _PEERS_METHODS_MAP = {
+            p["issuer"]: p.get("allowed_methods", []) for p in peers_list if "issuer" in p
+        }
         logger.debug("a2a: loaded %d peer issuers from peers.yaml", len(result))
     except FileNotFoundError:
         logger.warning(
-            "a2a: config/a2a/peers.yaml not found — no peers allowlisted; all inbound JWTs will be rejected"
+            "a2a: peers.yaml not found at %s — no peers allowlisted; all inbound JWTs will be rejected",
+            _PEERS_CONFIG_PATH,
         )
         result = []
     except Exception as exc:
@@ -133,7 +158,7 @@ def _load_peers_config() -> list[str]:
             type(exc).__name__,
         )
         result = []
-    _PEERS_CACHE = result
+    _PEERS_CACHE = data.get("peers") or [] if "data" in dir() else []
     _PEERS_CACHE_AT = now
     return result
 
@@ -168,11 +193,19 @@ async def _jwt_guard(request: Request) -> AgentIdentity | None:
     peers = _load_peers_config()
     try:
         identity = await verify_token(token_str, our_sa=our_sa, peers_allowlist=peers)
-    except Exception:
+    except Exception as exc:
+        # Log the exception type to aid debugging JWT verification failures.
+        logger.warning("jwt verification failed exc_type=%s", type(exc).__name__)
         request.state.identity = None
         request.state.jwt_error = True
         return None
     request.state.identity = identity
+
+    # Attach allowed_methods from peers.yaml to the identity object.
+    if identity and hasattr(identity, "issuer"):
+        allowed = _PEERS_METHODS_MAP.get(identity.issuer, [])
+        request.state.allowed_methods = allowed
+
     return identity
 
 
@@ -215,16 +248,20 @@ async def handle_send_message(
     spec = bridge_inbound_to_taskspec(params, identity)
     _TASK_REGISTRY[spec.id] = spec
     status = bridge_taskspec_status_to_a2a(spec)
+    # Set owner from authenticated identity for ownership checks.
+    if identity and hasattr(identity, "issuer"):
+        spec.owner = identity.issuer
     return {"id": spec.id, "status": status}
 
 
-async def handle_tasks_get(params: dict[str, Any]) -> dict[str, Any]:
-    """Task 6: return the status of a previously submitted task by id.
+async def handle_tasks_get(
+    params: dict[str, Any],
+    identity: Any | None = None,
+) -> dict[str, Any]:
+    """Return the status of a previously submitted task by id.
 
-    Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry.
-
-    # SECURITY(spike): no ownership check — any authenticated peer with a task
-    # UUID can read this task. Production: verify identity.sub == spec.owner.
+    Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry,
+    or if the requesting peer is not the task owner (ownership check).
     """
     task_id = params.get("id", "")
     # SECURITY(spike): no ownership check — any authenticated peer with a task UUID
@@ -232,23 +269,32 @@ async def handle_tasks_get(params: dict[str, Any]) -> dict[str, Any]:
     spec = _TASK_REGISTRY.get(task_id)
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
+    # Ownership check — only the task creator can read it.
+    caller = getattr(identity, "issuer", None) if identity else None
+    if hasattr(spec, "owner") and spec.owner and caller != spec.owner:
+        raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
     return {"id": task_id, "status": bridge_taskspec_status_to_a2a(spec)}
 
 
-async def handle_tasks_cancel(params: dict[str, Any]) -> dict[str, Any]:
-    """Task 6: cancel a task by marking it superseded in the registry.
+async def handle_tasks_cancel(
+    params: dict[str, Any],
+    identity: Any | None = None,
+) -> dict[str, Any]:
+    """Cancel a task by marking it superseded in the registry.
 
-    Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry.
+    Returns -32001 (A2ATaskNotFound) if the task_id is not in the registry,
+    or if the requesting peer is not the task owner (ownership check).
     The spec is immutably updated via model_copy (dataclass replace pattern).
-
-    # SECURITY(spike): no ownership check — any authenticated peer with a task
-    # UUID can cancel this task. Production: verify identity.sub == spec.owner.
     """
     task_id = params.get("id", "")
     # SECURITY(spike): no ownership check — any authenticated peer with a task UUID
     # can cancel this task. Production: verify identity.sub == spec.owner.
     spec = _TASK_REGISTRY.get(task_id)
     if spec is None:
+        raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")
+    # Ownership check — only the task creator can cancel it.
+    caller = getattr(identity, "issuer", None) if identity else None
+    if hasattr(spec, "owner") and spec.owner and caller != spec.owner:
         raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")
     from dataclasses import replace as _dc_replace
 
@@ -493,9 +539,19 @@ async def _jsonrpc_dispatch_inner(request: Request) -> JSONResponse:
     params = scrub_inbound_params(params)
 
     try:
-        # Day 7: pass identity to message/send so it can be threaded into the TaskSpec.
-        if method == "message/send":
-            identity = getattr(request.state, "identity", None)
+        # Enforce per-peer allowed_methods from peers.yaml.
+        allowed = getattr(request.state, "allowed_methods", None)
+        if allowed and method not in allowed:
+            return JSONResponse(
+                content=_jsonrpc_error(
+                    req_id,
+                    A2A_UNSUPPORTED_OPERATION,
+                    "Method not allowed for this peer",
+                )
+            )
+        identity = getattr(request.state, "identity", None)
+        # Pass identity to handlers that require it for ownership checks.
+        if method in ("message/send", "tasks/get", "tasks/cancel"):
             result = await handler(params, identity)
         else:
             result = await handler(params)

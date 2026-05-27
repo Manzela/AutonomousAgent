@@ -51,7 +51,7 @@ jobs:
       - name: Set up uv (fast Python installer)
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
-          version: latest
+          version: "0.5.x"
 
       - name: Install ruff
         # Pinned to match .pre-commit-config.yaml (astral-sh/ruff-pre-commit
@@ -175,7 +175,7 @@ jobs:
 
   # ------------------------------------------------------------------
   # Enforce SHA-pinning on every third-party Action used by workflows.
-  # Closes audit Task 24 (Wave-3 P2 follow-up). Companion to the
+  # Companion to the
   # repo-level `allowed_actions=selected` policy described in
   # docs/runbooks/allowed-actions-restriction.md — that policy gates
   # *which* actions may run; this check gates *how* they are
@@ -222,7 +222,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
-          version: latest
+          version: "0.5.x"
 
       - name: Skip if no test suite
         id: detect
@@ -257,6 +257,61 @@ jobs:
           name: junit-results
           path: junit.xml
           retention-days: 14
+
+  # ------------------------------------------------------------------
+  # Assert no plaintext secrets on disk
+  # ------------------------------------------------------------------
+  secrets-lint:
+    name: Secrets Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Assert no plaintext secrets on disk
+        run: |
+          count=$(find secrets/ -type f ! -name '*.sops' ! -name 'README.md' ! -name '.gitignore' | wc -l)
+          if [ "$count" -gt 0 ]; then
+            find secrets/ -type f ! -name '*.sops' ! -name 'README.md' ! -name '.gitignore'
+            echo "ERROR: $count plaintext secret file(s) found"
+            exit 1
+          fi
+
+  # ------------------------------------------------------------------
+  # Type check (mypy)
+  # ------------------------------------------------------------------
+  type-check:
+    name: Type Check (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: recursive
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          version: "0.5.x"
+
+      - name: Install dependencies + mypy
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[dev]" "mypy>=1.10"
+
+      - name: Run mypy
+        # Non-blocking until pre-existing type errors are resolved.
+        # Track progress: grep 'Found .* errors' in CI logs.
+        continue-on-error: true
+        run: |
+          source .venv/bin/activate
+          mypy lib/ app/ \
+            --ignore-missing-imports \
+            --exclude 'tests/' \
+            --no-error-summary || true
 
   # ------------------------------------------------------------------
   # Validate config/limits.yaml against its JSON schema
@@ -350,7 +405,7 @@ jobs:
   # Snapshot integrity — write→crash→rehydrate contract between
   # lib/durability/checkpoint.py (writer) and lib/durability/resume.py
   # (reader). Runs as a dedicated step so the matrix entry is grep-able
-  # in branch-protection rules; closes audit P0-6 (risks R1/R2).
+  # in branch-protection rules.
   # Pure-Python — no stack dependency, runs on every PR.
   # ------------------------------------------------------------------
   snapshot-integrity:
@@ -366,7 +421,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
-          version: latest
+          version: "0.5.x"
 
       - name: Skip if no snapshot integrity test
         id: detect
@@ -406,7 +461,7 @@ jobs:
   # Phoenix span coverage — short Hermes turn through the observability
   # plugin's register() hook surface, asserting both LLM (model.call)
   # and TOOL (tool.dispatch) spans emit with the OpenInference attribute
-  # set Phoenix needs to render its panels. Closes audit P1-5.
+  # set Phoenix needs to render its panels.
   # Pure-Python; OTel SDK installed explicitly because dev deps don't
   # carry it (only the production container does).
   # ------------------------------------------------------------------
@@ -423,7 +478,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
-          version: latest
+          version: "0.5.x"
 
       - name: Skip if no phoenix span coverage test
         id: detect
@@ -469,7 +524,7 @@ jobs:
   # the file's sha256 and compares it to the pin in config/limits.yaml
   # (integrity.soul_md_sha256). Drift = hard fail. Dedicated job so the
   # `soul-md-integrity` name is grep-able from branch-protection rules.
-  # Closes audit P2 #36.
+  #
   # Pure POSIX shell — no Python deps, no actions beyond checkout.
   # ------------------------------------------------------------------
   soul-md-integrity:
@@ -506,7 +561,7 @@ jobs:
           except KeyError:
               sys.stderr.write(
                   "config/limits.yaml is missing integrity.soul_md_sha256 — "
-                  "the SOUL.md pin was removed or never installed (see audit P2 #36).\n"
+                  "the SOUL.md pin was removed or never installed.\n"
               )
               sys.exit(2)
           ')"
@@ -562,7 +617,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
-          version: latest
+          version: "0.5.x"
 
       - name: Skip if no smoke test file
         id: detect

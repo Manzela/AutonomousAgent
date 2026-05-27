@@ -241,6 +241,11 @@ async def verify_token(
         raise ValueError(f"JWT decode error: {exc}") from exc
 
     issuer: str = unverified.get("iss", "")
+    # validate issuer format before allowlist lookup. Reject anything
+    # that doesn't look like a GCP SA email to prevent injection/confusion.
+    if not issuer or not issuer.endswith(".iam.gserviceaccount.com"):
+        _emit_audit_log("rejected_invalid_issuer_format", None, None, None, None, peer_sa=issuer)
+        raise ValueError(f"issuer format invalid (expected *.iam.gserviceaccount.com): {issuer!r}")
     if issuer not in peers_allowlist:
         _emit_audit_log("rejected_not_allowlisted", None, None, None, None, peer_sa=issuer)
         raise ValueError(f"issuer not allowlisted: {issuer!r}")
@@ -292,7 +297,7 @@ async def verify_token(
     # Operator override: A2A_JTI_FAIL_MODE=closed. Read per-call (not
     # captured at module import) so tests + revisions can flip the knob
     # without re-importing the module.
-    fail_closed = _os.getenv("A2A_JTI_FAIL_MODE", "open").lower() == "closed"
+    fail_closed = _os.getenv("A2A_JTI_FAIL_MODE", "closed").lower() == "closed"
     redis_pool = await _get_redis_pool()
 
     if redis_pool is not None:

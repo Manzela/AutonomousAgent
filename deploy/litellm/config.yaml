@@ -73,9 +73,13 @@ litellm_settings:
   json_logs: true
 
   # Budget enforcement
-  max_budget: 100  # USD per day, hard cap
+  max_budget: 100  # USD per day, hard cap at the proxy layer
   budget_duration: 24h
-  alert_to_webhook_url: ""  # set after Phase 2 cloud monitoring is up
+  # CC-4: LiteLLM proxy budget alerts forwarded to the bot via env var.
+  # Set LITELLM_BUDGET_ALERT_WEBHOOK to a Telegram webhook or Cloud Monitoring
+  # ingest URL. Runtime budget enforcement runs at both proxy (this cap) and
+  # the budget_watchdog loop (config/limits.yaml budget.daily_usd_cap: 500).
+  alert_to_webhook_url: os.environ/LITELLM_BUDGET_ALERT_WEBHOOK
 
   # OTel for tracing; scrubber_callback.proxy_handler_instance redacts
   # secrets in prompts/responses BEFORE they reach OTel/Phoenix/disk.

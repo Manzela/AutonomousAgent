@@ -10,10 +10,11 @@ processors:
   batch:
     timeout: 5s
     send_batch_size: 512
+  # O-9: use absolute MiB limits instead of percentages (same fix as prod).
   memory_limiter:
     check_interval: 5s
-    limit_percentage: 80
-    spike_limit_percentage: 25
+    limit_mib: 400
+    spike_limit_mib: 80
 
 exporters:
   # otlphttp is the modern alias name (otelcol-contrib >= 0.150 deprecated otlphttp/)

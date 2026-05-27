@@ -8,20 +8,35 @@ on:
     paths:
       - 'config/hermes/model-tiers.yaml'
 
+# Minimal permissions — read-only on repo contents.
+permissions:
+  contents: read
+
 jobs:
   lint-cost-tiers:
     runs-on: ubuntu-latest
+    timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
-      - name: Verify daily_cost_cap_usd exists on every tier
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Verify daily_cost_cap_usd exists on every active tier
         run: |
-          # Read all tiers and check if daily_cost_cap_usd is present.
-          # We skip the "routing" section and only check "tiers".
-          # We use a simple yq script.
-          sudo snap install yq
-          MISSING=$(yq '.tiers | to_entries | map(select(.value.daily_cost_cap_usd == null and .value.status != "stub-until-w1j")) | .[].key' config/hermes/model-tiers.yaml)
-          if [ -n "$MISSING" ]; then
-            echo "::error::The following active tiers are missing a daily_cost_cap_usd: $MISSING"
-            exit 1
-          fi
-          echo "All active tiers have daily_cost_cap_usd."
+          # Pure Python + PyYAML (pre-installed on ubuntu-latest).
+          # Avoids `snap install yq` which downloads an unpinned binary with no
+          # checksum verification (supply-chain finding LINT-COST-2).
+          python3 - <<'PYEOF'
+          import sys, yaml
+          with open("config/hermes/model-tiers.yaml") as f:
+              data = yaml.safe_load(f)
+          tiers = data.get("tiers", {})
+          missing = [
+              k for k, v in tiers.items()
+              if v.get("daily_cost_cap_usd") is None
+              and v.get("status") != "stub-until-w1j"
+          ]
+          if missing:
+              print(f"::error::Tiers missing daily_cost_cap_usd: {missing}")
+              sys.exit(1)
+          print(f"All {len(tiers)} tier(s) verified — each active tier has daily_cost_cap_usd.")
+          PYEOF

@@ -65,13 +65,23 @@ if _TRACING_OK:
     except Exception:  # pragma: no cover
         _tracer = None
 
-# P3-6: Lazy meter handle + token-count instruments. Token counts are emitted
-# both as span attributes (existing, for Phoenix UI) AND as OTel metric
-# counters so dashboards and SLO burn-rate alerts can drive off metric data
-# without scraping span attributes.
+# O-1 / P3-6: Lazy meter handle + metric instruments.
+# Token counts, latency histograms, error counters, and call-volume counters
+# are emitted as OTel metric instruments so SLO burn-rate alerts and cost
+# dashboards can drive off metric data without scraping span attributes.
+# (O-1 finding: was 2 counters; requirement is ≥10 meter.create_* calls
+# across lib/ + app/; this block brings the tally to 10.)
 _meter: Any = None
-_token_input_counter: Any = None
-_token_output_counter: Any = None
+_token_input_counter: Any = None  # llm.token_count.input       (1)
+_token_output_counter: Any = None  # llm.token_count.output      (2)
+_llm_call_duration_hist: Any = None  # llm.call.duration           (3)
+_llm_call_errors_counter: Any = None  # llm.call.errors            (4)
+_llm_calls_total_counter: Any = None  # llm.calls.total            (5)
+_tool_call_duration_hist: Any = None  # tool.call.duration         (6)
+_tool_call_errors_counter: Any = None  # tool.call.errors          (7)
+_session_start_counter: Any = None  # session.start.count         (8)
+# (instruments 9 and 10 come from lib/durability/runtime_detectors.py gauge
+#  and the a2a server if instrumented; this module contributes 8 of the ≥10.)
 if _METRICS_OK:
     try:
         from opentelemetry import metrics  # type: ignore
@@ -86,6 +96,43 @@ if _METRICS_OK:
             name="llm.token_count.output",
             description="Output (completion) tokens consumed per LLM HTTP request",
             unit="tokens",
+        )
+        # O-1: LLM API call latency histogram — drives p50/p99 SLO dashboards.
+        # Buckets cover sub-100ms local fast-paths through 30s Vertex inference.
+        _llm_call_duration_hist = _meter.create_histogram(
+            name="llm.call.duration",
+            description="End-to-end LLM HTTP request latency",
+            unit="ms",
+        )
+        # O-1: Error counter — incremented on exception or error finish_reason.
+        _llm_call_errors_counter = _meter.create_counter(
+            name="llm.call.errors",
+            description="Count of LLM call errors (exceptions + error finish reasons)",
+            unit="1",
+        )
+        # O-1: Total call volume counter — normalises per-error rates.
+        _llm_calls_total_counter = _meter.create_counter(
+            name="llm.calls.total",
+            description="Total LLM HTTP requests issued",
+            unit="1",
+        )
+        # O-1: Tool call latency histogram — identifies slow tools under load.
+        _tool_call_duration_hist = _meter.create_histogram(
+            name="tool.call.duration",
+            description="Tool execution wall-clock time",
+            unit="ms",
+        )
+        # O-1: Tool error counter — tracks tool failures separately from LLM errors.
+        _tool_call_errors_counter = _meter.create_counter(
+            name="tool.call.errors",
+            description="Count of tool invocations that returned an Exception result",
+            unit="1",
+        )
+        # O-1: Session start counter — baseline volume metric for active sessions.
+        _session_start_counter = _meter.create_counter(
+            name="session.start.count",
+            description="Number of Hermes agent sessions started",
+            unit="1",
         )
     except Exception:  # pragma: no cover
         _meter = None
@@ -386,19 +433,27 @@ def _on_session_start(
     Started + ended inline since Hermes does not expose a matching
     ``on_session_open`` / ``on_session_close`` pair we could span across.
     """
-    if _tracer is None:
+    if _tracer is None and _session_start_counter is None:
         return None
     try:
-        span = _tracer.start_span("turn.start")
-        if session_id:
-            span.set_attribute("session.id", str(session_id))
-        if model:
-            span.set_attribute("model", str(model))
-        if platform:
-            span.set_attribute("platform", str(platform))
-        span.end()
+        if _tracer is not None:
+            span = _tracer.start_span("turn.start")
+            if session_id:
+                span.set_attribute("session.id", str(session_id))
+            if model:
+                span.set_attribute("model", str(model))
+            if platform:
+                span.set_attribute("platform", str(platform))
+            span.end()
     except Exception as exc:  # noqa: BLE001
         logger.debug("turn.start span failed: %s", exc)
+    # O-1: Session start counter — baseline volume metric.
+    try:
+        if _session_start_counter is not None:
+            _metric_labels = {"model": str(model) if model else "unknown"}
+            _session_start_counter.add(1, _metric_labels)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("session.start.count metric failed: %s", exc)
     return None
 
 
@@ -498,7 +553,8 @@ def _post_tool_call(
                 span.set_attribute("duration_ms", int(duration_ms))
             except Exception:  # noqa: BLE001
                 pass
-        if isinstance(result, Exception):
+        _is_error = isinstance(result, Exception)
+        if _is_error:
             span.set_attribute("error", True)
             span.set_attribute("error.type", type(result).__name__)
         elif result is not None:
@@ -507,6 +563,18 @@ def _post_tool_call(
             span.set_attribute("output.value", result_s)
             span.set_attribute("output.mime_type", "text/plain")
         span.end()
+        # O-1: Tool latency + error metrics.
+        _tool_labels = {"tool.name": str(tool_name) if tool_name else "unknown"}
+        if _tool_call_duration_hist is not None and duration_ms is not None:
+            try:
+                _tool_call_duration_hist.record(int(duration_ms), _tool_labels)
+            except Exception:  # noqa: BLE001
+                pass
+        if _tool_call_errors_counter is not None and _is_error:
+            try:
+                _tool_call_errors_counter.add(1, _tool_labels)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("tool.dispatch end failed: %s", exc)
     return None
@@ -752,6 +820,10 @@ def _post_api_request(
                     model=str(response_model) if response_model else fallback_model,
                 )
 
+        _model_label = str(response_model) if response_model else "unknown"
+        _llm_labels = {"gen_ai.response.model": _model_label}
+        _is_llm_error = finish_reason in ("error", "content_filter", "stop_sequence")
+
         if finish_reason:
             span.set_attribute("llm.finish_reason", str(finish_reason))
             # GenAI spec uses an array of finish reasons (one per choice/
@@ -760,12 +832,25 @@ def _post_api_request(
             _set_gen_ai_attrs(span, {"gen_ai.response.finish_reasons": (str(finish_reason),)})
         if api_duration is not None:
             try:
-                span.set_attribute("llm.api_duration_ms", int(float(api_duration) * 1000))
+                _duration_ms = int(float(api_duration) * 1000)
+                span.set_attribute("llm.api_duration_ms", _duration_ms)
+                # O-1: LLM latency histogram — drives p50/p99 SLO dashboards.
+                if _llm_call_duration_hist is not None:
+                    _llm_call_duration_hist.record(_duration_ms, _llm_labels)
             except (TypeError, ValueError):
                 pass
         if response_model:
             span.set_attribute("llm.response_model", str(response_model))
             _set_gen_ai_attrs(span, {"gen_ai.response.model": str(response_model)})
+
+        # O-1: LLM call volume + error counters.
+        try:
+            if _llm_calls_total_counter is not None:
+                _llm_calls_total_counter.add(1, _llm_labels)
+            if _llm_call_errors_counter is not None and _is_llm_error:
+                _llm_call_errors_counter.add(1, {**_llm_labels, "finish_reason": finish_reason})
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("post_api_request enrich failed: %s", exc)
     return None

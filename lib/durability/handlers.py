@@ -181,6 +181,29 @@ def halt_alert_snapshot(
                 exc,
             )
 
+    # 4. Filesystem sentinel (CC-6 β-path): any hook that calls
+    #    _on_pre_tool_call will short-circuit tool execution when this
+    #    file is present.  chmod 600 so only the agent user can read/clear.
+    #    Failure to write is logged at ERROR but does not block the return —
+    #    the BLOCKED card transition above is still the primary halt signal.
+    _sentinel = Path(os.environ.get("HALT_SENTINEL_PATH", "/data/HALT_F21"))
+    try:
+        _sentinel.parent.mkdir(parents=True, exist_ok=True)
+        _sentinel.touch(mode=0o600)
+        logger.info(
+            "handlers.halt_alert_snapshot sentinel written f_code=%s path=%s",
+            f_code,
+            _sentinel,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "handlers.halt_alert_snapshot sentinel write FAILED f_code=%s path=%s err=%s — "
+            "tool-call veto from sentinel unavailable; rely on card BLOCKED state",
+            f_code,
+            _sentinel,
+            exc,
+        )
+
     return HandlerResult(
         action="halt",
         f_code=f_code,

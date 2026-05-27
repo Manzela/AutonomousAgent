@@ -103,22 +103,28 @@ def _make_preexec(*, cpu_seconds: int, memory_mb: int, max_files: int):
         # CPU seconds (SIGXCPU at soft limit, SIGKILL at hard).
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 5))
         # Address space (bytes). Affects malloc/mmap and most heap growth.
+        # Fail-CLOSED: if the OS rejects the rlimit (ValueError = bad value;
+        # OSError/EPERM = container hard-limit prevents the request), abort the
+        # child process before exec rather than running without memory isolation.
+        # The parent sees this as SubprocessError from create_subprocess_exec.
         as_bytes = memory_mb * 1024 * 1024
         try:
             resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             sys.stderr.write(
-                f"sandbox: WARNING: RLIMIT_AS ({as_bytes // (1024 * 1024)}MB) rejected by OS: {exc!r}; "
-                f"process will start WITHOUT memory isolation\n"
+                f"sandbox: RLIMIT_AS ({as_bytes // (1024 * 1024)}MB) rejected by OS: {exc!r}; "
+                f"aborting child (fail-closed — no memory isolation)\n"
             )
-        # Max open files.
+            raise  # Abort child process before exec; parent gets SubprocessError.
+        # Max open files. Same fail-closed policy.
         try:
             resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, max_files))
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             sys.stderr.write(
-                f"sandbox: WARNING: RLIMIT_NOFILE ({max_files}) rejected by OS: {exc!r}; "
-                f"process will start WITHOUT file-descriptor isolation\n"
+                f"sandbox: RLIMIT_NOFILE ({max_files}) rejected by OS: {exc!r}; "
+                f"aborting child (fail-closed — no file-descriptor isolation)\n"
             )
+            raise  # Abort child process before exec.
         # Detach from parent's stdio session (start_new_session already does
         # this when set on subprocess.create), but make doubly sure.
         try:

@@ -1,8 +1,11 @@
 budget:
   daily_usd_cap: 500
-  per_task_input_tokens: null
-  per_task_output_tokens: null
-  per_conversation_context: null
+  # Per-task caps prevent runaway tool loops from exhausting the daily budget.
+  # Values tuned for the orchestrator (Gemini 3.1 Pro) and architect (Opus 4.7)
+  # tiers. Adjust up in config/hermes/model-tiers.yaml if tasks legitimately exceed.
+  per_task_input_tokens: 200000
+  per_task_output_tokens: 16000
+  per_conversation_context: 128000
   alert_at_pct: 75
 
 retries:
@@ -181,7 +184,9 @@ durability:
   escalation:
     watcher_interval_s: 300
   budget_watchdog:
-    interval_s: 300
+    # ≤30s poll cadence required by CC-1: at $500/day cap a 5-min poll allows
+    # ~$1.73 overrun per tick; 30s bounds overrun to ~$0.17.
+    interval_s: 30
   snapshot_watchdog:
     interval_s: 1800
   # J4 (Framing #2) runtime detectors. See lib/durability/runtime_detectors.py

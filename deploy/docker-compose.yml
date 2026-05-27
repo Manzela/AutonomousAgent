@@ -106,6 +106,13 @@ services:
     # the DB-backed admin UI.
     image: ghcr.io/berriai/litellm:v1.84.0@sha256:29252f25ed1b538d44f6b76ec97412c5537a180b39ede744b9f3e86ffdd278f5
     <<: [*restart_policy, *json_logging]
+    # HIGH-6: capability hardening. read_only: true is intentionally omitted
+    # because Prisma writes migration files to /app/.prisma at startup — making
+    # the root FS immutable requires additional tmpfs mounts not yet mapped.
+    # cap_drop + no-new-privileges closes the privilege-escalation vector.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec docker/prod_entrypoint.sh \"$$@\"", "--"]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
@@ -172,6 +179,11 @@ services:
     image: otel/opentelemetry-collector-contrib@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/etc/otelcol-contrib/config.yaml"]
+    # HIGH-7: capability hardening — the collector receives all traces (full
+    # prompt/response content) so a container escape is high-value.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     volumes:
       # P2-11: default is prod YAML so any `docker compose up` (smoke, panic,
       # snapshot scripts) routes telemetry through the production pipeline.
@@ -248,6 +260,9 @@ services:
     <<: [*restart_policy, *json_logging]
     network_mode: none
     cap_drop: [ALL]
+    # LOW-1: prevent setuid escalation from any Debian base-image binaries.
+    security_opt:
+      - no-new-privileges:true
     read_only: true
     tmpfs:
       - /tmp:size=100M
@@ -272,6 +287,10 @@ services:
     image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
     command: ["http", "--port", "8003", "--toolsets", "all"]
+    # HIGH-7: capability hardening for GitHub MCP (holds a live GitHub PAT).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       # PAT injected via env_file (decrypted at bootstrap from sops). The
       # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
@@ -563,6 +582,12 @@ services:
     entrypoint: []
     command: ["python", "/app/scripts/escalation_loop.py"]
     working_dir: /app
+    # HIGH-5: capability hardening for sidecar services (mirrors hermes hardening).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       PYTHONPATH: /app
       # Sidecars use sentinel file for halt signaling, not SIGTERM.
@@ -597,6 +622,12 @@ services:
     entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec python /app/scripts/snapshot_loop.py"]
     command: []
     working_dir: /app
+    # HIGH-5: capability hardening for sidecar services.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777   # tar staging for GCS snapshots
     environment:
       PYTHONPATH: /app
       # Feature flag. Empty string evaluates falsy in Python so run_once
@@ -636,6 +667,12 @@ services:
     entrypoint: []
     command: ["python", "/app/scripts/budget_watchdog_loop.py"]
     working_dir: /app
+    # HIGH-5: capability hardening for sidecar services.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       PYTHONPATH: /app
       # Sidecars use sentinel file for halt signaling, not SIGTERM.

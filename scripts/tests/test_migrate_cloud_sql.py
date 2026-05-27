@@ -42,6 +42,30 @@ from scripts.migrate_cloud_sql import DDL_BLOCKS, migrate  # noqa: E402
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Mock factory — returns a fully-wired asyncpg connection + transaction mock
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_conn_mock() -> AsyncMock:
+    """Return an asyncpg connection mock with execute(), close(), and transaction() wired.
+
+    transaction() returns an async context manager mock that commits on clean
+    exit and propagates exceptions on error exit (return_value=False from
+    __aexit__ means 'do not suppress the exception').
+    """
+    conn = AsyncMock()
+    conn.execute = AsyncMock(return_value="CREATE EXTENSION")
+    conn.close = AsyncMock()
+    # Wire the transaction() context manager (I-3 fix: migrate() now uses
+    # async with conn.transaction(): for atomic DDL application).
+    mock_tx = MagicMock()
+    mock_tx.__aenter__ = AsyncMock(return_value=None)
+    mock_tx.__aexit__ = AsyncMock(return_value=False)  # False = don't suppress exceptions
+    conn.transaction = MagicMock(return_value=mock_tx)
+    return conn
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Static checks — verifiable without a database connection
 # ─────────────────────────────────────────────────────────────────────
 
@@ -81,9 +105,13 @@ class TestDDLStaticGuarantees:
             ), f"DDL block '{name}' does not use IF NOT EXISTS:\n{sql}"
 
     def test_block_count_is_stable(self):
-        """Sanity: at least the 6 baseline blocks (ext + table + 4 indexes) exist."""
-        assert len(DDL_BLOCKS) >= 6, (
-            f"Expected at least 6 DDL blocks; got {len(DDL_BLOCKS)}. "
+        """Sanity: at least the 7 baseline blocks (ext + table + 5 indexes) exist.
+
+        5 indexes: scope, metadata_gin, gc, content_hash, embedding_hnsw.
+        (Was 4 before I-7 fix added the HNSW index.)
+        """
+        assert len(DDL_BLOCKS) >= 7, (
+            f"Expected at least 7 DDL blocks; got {len(DDL_BLOCKS)}. "
             "Did a block get accidentally removed?"
         )
 
@@ -102,36 +130,63 @@ class TestDDLStaticGuarantees:
             "memory_records" in n for n in names
         ), f"No DDL block for memory_records found; blocks: {names}"
 
-    def test_scope_index_order(self):
-        """The scope index must be (project_id, tier) in the DDL.
+    def test_scope_index_column_order(self):
+        """Scope index must lead with `tier` (A-4 fix).
 
-        NOTE: P1.A-4 in findings.md flags that the QUERY-time selectivity
-        is better with (tier, project_id).  This test documents the CURRENT
-        state so the A-4 fix can be verified against it: when A-4 is
-        remediated, update this assertion to expect (tier, project_id).
+        The dominant query in app/adapters/gcp/memory.py:237-244 filters
+        WHERE tier = $2 AND project_id = ANY($3::text[]).  Putting the
+        equality predicate (tier) first maximises index selectivity.
+
+        Previous (pre-A-4-fix) order was (project_id, tier) — now corrected.
         """
         scope_sql = next(
             (sql for name, sql in DDL_BLOCKS if "scope" in name.lower()),
             None,
         )
         assert scope_sql is not None, "No scope index DDL block found"
-        # Current (pre-A-4-fix) column order: project_id, tier
+        # Extract the column list from the ON clause: ON memory_records (tier, project_id)
+        match = re.search(
+            r"ON\s+memory_records\s*\(\s*(\w+)\s*,\s*(\w+)\s*\)",
+            scope_sql,
+            re.IGNORECASE,
+        )
         assert (
-            "project_id" in scope_sql and "tier" in scope_sql
-        ), "Scope index DDL does not reference both project_id and tier"
+            match is not None
+        ), f"Could not parse column list from scope index DDL: {scope_sql[:120]!r}"
+        first_col, second_col = match.group(1).lower(), match.group(2).lower()
+        assert first_col == "tier", (
+            f"Scope index leading column must be 'tier' (A-4 fix); got '{first_col}'. "
+            f"Full DDL: {scope_sql.strip()}"
+        )
+        assert (
+            second_col == "project_id"
+        ), f"Scope index second column must be 'project_id'; got '{second_col}'."
+
+    def test_hnsw_index_block_exists(self):
+        """An HNSW index on the embedding column must be present (I-7 fix).
+
+        Without the HNSW index, app/adapters/gcp/memory.py:225
+        `SET LOCAL hnsw.ef_search` is a silent no-op and every similarity
+        query degrades to a sequential scan.
+        """
+        hnsw_entries = [(name, sql) for name, sql in DDL_BLOCKS if "hnsw" in sql.lower()]
+        assert hnsw_entries, (
+            "No HNSW index DDL block found in DDL_BLOCKS. "
+            "See I-7 in audit/2026-05-27-ground-truth/findings.md."
+        )
+        # The HNSW index must target the embedding column with cosine ops.
+        _, hnsw_sql = hnsw_entries[0]
+        assert (
+            "embedding" in hnsw_sql.lower()
+        ), f"HNSW index must target the 'embedding' column: {hnsw_sql[:120]!r}"
+        assert (
+            "vector_cosine_ops" in hnsw_sql.lower()
+        ), f"HNSW index must use vector_cosine_ops operator class: {hnsw_sql[:120]!r}"
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Unit tests — asyncpg mocked
 # ─────────────────────────────────────────────────────────────────────
-
-
-def _make_conn_mock() -> AsyncMock:
-    """Return an asyncpg connection mock with execute() and close() wired."""
-    conn = AsyncMock()
-    conn.execute = AsyncMock(return_value="CREATE EXTENSION")
-    conn.close = AsyncMock()
-    return conn
 
 
 class TestMigrateUnit:
@@ -169,13 +224,17 @@ class TestMigrateUnit:
     def test_connection_closed_on_partial_failure(self):
         """conn.close() must be called even when a block raises mid-migration.
 
-        This verifies the try/finally pattern in migrate().  Note: the
-        current implementation (P1.I-3) does NOT wrap blocks in a
-        transaction, so partial-failure leaves the schema half-migrated.
-        That is a separate P1 finding; this test only verifies cleanup.
+        I-3 fix: migrate() now wraps all blocks in conn.transaction(), so a
+        partial failure triggers a rollback (via __aexit__) before re-raising.
+        The try/finally around the transaction block ensures conn.close() runs
+        regardless.  See test_migrate_cloud_sql_atomic.py for the rollback
+        guarantee test.
         """
         conn = _make_conn_mock()
         conn.execute = AsyncMock(side_effect=[None, RuntimeError("boom"), None])
+        # Make __aexit__ propagate the exception (return_value=False means
+        # "do not suppress"; asyncpg's real Transaction does the same).
+        conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
         with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
             with pytest.raises(RuntimeError, match="boom"):
                 asyncio.run(migrate("postgresql://mock/db"))
@@ -199,6 +258,16 @@ class TestMigrateUnit:
             asyncio.run(migrate(dsn))
 
         mock_connect.assert_awaited_once_with(dsn)
+
+    def test_transaction_context_manager_entered(self):
+        """migrate() must use conn.transaction() as an async context manager (I-3)."""
+        conn = _make_conn_mock()
+        with patch("asyncpg.connect", new=AsyncMock(return_value=conn)):
+            asyncio.run(migrate("postgresql://mock/db"))
+
+        conn.transaction.assert_called_once()
+        conn.transaction.return_value.__aenter__.assert_awaited_once()
+        conn.transaction.return_value.__aexit__.assert_awaited_once()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -249,10 +318,17 @@ def test_migrate_schema_exists_after_run():
                 "SELECT COUNT(*) FROM pg_indexes "
                 "WHERE tablename = 'memory_records' AND indexdef LIKE '%hnsw%'"
             )
+            # A-4 fix verification: scope index must lead with tier.
+            scope_index_sql = await conn.fetchval(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE tablename = 'memory_records' "
+                "AND indexname = 'memory_records_scope_idx'"
+            )
             return {
                 "table_exists": table_exists,
                 "ext_exists": ext_exists,
                 "hnsw_index_count": has_hnsw,
+                "scope_index_sql": scope_index_sql,
             }
         finally:
             await conn.close()
@@ -262,5 +338,18 @@ def test_migrate_schema_exists_after_run():
     assert info["ext_exists"], "pgvector extension not found after migrate()"
     assert info["hnsw_index_count"] >= 1, (
         "No HNSW index found on memory_records after migrate() — "
-        "see P1.I-7 in findings.md (HNSW index missing from production migration)"
+        "see I-7 in audit/2026-05-27-ground-truth/findings.md"
+    )
+    # Verify A-4 fix: scope index must lead with `tier`.
+    scope_sql = info.get("scope_index_sql", "") or ""
+    assert (
+        "tier" in scope_sql.lower()
+    ), f"Scope index does not reference tier column (A-4 fix): {scope_sql!r}"
+    # The leading column in the pg_indexes indexdef expression appears first in
+    # the parenthesized list; 'tier' must precede 'project_id'.
+    tier_pos = scope_sql.lower().find("tier")
+    project_pos = scope_sql.lower().find("project_id")
+    assert tier_pos < project_pos, (
+        f"Scope index has wrong column order — 'tier' must come before 'project_id'. "
+        f"Got: {scope_sql!r}"
     )

@@ -65,9 +65,16 @@ DDL_BLOCKS: tuple[tuple[str, str], ...] = (
     ),
     (
         "index_scope",
+        # A-4 fix: leading column is `tier` (high-selectivity filter in the
+        # dominant query at app/adapters/gcp/memory.py:237-244 which filters
+        # WHERE tier = $2 AND project_id = ANY($3)).  Leading with the equality
+        # predicate on `tier` maximises index selectivity; `project_id` follows
+        # to serve the IN-list filter cheaply within each tier bucket.
+        # Previous column order (project_id, tier) was wrong — it put the
+        # lower-selectivity ANY() predicate first.
         """
         CREATE INDEX IF NOT EXISTS memory_records_scope_idx
-            ON memory_records (project_id, tier)
+            ON memory_records (tier, project_id)
         """,
     ),
     (
@@ -93,19 +100,41 @@ DDL_BLOCKS: tuple[tuple[str, str], ...] = (
             WHERE content_hash IS NOT NULL
         """,
     ),
+    (
+        "index_embedding_hnsw",
+        # I-7 fix: HNSW index for approximate nearest-neighbour search.
+        # Without this, app/adapters/gcp/memory.py:225 `SET LOCAL hnsw.ef_search`
+        # is a silent no-op and every similarity query degrades to a sequential
+        # scan.  Parameters from project memory phase2_postgres_tier.md:
+        #   m=16    — edges per node; higher = better recall, more build time/RAM
+        #   ef_construction=64 — build-time search scope; matches ef_search default
+        # operator class: vector_cosine_ops — cosine distance for normalized embeddings.
+        """
+        CREATE INDEX IF NOT EXISTS memory_records_embedding_hnsw
+            ON memory_records USING hnsw (embedding vector_cosine_ops)
+            WITH (m = 16, ef_construction = 64)
+        """,
+    ),
 )
 
 
 async def migrate(dsn: str) -> int:
-    """Apply all DDL blocks in order. Returns count applied successfully."""
+    """Apply all DDL blocks inside a single transaction. Returns count applied.
+
+    I-3 fix: wrapping all blocks in one transaction ensures that a partial
+    failure rolls back every already-applied block, leaving the schema in a
+    clean state rather than half-migrated.  All DDL supported here (CREATE
+    EXTENSION, CREATE TABLE, CREATE INDEX) is transactional in PostgreSQL.
+    """
     conn = await asyncpg.connect(dsn)
     applied = 0
     try:
-        for name, sql in DDL_BLOCKS:
-            print(f"[migrate] applying {name} ...", flush=True)
-            await conn.execute(sql)
-            applied += 1
-            print(f"[migrate] OK {name}", flush=True)
+        async with conn.transaction():
+            for name, sql in DDL_BLOCKS:
+                print(f"[migrate] applying {name} ...", flush=True)
+                await conn.execute(sql)
+                applied += 1
+                print(f"[migrate] OK {name}", flush=True)
     finally:
         await conn.close()
     return applied

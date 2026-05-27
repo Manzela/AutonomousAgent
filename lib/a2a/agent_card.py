@@ -20,9 +20,11 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 import time
 from typing import Any
 
+import cachetools
 import httpx
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -86,10 +88,32 @@ async def _call_sign_blob(data: bytes, sa_email: str) -> str:
     return base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode()
 
 
+# GCP SA JWKS keys rotate roughly every 6 hours (and at most every 48h).
+# Cache for 15 minutes (same as auth.py _JWKS_CACHE TTL) to minimise the
+# frequency of the blocking httpx.get call inside verify_card_signature.
+# Thread-safe: guarded by _JWKS_PUB_LOCK (threading.Lock is safe in both
+# sync and async contexts — it does not interact with the event loop).
+_JWKS_PUB_CACHE: cachetools.TTLCache = cachetools.TTLCache(maxsize=256, ttl=900)
+_JWKS_PUB_LOCK = threading.Lock()
+
+
 def _fetch_public_key_for_sa(sa_email: str):
-    """Fetch RSA public key from Google JWKS endpoint."""
+    """Fetch RSA public key from Google JWKS endpoint (sync, cached 15 min).
+
+    WARNING: This function performs a blocking HTTP request. When called from
+    an async context the event loop is blocked for up to 10 seconds on cache
+    miss. Use ``asyncio.to_thread(_fetch_public_key_for_sa, sa_email)`` from
+    async callers, or use ``verify_card_signature_async`` (see below).
+    Cache hits are instant (no I/O); the blocking window is bounded to once
+    per 15-minute TTL window per SA email.
+    """
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
+
+    with _JWKS_PUB_LOCK:
+        cached = _JWKS_PUB_CACHE.get(sa_email)
+        if cached is not None:
+            return cached
 
     resp = httpx.get(
         f"https://www.googleapis.com/service_accounts/v1/jwk/{sa_email}",
@@ -108,9 +132,12 @@ def _fetch_public_key_for_sa(sa_email: str):
         s += "=" * ((4 - len(s) % 4) % 4)
         return int.from_bytes(base64.urlsafe_b64decode(s), "big")
 
-    return RSAPublicNumbers(_b64url_int(jwk["e"]), _b64url_int(jwk["n"])).public_key(
+    public_key = RSAPublicNumbers(_b64url_int(jwk["e"]), _b64url_int(jwk["n"])).public_key(
         default_backend()
     )
+    with _JWKS_PUB_LOCK:
+        _JWKS_PUB_CACHE[sa_email] = public_key
+    return public_key
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +166,12 @@ async def sign_card(card: dict[str, Any], our_sa: str) -> dict[str, Any]:
 
 
 def verify_card_signature(card_with_sig: dict[str, Any], issuer_sa: str) -> bool:
-    """Verify the signature on a signed AgentCard.
+    """Verify the signature on a signed AgentCard (sync, cache-backed).
+
+    The underlying JWKS fetch is cached for 15 minutes; only the first call
+    per SA within the TTL window performs network I/O (blocking).  Async
+    callers should use ``verify_card_signature_async`` to avoid blocking the
+    event loop even on cache-miss.
 
     Raises:
         ValueError: Card is expired.
@@ -161,3 +193,13 @@ def verify_card_signature(card_with_sig: dict[str, Any], issuer_sa: str) -> bool
             type(exc).__name__,
         )
         return False
+
+
+async def verify_card_signature_async(card_with_sig: dict[str, Any], issuer_sa: str) -> bool:
+    """Async-safe variant of verify_card_signature.
+
+    Runs the blocking JWKS fetch (on cache miss) in a thread via
+    ``asyncio.to_thread`` so the event loop is never blocked.  Prefer this
+    over ``verify_card_signature`` in all async FastAPI / Starlette paths.
+    """
+    return await asyncio.to_thread(verify_card_signature, card_with_sig, issuer_sa)

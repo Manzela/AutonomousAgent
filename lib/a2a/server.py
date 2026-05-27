@@ -424,8 +424,45 @@ app.add_middleware(_BodySizeLimitMiddleware)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, Any]:
+    """Real dependency probe — not a hardcoded stub.
+
+    Probes: in-process task registry, JTI L1 fallback cache, agent-card
+    signing env-var presence.  Returns 200 with ``status=ok`` when all
+    probes pass, ``status=degraded`` when any probe reports an error.
+    Does NOT probe external services (Vertex, Redis) — those are checked
+    by the OTel health pipeline.  Failure here means the A2A server itself
+    is misconfigured, not that a dependency is down.
+    """
+    checks: dict[str, str] = {}
+
+    # In-process task registry (TTLCache — bounded, process-local).
+    try:
+        task_count = len(_TASK_REGISTRY)
+        checks["task_registry"] = f"ok (entries={task_count})"
+    except Exception as exc:  # noqa: BLE001
+        checks["task_registry"] = f"error: {exc!r}"
+
+    # JTI L1 fallback cache (imported lazily to avoid circular dep at module load).
+    try:
+        from lib.a2a.auth import _JTI_L1_FALLBACK  # type: ignore[attr-defined]
+
+        jti_count = len(_JTI_L1_FALLBACK)
+        checks["jti_cache"] = f"ok (entries={jti_count})"
+    except Exception as exc:  # noqa: BLE001
+        checks["jti_cache"] = f"error: {exc!r}"
+
+    # Agent-card signing: SA email env var must be set in production.
+    agent_sa = os.environ.get("A2A_AGENT_SA", "")
+    if agent_sa:
+        checks["agent_card_signer"] = "ok"
+    elif os.environ.get("ENVIRONMENT", "development") == "production":
+        checks["agent_card_signer"] = "error: A2A_AGENT_SA not set in production"
+    else:
+        checks["agent_card_signer"] = "warn: A2A_AGENT_SA not set (non-production)"
+
+    ok = all(not v.startswith("error") for v in checks.values())
+    return {"status": "ok" if ok else "degraded", **checks}
 
 
 @app.get("/.well-known/agent-card.json")

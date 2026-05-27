@@ -88,6 +88,7 @@ jobs:
 
       - name: Tag and Push to GHCR
         run: |
+          set -euo pipefail
           # Use the branch name for main or the tag name
           TAG_NAME=${{ github.ref_name }}
           if [ "$TAG_NAME" = "main" ]; then
@@ -100,15 +101,21 @@ jobs:
           docker tag autonomousagent/hermes:${{ github.ref_name }} $IMAGE_URI
           docker push $IMAGE_URI
 
-          # Get the digest for signing
+          # Get the digest for signing — use @sha256: reference to prevent
+          # tag-mutable signing (SC-SBOM-2: RepoDigests may be empty on failure).
           DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_URI)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "<no value>" ]; then
+            echo "::error::Failed to resolve image digest after push — aborting sign step"
+            exit 1
+          fi
           echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
 
-      # Sign the image itself and attest the SBOM
+      # Sign the image itself and attest the SBOM.
+      # COSIGN_EXPERIMENTAL is removed — keyless OIDC is the default in cosign v2+;
+      # the env var was deprecated and is a no-op (SC-COSIGN-1).
       - name: Sign image and attest SBOM with cosign
-        env:
-          COSIGN_EXPERIMENTAL: "1"
         run: |
+          set -euo pipefail
           # Sign the image
           cosign sign --yes $IMAGE_DIGEST
 

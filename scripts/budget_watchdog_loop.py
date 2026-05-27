@@ -21,7 +21,7 @@ from yaml import safe_load
 from lib.durability.budget_watchdog import run_once
 
 CFG_PATH = "/config/limits.yaml"
-DEFAULT_INTERVAL_S = 300
+DEFAULT_INTERVAL_S = 30  # CC-1: ≤30s required; 5-min default allowed multi-cap burns
 
 logger = logging.getLogger("budget_watchdog_loop")
 

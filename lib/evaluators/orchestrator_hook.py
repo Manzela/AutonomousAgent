@@ -18,13 +18,33 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
-# P1 routing per design-alignment spec §P1-2
-PER_AXIS_MODEL = {
+# read per-axis model from limits.yaml (not hardcoded).
+_DEFAULT_PER_AXIS_MODEL = {
     "code-correctness": "vertex_ai/claude-sonnet-4-6",
     "safety": "vertex_ai/claude-opus-4-7",
     "scope-fit": "vertex_ai/claude-sonnet-4-6",
     "completeness": "vertex_ai/gemini-3.1-pro-preview",
 }
+
+
+def get_per_axis_model() -> dict[str, str]:
+    """Return the per-axis model mapping from limits.yaml.
+
+    Falls back to _DEFAULT_PER_AXIS_MODEL if the config is unavailable.
+    """
+    try:
+        import yaml
+        from pathlib import Path
+
+        cfg_path = Path(__file__).resolve().parents[2] / "config" / "limits.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        return cfg.get("evaluators", {}).get("per_axis_model", _DEFAULT_PER_AXIS_MODEL)
+    except Exception:  # noqa: BLE001 — config errors must not crash
+        return _DEFAULT_PER_AXIS_MODEL
+
+
+# Backward compat: module-level alias (some callers import PER_AXIS_MODEL directly).
+PER_AXIS_MODEL = _DEFAULT_PER_AXIS_MODEL
 
 
 @dataclass

@@ -65,7 +65,7 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type','application/json')
         self.send_header('Content-Length',len(r)); self.end_headers(); self.wfile.write(r)
     def log_message(self,*a): pass
-s=HTTPServer(('0.0.0.0',9002),H)
+s=HTTPServer(('127.0.0.1',9002),H)
 threading.Thread(target=s.serve_forever,daemon=True).start()
 import time; time.sleep(3600)
 " &
@@ -79,7 +79,7 @@ fi
 # --- 1. Start agent-a --------------------------------------------------------
 echo "Starting agent-a on :9001..."
 cd "${REPO_ROOT}"
-uv run uvicorn lib.a2a.server:app --host 0.0.0.0 --port 9001 --log-level warning &
+uv run uvicorn lib.a2a.server:app --host 127.0.0.1 --port 9001 --log-level warning &
 AGENT_A_PID=$!
 
 # --- 2. Wait for both to be healthy ------------------------------------------

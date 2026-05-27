@@ -135,6 +135,11 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
         dsn: Optional[str] = None,
         ef_search: int = 100,
     ) -> None:
+        if not _HAS_ASYNCPG:
+            raise ImportError(
+                "CloudSqlPgvectorStore requires asyncpg and pgvector. "
+                "Install with: uv sync --extra gcp"
+            )
         self._dim = dim
         self._dsn = dsn
         self._ef_search = ef_search

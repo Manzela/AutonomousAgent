@@ -38,7 +38,7 @@ import threading
 from typing import Any, Dict, Optional, Tuple
 
 from lib.observability.model_context import get_model_context_length
-from lib.observability.otel_setup import setup_metrics, setup_tracing
+from lib.observability.otel_setup import setup_json_logging, setup_metrics, setup_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 # helpers return False and dependent code (gauges, spans) degrade to
 # no-ops rather than raising. Container builds pin the SDK (see
 # deploy/Dockerfile.hermes) so the production path is always fully wired.
+#
+# O-6: setup_json_logging() installs the GCP JSON formatter + ScrubFilter
+# on the root logger (closes O-6 + O-7 together).  Must run before
+# setup_tracing so the OTel SDK initialization messages land in jsonPayload.
+_JSON_LOGGING_OK = setup_json_logging()
 _TRACING_OK = setup_tracing(service_name="hermes-agent")
 _METRICS_OK = setup_metrics(service_name="hermes-agent")
 

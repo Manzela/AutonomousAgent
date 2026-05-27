@@ -113,6 +113,53 @@ resource "google_monitoring_alert_policy" "watchdog_restart" {
   }
 }
 
+# ---------------------------------------------------------------------------
+# O-8: Long-term forensic log archival (closes audit finding P1.E O-8)
+#
+# All agent logs route to a GCS Coldline bucket so forensic incident-replay
+# remains possible after the 30-day Cloud Logging default retention window.
+# The sink grants the service-account writer identity access to the bucket;
+# no project-wide permission escalation is needed (unique_writer_identity).
+# ---------------------------------------------------------------------------
+
+resource "google_storage_bucket" "forensic_log_archive" {
+  project       = var.project_id
+  name          = "autonomousagent-forensic-logs-${var.project_id}"
+  location      = "US"
+  storage_class = "COLDLINE"
+  force_destroy = false
+
+  lifecycle_rule {
+    action { type = "Delete" }
+    condition { age = 365 }
+  }
+
+  uniform_bucket_level_access = true
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_logging_project_sink" "forensic_archive" {
+  project     = var.project_id
+  name        = "autonomousagent-forensic-archive"
+  destination = "storage.googleapis.com/${google_storage_bucket.forensic_log_archive.name}"
+
+  # Scope: all logs from the autonomousagent VM instance.
+  filter = "resource.type=\"gce_instance\" resource.labels.instance_name=\"autonomousagent-vm\""
+
+  # unique_writer_identity = true so the sink gets its own SA,
+  # preventing privilege-escalation through a shared logging SA.
+  unique_writer_identity = true
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_storage_bucket_iam_member" "forensic_archive_sink_writer" {
+  bucket = google_storage_bucket.forensic_log_archive.name
+  role   = "roles/storage.objectCreator"
+  member = google_logging_project_sink.forensic_archive.writer_identity
+}
+
 # Alert: VM uptime drops to zero (instance stopped or terminated).
 resource "google_monitoring_alert_policy" "vm_down" {
   project      = var.project_id

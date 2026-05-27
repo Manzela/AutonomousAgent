@@ -72,4 +72,20 @@ INNER
   chmod 600 hermes-provider.env
 fi
 
+# CRIT-1 fix: also decrypt per-service SA key files in secrets/sa-keys/.
+# These are mounted into LiteLLM proxy, Cloud SQL proxy, and snapshot-watchdog
+# containers as /secrets/sa-key.json.  Docker passes the SOPS ciphertext file
+# directly; the GCP ADC parser cannot parse a SOPS envelope, so every GCP API
+# call from those containers fails.  Decrypting here before `docker compose up`
+# produces a plaintext JSON file that GCP ADC can parse.
+if [ -d "sa-keys" ]; then
+  for enc in sa-keys/*.json.sops; do
+    [ -e "$enc" ] || continue
+    out="${enc%.sops}"
+    echo "Decrypting $enc -> $out"
+    sops -d --input-type json --output-type json "$enc" > "$out"
+    chmod 600 "$out"
+  done
+fi
+
 echo "Secrets decrypted. Plaintext files are gitignored."

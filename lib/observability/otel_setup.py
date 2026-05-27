@@ -220,3 +220,100 @@ def setup_metrics(
         export_interval_ms,
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# O-6 / O-7: Structured JSON logging + ScrubFilter on root logger
+# ---------------------------------------------------------------------------
+
+_json_logging_initialized = False
+_json_logging_lock = threading.Lock()
+
+
+class _GcpJsonFormatter(logging.Formatter):
+    """Formats log records as single-line JSON accepted by Cloud Logging.
+
+    GCP Cloud Logging stores structured logs under ``jsonPayload`` when the
+    log line is valid JSON with a ``severity`` (or ``level``) field.  Plain-
+    text logs land under ``textPayload`` and cannot be filtered with
+    ``jsonPayload.msg=...`` log-based metrics (O-6 finding).
+
+    Fields emitted per record:
+      ``severity``   — GCP-canonical severity name (mapped from levelname)
+      ``time``       — ISO-8601 timestamp
+      ``logger``     — ``record.name``
+      ``msg``        — ``record.getMessage()`` (formatted string)
+      ``exc``        — exception text (only when ``record.exc_info`` is set)
+    """
+
+    _SEVERITY_MAP = {
+        "DEBUG": "DEBUG",
+        "INFO": "INFO",
+        "WARNING": "WARNING",
+        "ERROR": "ERROR",
+        "CRITICAL": "CRITICAL",
+    }
+
+    def format(self, record: logging.LogRecord) -> str:  # noqa: A003
+        import json as _json
+        import datetime as _dt
+
+        payload: dict[str, object] = {
+            "severity": self._SEVERITY_MAP.get(record.levelname, record.levelname),
+            "time": _dt.datetime.fromtimestamp(record.created, tz=_dt.timezone.utc).isoformat(),
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        return _json.dumps(payload, ensure_ascii=False)
+
+
+def setup_json_logging() -> bool:
+    """Replace the root-logger handler formatter with ``_GcpJsonFormatter``.
+
+    Also installs ``lib.scrubber.ScrubFilter`` on the root logger so every
+    ``logger.info/warning/error(...)`` call is scrubbed before it reaches
+    Cloud Logging (closes O-7).
+
+    Idempotent: safe to call more than once; the second call is a no-op.
+
+    Returns:
+        ``True`` when the formatter was installed (or had been on a prior
+        call); ``False`` when something prevented installation (logged at
+        WARNING so the caller can continue without structured logs).
+    """
+    global _json_logging_initialized
+    with _json_logging_lock:
+        if _json_logging_initialized:
+            return True
+
+    try:
+        root = logging.getLogger()
+
+        # Install JSON formatter on every existing handler.  If basicConfig
+        # hasn't run yet (e.g. unit-test context), attach a StreamHandler.
+        if not root.handlers:
+            root.addHandler(logging.StreamHandler())
+
+        json_fmt = _GcpJsonFormatter()
+        for handler in root.handlers:
+            handler.setFormatter(json_fmt)
+
+        # O-7: install ScrubFilter so all Python logger.* calls are scrubbed.
+        try:
+            from lib.scrubber import ScrubFilter
+
+            root.addFilter(ScrubFilter())
+        except Exception as exc:  # noqa: BLE001 — scrubber optional
+            logger.warning("setup_json_logging: ScrubFilter unavailable: %s", exc)
+
+        with _json_logging_lock:
+            _json_logging_initialized = True
+
+        logger.info("setup_json_logging: GCP JSON formatter + ScrubFilter installed on root logger")
+        return True
+
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("setup_json_logging: failed to install JSON formatter: %s", exc)
+        return False

@@ -304,15 +304,15 @@ jobs:
           uv pip install "mypy>=1.10"
 
       - name: Run mypy
-        # Non-blocking until pre-existing type errors are resolved.
-        # Track progress: grep 'Found .* errors' in CI logs.
-        continue-on-error: true
+        # T-1 fix: mypy is now blocking (required-for-merge). Type errors
+        # must be resolved before merge. Remove continue-on-error and || true
+        # so the CI step fails on any mypy finding.
         run: |
           source .venv/bin/activate
           mypy lib/ app/ \
             --ignore-missing-imports \
             --exclude 'tests/' \
-            --no-error-summary || true
+            --no-error-summary
 
   # ------------------------------------------------------------------
   # Validate config/limits.yaml against its JSON schema

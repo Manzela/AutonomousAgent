@@ -74,3 +74,39 @@ resource "google_project_iam_member" "github_ci_roles" {
   role     = each.value
   member   = "serviceAccount:${google_service_account.github_ci.email}"
 }
+
+# ---------------------------------------------------------------------------
+# CRIT-2 fix: hermes_agent SA — referenced in wif-migration.tf Cloud Run
+# service but was not defined anywhere, causing `terraform plan` to fail.
+#
+# This SA is the Cloud Run runtime identity for the Hermes agent service.
+# It uses metadata-server ADC (no SA key files) once the Cloud Run migration
+# (W1.D.I-8) is complete.  Until then, the SA exists but Cloud Run is not
+# deployed; the docker-compose path uses per-service SA key mounts (W0.6).
+# ---------------------------------------------------------------------------
+
+resource "google_service_account" "hermes_agent" {
+  project      = var.project_id
+  account_id   = "autonomousagent-hermes-agent"
+  display_name = "AutonomousAgent Hermes Cloud Run runtime identity"
+  description  = "Attached to the Cloud Run hermes service; minimum scopes for Vertex/SQL/Logging"
+  depends_on   = [google_project_service.enabled]
+}
+
+locals {
+  hermes_agent_roles = [
+    "roles/aiplatform.user",         # Vertex AI (LLM inference)
+    "roles/cloudsql.client",         # Cloud SQL for pgvector memory store
+    "roles/secretmanager.secretAccessor", # Runtime secrets (Honcho, Telegram, etc.)
+    "roles/logging.logWriter",       # Cloud Logging
+    "roles/monitoring.metricWriter", # Cloud Monitoring custom metrics
+    "roles/storage.objectCreator",   # GCS snapshot bucket writes
+  ]
+}
+
+resource "google_project_iam_member" "hermes_agent_roles" {
+  for_each = toset(local.hermes_agent_roles)
+  project  = var.project_id
+  role     = each.value
+  member   = "serviceAccount:${google_service_account.hermes_agent.email}"
+}

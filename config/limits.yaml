@@ -54,6 +54,10 @@ approval:
     - "DROP TABLE"
     - "kubectl delete"
     - "*.private*"
+    - "gh api -X DELETE"
+    - "gh repo delete"
+    - "bq rm"
+    - "gsutil rm -r"
   never_ask_patterns:
     - "ls *"
     - "cat *"

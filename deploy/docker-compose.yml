@@ -106,11 +106,12 @@ services:
     # the DB-backed admin UI.
     image: ghcr.io/berriai/litellm:v1.84.0@sha256:29252f25ed1b538d44f6b76ec97412c5537a180b39ede744b9f3e86ffdd278f5
     <<: [*restart_policy, *json_logging]
+    entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec docker/prod_entrypoint.sh \"$$@\"", "--"]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
       # Models live in config.yaml; don't shadow them with a DB-managed list.
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
@@ -135,7 +136,7 @@ services:
       - litellm_master_key
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
-      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      - ./secrets/sa-keys/litellm-proxy.json.sops:/secrets/sa-key.json:ro
       # Audit C1: wire lib/scrubber.py as a LiteLLM CustomLogger so prompts
       # and responses are scanned for secrets before they reach OTel/Phoenix.
       # `scrubber_callback.py` must sit next to config.yaml (same directory
@@ -168,11 +169,14 @@ services:
   otel-collector:
     # Pinned by digest. Resolved 2026-05-19. Re-pin via:
     # `docker pull otel/opentelemetry-collector-contrib:latest | grep Digest`
-    image: otel/opentelemetry-collector-contrib:latest@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d
+    image: otel/opentelemetry-collector-contrib@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/etc/otelcol-contrib/config.yaml"]
     volumes:
-      - ${OTEL_CONFIG:-./otel/collector.dev.yaml}:/etc/otelcol-contrib/config.yaml:ro
+      # P2-11: default is prod YAML so any `docker compose up` (smoke, panic,
+      # snapshot scripts) routes telemetry through the production pipeline.
+      # Override for local dev: OTEL_CONFIG=./otel/collector.dev.yaml docker compose up
+      - ${OTEL_CONFIG:-./otel/collector.prod.yaml}:/etc/otelcol-contrib/config.yaml:ro
     networks: [internal, egress]
     # Resource limits.
     mem_limit: 512m
@@ -201,8 +205,20 @@ services:
 
   phoenix:
     # Pinned by digest. Resolved 2026-05-19.
-    image: arizephoenix/phoenix:latest@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489
+    image: arizephoenix/phoenix@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489
     <<: [*restart_policy, *json_logging]
+    # P2-12: Phoenix UI has no built-in auth. Ports are loopback-only, but any
+    # operator who port-forwards localhost:6006 during incident triage exposes
+    # the full LLM trace history (including prompts and tool outputs) with zero
+    # authentication to their local machine. Enable Phoenix auth before
+    # port-forwarding to untrusted networks. Required env vars when auth is on:
+    #   PHOENIX_ENABLE_AUTH=true
+    #   PHOENIX_SECRET=<long random string: openssl rand -hex 32>
+    #   PHOENIX_ADMIN_SECRET=<admin password>
+    # See https://docs.arize.com/phoenix/deployment/security
+    environment:
+      PHOENIX_ENABLE_AUTH: "${PHOENIX_ENABLE_AUTH:-false}"
+      PHOENIX_SECRET: "${PHOENIX_SECRET:-}"
     ports:
       - "127.0.0.1:4317:4317"   # OTLP gRPC receiver
       - "127.0.0.1:6006:6006"   # Phoenix UI + OTLP HTTP receiver
@@ -253,7 +269,7 @@ services:
 
   github-mcp:
     # Pinned by digest. Resolved 2026-05-19.
-    image: ghcr.io/github/github-mcp-server:latest@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
+    image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
     command: ["http", "--port", "8003", "--toolsets", "all"]
     environment:
@@ -504,7 +520,7 @@ services:
   cloud-sql-proxy:
     # Google's official Cloud SQL Auth Proxy v2 image.
     # Pinned to 2.15.x — latest stable at time of writing.
-    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0@sha256:b9dbf4aa34a514f0c38021686928a99f8d778925b2f330e46487cc708c0e61d2
     <<: [*restart_policy, *json_logging]
     container_name: autonomous-agent-cloud-sql-proxy-1
     command:
@@ -513,10 +529,10 @@ services:
       - --port=5432
       - ${CLOUD_SQL_CONNECTION_NAME:-autonomous-agent-2026:us-central1:autonomousagent-postgres-vector}
     environment:
-      # ADC chain — same gcloud config mount as snapshot-watchdog.
-      GOOGLE_APPLICATION_CREDENTIALS: /credentials/application_default_credentials.json
+      # ADC chain — per-service SA key mount
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     volumes:
-      - ${HOME}/.config/gcloud:/credentials:ro
+      - ./secrets/sa-keys/cloud-sql-proxy.json.sops:/secrets/sa-key.json:ro
     networks: [internal]
     healthcheck:
       test:
@@ -578,8 +594,8 @@ services:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
     container_name: autonomous-agent-snapshot-watchdog-1
-    entrypoint: []
-    command: ["python", "/app/scripts/snapshot_loop.py"]
+    entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec python /app/scripts/snapshot_loop.py"]
+    command: []
     working_dir: /app
     environment:
       PYTHONPATH: /app
@@ -590,9 +606,8 @@ services:
       # Sidecars use sentinel file for halt signaling, not SIGTERM.
       HALT_ALERT_SENDS_SIGTERM: "false"
       # ADC chain. The mount below maps host gcloud config to a path the
-      # hermes uid (1000) can read. When the bucket env is empty, the
-      # SDK is never invoked so the path doesn't need to exist.
-      GOOGLE_APPLICATION_CREDENTIALS: /home/hermes/.config/gcloud/application_default_credentials.json
+      # google-cloud-storage Python client discovers automatically via ADC.
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     env_file:
       - ${SECRETS_DIR:-../secrets}/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
     volumes:
@@ -600,10 +615,8 @@ services:
       - hermes-data:/home/hermes/.hermes       # tar source
       - ../lib:/app/lib:ro
       - ../scripts:/app/scripts:ro
-      # Same gcloud ADC mount that litellm-proxy uses; gives the sidecar
-      # access to the operator's Application Default Credentials without
-      # baking a service-account key into the image.
-      - ${HOME}/.config/gcloud:/home/hermes/.config/gcloud:ro
+      # Service Account key for GCS write access.
+      - ./secrets/sa-keys/snapshot-watchdog.json.sops:/secrets/sa-key.json:ro
     networks: [internal, egress]   # egress for GCS API + Telegram
     depends_on:
       volume-init: {condition: service_completed_successfully}

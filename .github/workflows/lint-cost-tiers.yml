@@ -1,0 +1,27 @@
+name: Lint Cost Tiers
+
+on:
+  push:
+    paths:
+      - 'config/hermes/model-tiers.yaml'
+  pull_request:
+    paths:
+      - 'config/hermes/model-tiers.yaml'
+
+jobs:
+  lint-cost-tiers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify daily_cost_cap_usd exists on every tier
+        run: |
+          # Read all tiers and check if daily_cost_cap_usd is present.
+          # We skip the "routing" section and only check "tiers".
+          # We use a simple yq script.
+          sudo snap install yq
+          MISSING=$(yq '.tiers | to_entries | map(select(.value.daily_cost_cap_usd == null and .value.status != "stub-until-w1j")) | .[].key' config/hermes/model-tiers.yaml)
+          if [ -n "$MISSING" ]; then
+            echo "::error::The following active tiers are missing a daily_cost_cap_usd: $MISSING"
+            exit 1
+          fi
+          echo "All active tiers have daily_cost_cap_usd."

@@ -339,6 +339,14 @@ def run_once(
     except Exception as exc:  # noqa: BLE001 — fail-open
         return SnapshotResult(object_name=object_name, error=f"client init failed: {exc}")
 
+    # TOCTOU note (P2-2): Two replicas can each observe `today_done=False`
+    # here and proceed to upload concurrently. GCS uploads are last-writer-wins
+    # (object names embed the UTC date, not a replica ID), so both writes land
+    # at the same object path — the final GCS object reflects whichever replica
+    # finished last. This is acceptable for daily disaster-recovery snapshots
+    # (idempotent content, same-day state). Active-active deployments with
+    # diverged state could upload non-identical tar archives; if that becomes
+    # a concern, coordinate via a GCS conditional-put or a distributed mutex.
     today_done = _today_already_uploaded(client, bucket, now_utc)
     skip_reason = evaluate_should_skip(now_utc, snapshot_hour_utc, today_done)
     if skip_reason:

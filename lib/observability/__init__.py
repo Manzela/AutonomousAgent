@@ -65,6 +65,31 @@ if _TRACING_OK:
     except Exception:  # pragma: no cover
         _tracer = None
 
+# P3-6: Lazy meter handle + token-count instruments. Token counts are emitted
+# both as span attributes (existing, for Phoenix UI) AND as OTel metric
+# counters so dashboards and SLO burn-rate alerts can drive off metric data
+# without scraping span attributes.
+_meter: Any = None
+_token_input_counter: Any = None
+_token_output_counter: Any = None
+if _METRICS_OK:
+    try:
+        from opentelemetry import metrics  # type: ignore
+
+        _meter = metrics.get_meter("hermes.observability")
+        _token_input_counter = _meter.create_counter(
+            name="llm.token_count.input",
+            description="Input (prompt) tokens consumed per LLM HTTP request",
+            unit="tokens",
+        )
+        _token_output_counter = _meter.create_counter(
+            name="llm.token_count.output",
+            description="Output (completion) tokens consumed per LLM HTTP request",
+            unit="tokens",
+        )
+    except Exception:  # pragma: no cover
+        _meter = None
+
 # Active-span registry. Tool-call spans use the ``tool_call_id`` key
 # (passed verbatim through both pre/post hook kwargs). LLM-call spans use
 # the ``session_id`` because Hermes does not pass an llm_call_id through
@@ -121,7 +146,10 @@ _OI_KIND = "openinference.span.kind"
 # audit-plan.md item J11. Spec: opentelemetry.io/docs/specs/semconv/gen-ai/
 _DUAL_EMIT_ENV = "HERMES_DUAL_EMIT_GEN_AI"
 _DUAL_EMIT_TRUTHY = {"1", "true", "yes", "on"}
-_DUAL_EMIT_ENABLED = os.getenv(_DUAL_EMIT_ENV, "").strip().lower() in _DUAL_EMIT_TRUTHY
+# P2-14: default-ON so gen_ai.* semconv consumers (Cloud Trace, GCP GenAI
+# dashboards) receive data out of the box. Set HERMES_DUAL_EMIT_GEN_AI=0
+# to revert to Phoenix-only (OpenInference) attributes.
+_DUAL_EMIT_ENABLED = os.getenv(_DUAL_EMIT_ENV, "1").strip().lower() in _DUAL_EMIT_TRUTHY
 
 
 def _is_dual_emit_enabled() -> bool:
@@ -695,6 +723,18 @@ def _post_api_request(
                         "gen_ai.usage.output_tokens": new_out,
                     },
                 )
+                # P3-6: also emit per-request token deltas as OTel metric
+                # counters so cost dashboards don't require span scraping.
+                # Uses `in_tok` / `out_tok` (the per-request delta) rather
+                # than the accumulated totals so the metric counter's own
+                # accumulation matches expected semantics.
+                _metric_attrs = {
+                    "gen_ai.response.model": str(response_model) if response_model else ""
+                }
+                if _token_input_counter is not None and in_tok:
+                    _token_input_counter.add(in_tok, _metric_attrs)
+                if _token_output_counter is not None and out_tok:
+                    _token_output_counter.add(out_tok, _metric_attrs)
 
             # J9 wiring — feed the per-request prompt-token count into the
             # F-CONTEXT detector. Uses ``in_tok`` (the current request's

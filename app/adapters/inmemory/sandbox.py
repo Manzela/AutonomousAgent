@@ -89,7 +89,12 @@ class LocalSubprocessSandbox(AbstractSandbox):
 def _make_preexec(*, cpu_seconds: int, memory_mb: int, max_files: int):
     """Build a preexec_fn that applies POSIX rlimits to the child.
 
-    Returns None on non-POSIX (preexec_fn isn't supported on Windows anyway).
+    KNOWN RISK (P3-11): preexec_fn is unsafe in multi-threaded Python processes
+    because the child is created via fork() while other threads may hold locks
+    that are never released in the forked child (fork-deadlock).  This is
+    accepted for the CI / test-only context where LocalSubprocessSandbox runs.
+    Production deployments MUST use FirecrackerSandbox, which uses a
+    process-manager sidecar instead of fork+exec (no preexec_fn).
     """
 
     def preexec() -> None:

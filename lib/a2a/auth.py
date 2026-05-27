@@ -293,8 +293,8 @@ async def verify_token(
     replay_key = (issuer, jti)
 
     # --- Distributed jti replay check (Redis primary, L1 fallback) ---
-    # Per spec §1: default fail-OPEN with 60s L1 bounded-replay window.
-    # Operator override: A2A_JTI_FAIL_MODE=closed. Read per-call (not
+    # Per spec §1: default fail-CLOSED in production.
+    # Operator override: A2A_JTI_FAIL_MODE=open. Read per-call (not
     # captured at module import) so tests + revisions can flip the knob
     # without re-importing the module.
     fail_closed = _os.getenv("A2A_JTI_FAIL_MODE", "closed").lower() == "closed"
@@ -392,7 +392,8 @@ async def _call_sign_jwt(our_sa: str, payload_json: str) -> str:
     import google.auth.transport.requests
 
     credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    credentials.refresh(google.auth.transport.requests.Request())
+    req = google.auth.transport.requests.Request()
+    await asyncio.to_thread(credentials.refresh, req)
     url = _IAM_SIGN_JWT_URL.format(sa_email=our_sa)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(

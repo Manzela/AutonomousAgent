@@ -22,7 +22,7 @@ peers:
     # server.verify_token to gate accept/reject.
     issuer: agent-canary-spike@autonomous-agent-2026.iam.gserviceaccount.com
     # Audience required on outbound JWTs we mint targeting this peer.
-    audience: https://agent-canary.example.test
+    audience: agent-canary@autonomous-agent-2026.iam.gserviceaccount.com
     # AgentCard URL for discovery (Day 8). Optional in Day 5; required Day 8+.
     agent_card_url: http://agent-canary:9001/.well-known/agent-card.json
     # Capability filter — narrow which RPC methods this peer can invoke on us.

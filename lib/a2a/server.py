@@ -79,6 +79,10 @@ _PEERS_METHODS_MAP: dict[str, list[str]] = {}  # issuer -> allowed_methods
 
 # TTL-bounded task registry — maps A2A task_id (str) -> bridge TaskSpec.
 # Bounded to prevent unbounded memory growth; entries expire after 1 hour.
+# Note: This is process-local. In multi-replica deployments, a tasks/get
+# on replica B for a task created on replica A will return 404 (ghost tasks).
+# Use Cloud SQL or Redis when scaling beyond single replica. Default stays
+# in-process for single-replica deploys.
 from cachetools import TTLCache  # noqa: E402
 
 _TASK_REGISTRY: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
@@ -361,29 +365,59 @@ async def handle_subscribe_task(params: dict[str, Any]) -> StreamingResponse:
 
 # --- FastAPI app ---------------------------------------------------------
 
+from contextlib import asynccontextmanager  # noqa: E402
+from lib.a2a.audience_validator import validate_all_peers  # noqa: E402
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    validate_all_peers()
+    yield
+
+
 app = FastAPI(
     title="A2A Spike Agent",
     description="JSON-RPC 2.0 / SSE agent-to-agent protocol — Days 2-7 spike",
     version="0.1.0-spike-day7",
+    lifespan=lifespan,
 )
 
 # M3: 1MB body size limit — prevents OOM from oversized JSON payloads
-from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
 from starlette.responses import Response as _StarletteResponse  # noqa: E402
 
 
-class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
-    _MAX_BYTES = 1 * 1024 * 1024  # 1 MB
+class _BodySizeLimitMiddleware:
+    def __init__(self, app):
+        self.app = app
+        self._MAX_BYTES = 1 * 1024 * 1024  # 1 MB
 
-    async def dispatch(self, request, call_next):  # type: ignore[override]
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > self._MAX_BYTES:
-            return _StarletteResponse(
-                content='{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Request too large"}}',
-                status_code=413,
-                media_type="application/json",
-            )
-        return await call_next(request)
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        body_size = 0
+
+        async def wrapped_receive():
+            nonlocal body_size
+            message = await receive()
+            if message["type"] == "http.request":
+                body_size += len(message.get("body", b""))
+                if body_size > self._MAX_BYTES:
+                    raise RuntimeError("Request body too large")
+            return message
+
+        try:
+            return await self.app(scope, wrapped_receive, send)
+        except RuntimeError as exc:
+            if str(exc) == "Request body too large":
+                response = _StarletteResponse(
+                    content='{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Request too large"}}',
+                    status_code=413,
+                    media_type="application/json",
+                )
+                await response(scope, receive, send)
+            else:
+                raise
 
 
 app.add_middleware(_BodySizeLimitMiddleware)

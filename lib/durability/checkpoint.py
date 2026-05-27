@@ -30,6 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    import fcntl as _fcntl
+except ImportError:  # Windows / environments without fcntl
+    _fcntl = None  # type: ignore[assignment]
+
 
 DEFAULT_ROOT = Path("/data/checkpoints")
 SCHEMA_VERSION = 1
@@ -116,12 +121,31 @@ class Checkpoint:
                     payload[k] = v
 
         path = self.step_path(step)
-        # Atomic write: write to <path>.tmp, fsync, os.replace into place, then
-        # fsync the parent dir to persist the rename. Guarantees that readers
-        # (incl. resume) never observe a half-written step-N.json — only a
-        # stale .tmp may appear, which the cleanup branch removes when possible.
-        # Disk-full surfaces as OSError at the .tmp open/write (trichotomy → F28).
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        # Single-writer invariant: in normal operation exactly one process (the
+        # agent loop or the SIGTERM handler) writes checkpoints for a given
+        # session. Concurrent writers are defended against at two layers:
+        #
+        # 1. PID-unique tmp path — prevents concurrent writers from corrupting
+        #    each other's in-flight JSON via a shared .tmp file. `os.replace` is
+        #    atomic on POSIX; last-replace-wins (the later state survives).
+        # 2. Per-session flock on `.write.lock` — serialises writers so loser
+        #    data is never silently dropped. Falls back gracefully on Windows /
+        #    tmpfs mounts that return EPERM for fcntl.LOCK_EX.
+        #
+        # (P2-1 remediation: audit/2026-05-27-ground-truth/findings.md)
+        tmp_path = path.with_name(f"{path.stem}.{os.getpid()}{path.suffix}.tmp")
+        lock_path = self.session_dir / ".write.lock"
+        lock_fd: int = -1
+        try:
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+            if _fcntl is not None:
+                try:
+                    _fcntl.flock(lock_fd, _fcntl.LOCK_EX)
+                except OSError:
+                    pass  # best-effort; os.replace atomicity is the safety net
+        except OSError:
+            lock_fd = -1  # lock file creation failed; proceed without locking
+
         try:
             with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, separators=(",", ":"))
@@ -151,6 +175,17 @@ class Checkpoint:
                 except OSError:
                     pass
             raise
+        finally:
+            if lock_fd >= 0:
+                if _fcntl is not None:
+                    try:
+                        _fcntl.flock(lock_fd, _fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+                try:
+                    os.close(lock_fd)
+                except OSError:
+                    pass
 
         self._apply_retention()
         return path

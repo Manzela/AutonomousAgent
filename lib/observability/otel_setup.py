@@ -27,6 +27,7 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,12 @@ _initialized = False
 _provider: object = None
 _metrics_initialized = False
 _meter_provider: object = None
+
+# Guards against concurrent double-init (TOCTOU on the _initialized flag).
+# The OTel SDK is idempotent, so races produce only a cosmetic duplicate-init
+# warning; the locks prevent even that noise.
+_trace_lock = threading.Lock()
+_metrics_lock = threading.Lock()
 
 # Default metric export interval. 30 s matches the OTel Python default;
 # kept explicit so the value is grep-able and tunable per-deployment.
@@ -55,8 +62,9 @@ def setup_tracing(service_name: str = "hermes-agent") -> bool:
         whether to wire its span-emitting hooks.
     """
     global _initialized
-    if _initialized:
-        return True
+    with _trace_lock:
+        if _initialized:
+            return True
 
     try:
         from opentelemetry import trace
@@ -108,7 +116,8 @@ def setup_tracing(service_name: str = "hermes-agent") -> bool:
 
     global _provider
     _provider = provider
-    _initialized = True
+    with _trace_lock:
+        _initialized = True
     logger.info(
         "OTel tracing initialized: service.name=%s endpoint=%s",
         service_name,
@@ -156,8 +165,9 @@ def setup_metrics(
         delay and an extra round-trip per session.
     """
     global _metrics_initialized
-    if _metrics_initialized:
-        return True
+    with _metrics_lock:
+        if _metrics_initialized:
+            return True
 
     try:
         from opentelemetry import metrics
@@ -201,7 +211,8 @@ def setup_metrics(
 
     global _meter_provider
     _meter_provider = provider
-    _metrics_initialized = True
+    with _metrics_lock:
+        _metrics_initialized = True
     logger.info(
         "OTel metrics initialized: service.name=%s endpoint=%s interval_ms=%d",
         service_name,

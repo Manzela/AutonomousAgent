@@ -23,6 +23,7 @@ The contract is enforced at three layers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -171,6 +172,11 @@ class TrajectoryShipper:
         """Sanitize a single verdict via Model Armor, upload sanitized
         payload to GCS.
 
+        **Sync-only contract** (P2-26): both the Model Armor ``sanitize``
+        call and the GCS ``upload_from_string`` are synchronous blocking
+        I/O. Calling this method directly from an async context blocks the
+        event loop. Use :meth:`ship_one_async` from async callers instead.
+
         Raises:
             ModelArmorSanitizeUnavailable: if ``templates.sanitize`` fails,
                 times out, or returns an unrecognizable response shape.
@@ -204,6 +210,19 @@ class TrajectoryShipper:
         bucket_handle = self.gcs_client.bucket(self.bucket)
         blob = bucket_handle.blob(object_name)
         blob.upload_from_string(sanitized_payload, content_type="application/json")
+
+    async def ship_one_async(self, verdict: dict) -> None:
+        """Async wrapper around :meth:`ship_one` for use from async callers.
+
+        Delegates to :func:`asyncio.to_thread` so the synchronous Model Armor
+        sanitize call and the GCS PUT do not block the event loop.
+
+        Raises:
+            ModelArmorSanitizeUnavailable: propagated from :meth:`ship_one`
+                unchanged — the persistence-trap contract requires the
+                caller's loop to stop on sanitize unavailability.
+        """
+        await asyncio.to_thread(self.ship_one, verdict)
 
     def ship_batch(self, verdicts: list[dict]) -> None:
         """Per-record sanitize + upload. A single

@@ -26,6 +26,7 @@ class Tier(str, Enum):
 class Route:
     patterns: tuple[str, ...]
     tier: Tier
+    evaluate_after: bool
 
 
 class ToolsetRouter:
@@ -37,9 +38,23 @@ class ToolsetRouter:
     def from_config(cls, config_path: Path) -> ToolsetRouter:
         with config_path.open() as f:
             data = yaml.safe_load(f)
-        routes = [Route(patterns=tuple(r["match"]), tier=Tier(r["tier"])) for r in data["routes"]]
-        default = Tier(data["default_tier"])
+        routes = [
+            Route(
+                patterns=tuple(r["match"]),
+                tier=Tier(r["tier"]),
+                evaluate_after=bool(r.get("evaluate_after", True)),
+            )
+            for r in data.get("routes", [])
+        ]
+        default = Tier(data.get("default_tier", "shell_sandbox"))
         return cls(routes, default)
+
+    def is_evaluation_eligible(self, tool_name: str) -> bool:
+        for route in self._routes:
+            for pattern in route.patterns:
+                if fnmatch.fnmatchcase(tool_name, pattern):
+                    return route.evaluate_after
+        return True
 
     def resolve(self, tool_name: str) -> Tier:
         for route in self._routes:

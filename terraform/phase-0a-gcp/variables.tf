@@ -29,6 +29,16 @@ variable "vm_machine_type" {
   default     = "e2-standard-4"
 }
 
+# P2-15: Slack / webhook URL for incident alert fan-out.
+# Set via TF_VAR_slack_alert_webhook_url or tfvars. When empty, only the
+# email channel is used (safe default — no alerts lost).
+variable "slack_alert_webhook_url" {
+  type        = string
+  description = "Incoming webhook URL for Slack/PagerDuty incident alerts. Set to '' to disable."
+  default     = ""
+  sensitive   = true
+}
+
 variable "vm_boot_disk_gb" {
   type        = number
   description = "Boot disk size in GB for the GCE VM."

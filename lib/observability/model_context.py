@@ -74,6 +74,10 @@ _MODEL_CONTEXT_LENGTH: dict[str, int] = {
     "openai/gpt-4o-mini": 128_000,
     "openai/gpt-4-turbo": 128_000,
     # ----- Google Gemini -----
+    "gemini-3-1-pro-preview": 1_048_576,
+    "gemini-3-5-flash": 1_048_576,
+    "vertex_ai/gemini-3-1-pro-preview": 1_048_576,
+    "vertex_ai/gemini-3-5-flash": 1_048_576,
     "gemini-2.5-pro": 1_048_576,
     "gemini-2.5-flash": 1_048_576,
     "vertex_ai/gemini-2.5-pro": 1_048_576,

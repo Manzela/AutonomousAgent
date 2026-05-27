@@ -16,6 +16,7 @@ Spec reference: docs/specification.md §4 (AgentCard), §5 (discovery).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -72,7 +73,8 @@ async def _call_sign_blob(data: bytes, sa_email: str) -> str:
     import google.auth.transport.requests
 
     credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    credentials.refresh(google.auth.transport.requests.Request())
+    req = google.auth.transport.requests.Request()
+    await asyncio.to_thread(credentials.refresh, req)
     async with httpx.AsyncClient(timeout=10.0) as client:
         resp = await client.post(
             f"https://iam.googleapis.com/v1/projects/-/serviceAccounts/{sa_email}:signBlob",

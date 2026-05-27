@@ -46,6 +46,12 @@ _LOCK = threading.Lock()
 _SEEN_SESSIONS: Set[str] = set()
 
 
+class BudgetExhaustedError(Exception):
+    """Raised when the daily LiteLLM budget is exhausted (CC-6 Sentinel)."""
+
+    pass
+
+
 def _on_pre_tool_call(
     tool_name: Optional[str] = None,
     args: Optional[Dict[str, Any]] = None,
@@ -66,6 +72,13 @@ def _on_pre_tool_call(
     Returns ``None`` — card creation is a side-effect; we never block a
     tool call on it.
     """
+    import os
+
+    if os.path.exists("/data/HALT_F21"):
+        raise BudgetExhaustedError(
+            "Agent halted: Daily LiteLLM budget exhausted. See /data/HALT_F21"
+        )
+
     if not session_id:
         return None
 

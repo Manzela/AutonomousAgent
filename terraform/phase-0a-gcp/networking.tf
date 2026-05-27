@@ -28,13 +28,19 @@ resource "google_compute_subnetwork" "autonomousagent" {
   private_ip_google_access = true
 }
 
-# Firewall — three rules implementing default-deny + IAP-only SSH + open egress.
+# Firewall — ingress rules only. Egress rules live in firewall.tf (P2-27).
 #
 # Rule ordering (GCP applies lowest-priority-number first):
 #   1000  allow_iap_ssh        — SSH from GCP-published IAP CIDR only
-#   1000  allow_egress_all     — VM can reach internet (Artifact Registry,
-#                                Secret Manager, Cloud Logging, etc.)
 #   65534 deny_all_ingress    — catch-all; blocks every other inbound packet
+#
+# Egress allowlist (firewall.tf):
+#   1000  allow_egress_https   — TCP 443 to any (APIs, registries, Telegram)
+#   1000  allow_egress_http    — TCP 80 to any (apt-get, Docker image pulls)
+#   1000  allow_egress_dns     — UDP+TCP 53 to any (DNS resolution)
+#   1000  allow_egress_cloudsql — TCP 3307 (Cloud SQL connector protocol)
+#   1000  allow_egress_redis   — TCP 6379 to Memorystore private range
+#   65534 deny_egress_all      — blocks all other outbound (overrides implied allow at 65535)
 #
 # target_tags = ["autonomousagent-vm"]: rules only apply to instances
 # tagged this way (the GCE VM in compute.tf will carry this tag), so the
@@ -63,17 +69,6 @@ resource "google_compute_firewall" "allow_iap_ssh" {
   # GCP-published IAP CIDR — fixed, do not parameterize.
   source_ranges = ["35.235.240.0/20"]
   target_tags   = ["autonomousagent-vm"]
-}
-
-resource "google_compute_firewall" "allow_egress_all" {
-  name      = "autonomousagent-allow-egress-all"
-  network   = google_compute_network.autonomousagent.name
-  direction = "EGRESS"
-  priority  = 1000
-
-  allow { protocol = "all" }
-  destination_ranges = ["0.0.0.0/0"]
-  target_tags        = ["autonomousagent-vm"]
 }
 
 # Cloud Router + Cloud NAT: provides outbound internet access for the VM

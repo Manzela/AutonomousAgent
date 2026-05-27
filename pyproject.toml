@@ -19,6 +19,13 @@ dependencies = [
   "google-cloud-storage>=2.18",
   "google-cloud-modelarmor>=0.1.0,<0.2",
   "numpy>=2.4.6,<3",
+  # P2-13: OTel SDK moved to main deps so `uv sync` (without --extra a2a or
+  # --extra dev) still provides a working OTel SDK on prod. Previously only
+  # in the `dev` and `a2a` extras — a prod uv-sync without those extras
+  # silently made OTel imports no-ops (lib/observability/__init__.py).
+  "opentelemetry-api>=1.20",
+  "opentelemetry-sdk>=1.20",
+  "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +34,8 @@ dev = [
   "pytest-asyncio>=0.23",
   "pytest-mock>=3.14",
   "ruff>=0.6.9",
-  "opentelemetry-sdk>=1.20",
+  # opentelemetry-sdk promoted to [project.dependencies] (P2-13); kept as
+  # a comment here so future maintainers know the version floor is set there.
   # P-2: CloudSqlPgvectorStore contract tests via testcontainers.
   "testcontainers[postgres]>=4.8,<5",
   # Redis jti: in-process fakeredis for distributed replay cache tests.
@@ -59,7 +67,7 @@ a2a = [
   "python-ulid>=3.0",
   "cryptography>=43.0",
   "python-multipart>=0.0.20",
-  "opentelemetry-api>=1.20",
+  # opentelemetry-api promoted to [project.dependencies] (P2-13).
   "jcs>=0.2",
   # Distributed jti replay cache — Redis-backed per
   # docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md

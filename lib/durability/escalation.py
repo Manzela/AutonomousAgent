@@ -9,7 +9,7 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from lib.scrubber import scrub_string
 
@@ -24,7 +24,7 @@ KANBAN_DB_PATH = os.environ.get("HERMES_KANBAN_DB", "/home/hermes/.hermes/kanban
 
 
 def find_stale_blocked_cards(
-    threshold_h: int = 24, db_path: str = None
+    threshold_h: int = 24, db_path: Optional[str] = None
 ) -> List[Tuple[int, str, float]]:
     """Return [(card_id, title, last_heartbeat_age_h), ...] for cards stuck in blocked
     longer than threshold_h hours."""
@@ -33,8 +33,9 @@ def find_stale_blocked_cards(
         return []
     now = time.time()
     threshold_s = threshold_h * 3600
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30)
     try:
+        conn.execute("PRAGMA cache_size = -2000")  # W1.F-3: 2MB bound
         rows = conn.execute(
             "SELECT id, title, last_heartbeat_at FROM tasks "
             "WHERE status = 'blocked' AND (? - last_heartbeat_at) > ?",
@@ -119,7 +120,7 @@ def emit_escalation(card_id: int, title: str, age_h: float) -> None:
         )
 
 
-def run_once(threshold_h: int = 24, db_path: str = None) -> int:
+def run_once(threshold_h: int = 24, db_path: Optional[str] = None) -> int:
     stale = find_stale_blocked_cards(threshold_h=threshold_h, db_path=db_path)
     for card_id, title, age_h in stale:
         emit_escalation(card_id, title, age_h)

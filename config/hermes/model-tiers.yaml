@@ -1,0 +1,61 @@
+# Source: audit/2026-05-27-ground-truth/decisions.md D-2.a
+# Quirks reference: ~/.claude/.../memory/gemini_3_1_pro_preview_quirks.md
+tiers:
+  orchestrator:
+    model: vertex_ai/gemini-3-1-pro-preview
+    endpoint: global
+    thinking_budget: high
+    max_tokens: 8192
+    daily_cost_cap_usd: 200
+  architect:
+    model: vertex_ai/claude-opus-4-7
+    max_tokens: 8192
+    daily_cost_cap_usd: 150
+  fast-engineer:
+    model: vertex_ai/gemini-3-5-flash
+    max_tokens: 4096
+    daily_cost_cap_usd: 50
+  researcher:
+    model: vertex_ai/gemini-3-1-pro-preview
+    endpoint: global
+    max_tokens: 16384
+    daily_cost_cap_usd: 100
+  deep-math:
+    # CORRECTED 2026-05-27: LiteLLM canonical id is `deepseek/deepseek-reasoner`
+    # (DeepSeek R1 reasoning model). The audit-plan draft incorrectly listed
+    # `deepseek-r1` which is not a valid LiteLLM provider/model identifier.
+    # Reference: https://docs.litellm.ai/docs/providers/deepseek (verified 2026-05-27)
+    model: deepseek/deepseek-reasoner
+    api_base: https://api.deepseek.com
+    provider: deepseek
+    status: stub-until-w1j
+    fallback_tier: orchestrator
+  privacy:
+    # CORRECTED 2026-05-27 (second pass): Qwen3.5 IS released (Feb-Mar 2026,
+    # post-prior-cutoff); the prior "never released" claim was stale training
+    # data. Selected default = Qwen3.5-35B-A3B (Instruct MoE), the newer
+    # generation at same single-A100 footprint as the originally-considered
+    # Qwen3-30B-A3B-Instruct-2507. 36B total / 3B active params; 256 experts
+    # (8 routed + 1 shared); hybrid Gated DeltaNet+Attention+FFN; 256K context.
+    # vLLM ≥0.21.0 supports it. LiteLLM prefix `hosted_vllm/` (NOT `openai/`
+    # or the deprecated `vllm/`). Reference:
+    # https://huggingface.co/Qwen/Qwen3.5-35B-A3B (verified 2026-05-27)
+    # https://huggingface.co/collections/Qwen/qwen35
+    # https://docs.litellm.ai/docs/providers/vllm
+    #
+    # ALTERNATIVES (commented; operator may un-comment + comment out the
+    # default block if their workload warrants):
+    #   (alt-a) hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    #     Older-gen Qwen3 BUT purpose-built for agentic coding; same single-
+    #     A100 footprint; `qwen3_coder` tool-call format. Pick if coder
+    #     specialization > generational newness for the workload.
+    #   (alt-c) hosted_vllm/Qwen/Qwen3.5-27B
+    #     Dense 28B; strongest published code benchmarks (SWE-Bench Verified
+    #     72.4, LiveCodeBench v6 80.7); REQUIRES 8× A100 80GB tensor-parallel
+    #     (`a2-ultragpu-8g`); ~10× cost (~$20K/mo on-demand). Re-escalate to
+    #     human before flipping — exceeds default budget envelope.
+    model: hosted_vllm/Qwen/Qwen3.5-35B-A3B
+    api_base: http://qwen-vllm.autonomous-agent-2026.svc.cluster.local:8000/v1
+    provider: self-host
+    status: stub-until-w1j
+    fallback_tier: orchestrator

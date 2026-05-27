@@ -21,6 +21,7 @@ import asyncio
 import logging
 import os
 import pathlib
+import random
 import uuid
 from typing import Any
 
@@ -38,6 +39,28 @@ except ImportError:  # pragma: no cover
     _OTEL_AVAILABLE = False
     _otel_propagate = None  # type: ignore[assignment]
     _otel_trace = None  # type: ignore[assignment]
+
+_CLIENT: httpx.AsyncClient | None = None
+_CLIENT_LOCK = asyncio.Lock()
+
+
+async def get_client() -> httpx.AsyncClient:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
+    async with _CLIENT_LOCK:
+        if _CLIENT is None:
+            limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
+            _CLIENT = httpx.AsyncClient(http2=True, limits=limits)
+        return _CLIENT
+
+
+async def close_client() -> None:
+    global _CLIENT
+    if _CLIENT is not None:
+        await _CLIENT.aclose()
+        _CLIENT = None
+
 
 # --- Error hierarchy ---------------------------------------------------------
 
@@ -120,14 +143,16 @@ async def _post_with_retry(
         except httpx.TransportError as exc:
             if attempt == _MAX_RETRIES - 1:
                 raise
+
+            jittered_delay = delay + random.uniform(0, delay * 0.2)
             logger.warning(
                 "a2a: transient error (attempt %d/%d): %s — retrying in %.1fs",
                 attempt + 1,
                 _MAX_RETRIES,
                 exc,
-                delay,
+                jittered_delay,
             )
-            await asyncio.sleep(delay)
+            await asyncio.sleep(jittered_delay)
             delay *= 2
     raise AssertionError("unreachable")  # pragma: no cover
 
@@ -267,16 +292,15 @@ async def send_message(
         httpx.TransportError: connection failure after retries exhausted.
     """
     auth_headers = await _build_auth_headers(peer_url.rstrip("/"), agent_identity)
-
-    async with httpx.AsyncClient() as client:
-        result = await _call(
-            client,
-            peer_url.rstrip("/") + "/",
-            "message/send",
-            {"message": message},
-            timeout,
-            auth_headers=auth_headers,
-        )
+    client = await get_client()
+    result = await _call(
+        client,
+        peer_url.rstrip("/") + "/",
+        "message/send",
+        {"message": message},
+        timeout,
+        auth_headers=auth_headers,
+    )
 
     if not isinstance(result, dict) or "id" not in result:
         raise A2AInvalidAgentResponse(
@@ -306,14 +330,14 @@ async def get_task(
         A2ATaskNotFound: task ID not found on the peer.
         A2AUnsupportedOperation: peer does not implement tasks/get (stub).
     """
-    async with httpx.AsyncClient() as client:
-        result = await _call(
-            client,
-            peer_url.rstrip("/") + "/",
-            "tasks/get",
-            {"id": task_id},
-            timeout,
-        )
+    client = await get_client()
+    result = await _call(
+        client,
+        peer_url.rstrip("/") + "/",
+        "tasks/get",
+        {"id": task_id},
+        timeout,
+    )
     return result  # type: ignore[return-value]
 
 
@@ -338,12 +362,12 @@ async def cancel_task(
         A2ATaskNotFound: task ID not found.
         A2ATaskNotCancelable: task is in a terminal state.
     """
-    async with httpx.AsyncClient() as client:
-        result = await _call(
-            client,
-            peer_url.rstrip("/") + "/",
-            "tasks/cancel",
-            {"id": task_id},
-            timeout,
-        )
+    client = await get_client()
+    result = await _call(
+        client,
+        peer_url.rstrip("/") + "/",
+        "tasks/cancel",
+        {"id": task_id},
+        timeout,
+    )
     return result  # type: ignore[return-value]

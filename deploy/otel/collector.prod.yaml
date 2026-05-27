@@ -24,9 +24,23 @@ processors:
     num_traces: 100000
     expected_new_traces_per_sec: 100
     policies:
+      # Primary error policy: OTel span status explicitly set to ERROR.
       - name: errors
         type: status_code
         status_code: {status_codes: [ERROR]}
+      # P3-7: Secondary error policy catches traces where the error is signalled
+      # via a span attribute (error=true / error=1) rather than via the OTel
+      # span status code — e.g., LiteLLM proxy spans that set the attribute but
+      # don't call span.set_status(StatusCode.ERROR). Prevents the status_code
+      # policy from silently dropping such traces.
+      - name: error-attribute
+        type: string_attribute
+        string_attribute:
+          key: error
+          values: ["true", "1"]
+          enabled_regex_matching: false
+          cache_max_size: 1000
+          invert_match: false
       - name: slow
         type: latency
         latency: {threshold_ms: 5000}

@@ -143,6 +143,7 @@ jobs:
       # are fast without needing an external cache backend.
       # ------------------------------------------------------------------
       - name: Build and push hermes
+        id: build_hermes
         uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
         with:
           context: .
@@ -154,11 +155,14 @@ jobs:
             ${{ env.AR_REPO }}/hermes:latest
           cache-from: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache
           cache-to: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache,mode=max
+          provenance: mode=max
+          sbom: true
 
       # ------------------------------------------------------------------
       # Build and push shell-sandbox image.
       # ------------------------------------------------------------------
       - name: Build and push shell-sandbox
+        id: build_sandbox
         uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4  # v6.15.0
         with:
           context: .
@@ -170,6 +174,29 @@ jobs:
             ${{ env.AR_REPO }}/shell-sandbox:latest
           cache-from: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache
           cache-to: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache,mode=max
+          provenance: mode=max
+          sbom: true
+
+      # ------------------------------------------------------------------
+      # Sign both images with cosign keyless OIDC (P2-23).
+      # The build-push-action already attaches SLSA provenance + SBOM via
+      # buildx attestations. cosign sign binds an additional Sigstore
+      # transparency-log entry to the image digest so the deploy job can
+      # verify with cosign verify-attestation (fail-CLOSED gate).
+      # id-token: write is already granted to this job for WIF auth above.
+      # ------------------------------------------------------------------
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14  # v3.5.0
+
+      - name: Sign hermes image
+        run: |
+          cosign sign --yes \
+            "${{ env.AR_REPO }}/hermes@${{ steps.build_hermes.outputs.digest }}"
+
+      - name: Sign shell-sandbox image
+        run: |
+          cosign sign --yes \
+            "${{ env.AR_REPO }}/shell-sandbox@${{ steps.build_sandbox.outputs.digest }}"
 
       - name: Build summary
         run: |
@@ -267,6 +294,25 @@ jobs:
 
           echo "[deploy] Authenticating Docker to Artifact Registry..."
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+          # Verify the image attestation via cosign before pulling
+          echo "[deploy] Verifying SLSA provenance and SBOM attestation..."
+          IMAGE_URI="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes:${IMAGE_TAG}"
+          # We resolve the digest from the remote registry to verify it
+          DIGEST=$(gcloud container images describe "${IMAGE_URI}" --format="value(image_summary.digest)")
+
+          # Fallback to cosign if it exists, but install it if missing
+          if ! command -v cosign &> /dev/null; then
+             echo "Installing cosign..."
+             curl -O -L "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64"
+             sudo mv cosign-linux-amd64 /usr/local/bin/cosign
+             sudo chmod +x /usr/local/bin/cosign
+          fi
+
+          cosign verify-attestation --type spdxjson \
+            --certificate-identity-regexp '^https://github.com/Manzela/AutonomousAgent/' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes@${DIGEST}"
 
           echo "[deploy] Pulling new images..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet

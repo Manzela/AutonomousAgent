@@ -17,7 +17,7 @@ dependencies = [
   # silently fail with ModuleNotFoundError at first --ship-once invocation.
   "google-cloud-secret-manager>=2.20",
   "google-cloud-storage>=2.18",
-  "google-cloud-modelarmor>=0.1.0,<0.2",
+  "google-cloud-modelarmor>=0.1.0,<0.7",
   "numpy>=2.4.6,<3",
   # Judge panel dispatcher: lib/evaluators/judge_panel.py calls litellm directly
   # for multi-axis evaluations. Hard import at top level — must be in main deps.

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["budget", "retries", "sandboxes", "agent", "nudges", "health", "snapshots", "approval", "rl_rewards", "rl_training", "alerts", "notify_channels", "log_retention", "local_logs_dev", "anchors", "evaluators", "durability", "memory", "kanban", "integrity"],
+  "required": ["budget", "retries", "sandboxes", "agent", "nudges", "health", "snapshots", "approval", "rl_rewards", "rl_training", "alerts", "notify_channels", "log_retention", "local_logs_dev", "anchors", "evaluators", "durability", "memory", "kanban", "integrity", "disaster_recovery"],
   "additionalProperties": false,
   "properties": {
     "budget": {
@@ -304,6 +304,18 @@
           "pattern": "^[0-9a-f]{64}$",
           "description": "SHA-256 (hex) of config/hermes/SOUL.md. Enforced by tests/unit/test_soul_md_integrity.py and the soul-md-integrity CI job. Update in the same commit as any intentional SOUL.md change."
         }
+      }
+    },
+    "disaster_recovery": {
+      "type": "object",
+      "required": ["rpo_hours", "rto_hours", "drill_schedule", "staging_project", "prod_project"],
+      "additionalProperties": false,
+      "properties": {
+        "rpo_hours": {"type": "integer", "minimum": 1},
+        "rto_hours": {"type": "integer", "minimum": 1},
+        "drill_schedule": {"type": "string", "enum": ["quarterly", "monthly", "yearly"]},
+        "staging_project": {"type": "string"},
+        "prod_project": {"type": "string"}
       }
     }
   }

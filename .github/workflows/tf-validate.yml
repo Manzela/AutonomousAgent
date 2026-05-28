@@ -1,0 +1,30 @@
+name: Terraform Validate and Plan
+on:
+  pull_request:
+    branches: [main]
+    paths: ['terraform/**']
+permissions:
+  contents: read
+jobs:
+  validate-plan:
+    name: Terraform Validate and Plan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@a9fd48a27aae69c8c3600bfd12f37c3510ec56d9 # v3
+        with:
+          terraform_version: "1.5.7"
+      - name: Terraform Init
+        run: |
+          cd terraform/phase-0a-gcp
+          terraform init -backend=false
+      - name: Terraform Validate
+        run: |
+          cd terraform/phase-0a-gcp
+          terraform validate
+      - name: Terraform Plan
+        run: |
+          cd terraform/phase-0a-gcp
+          terraform plan -detailed-exitcode -var="image_tag=latest"

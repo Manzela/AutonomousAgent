@@ -60,6 +60,14 @@ _JSON_LOGGING_OK = setup_json_logging()
 _TRACING_OK = setup_tracing(service_name="hermes-agent")
 _METRICS_OK = setup_metrics(service_name="hermes-agent")
 
+# C-8: OTel GenAI semantic conventions stability opt-in check (required in code).
+if os.environ.get("OTEL_SEMCONV_STABILITY_OPT_IN") != "gen_ai_latest_experimental":
+    logger.warning(
+        "OTEL_SEMCONV_STABILITY_OPT_IN environment variable is not set to "
+        "'gen_ai_latest_experimental'. GenAI semantic conventions (gen_ai.* attributes) "
+        "may not be emitted consistently. Ensure this is set in the runtime environment."
+    )
+
 # Lazy tracer handle — only used when tracing initialized.
 _tracer: Any = None
 if _TRACING_OK:
@@ -85,6 +93,7 @@ _llm_calls_total_counter: Any = None  # llm.calls.total            (5)
 _tool_call_duration_hist: Any = None  # tool.call.duration         (6)
 _tool_call_errors_counter: Any = None  # tool.call.errors          (7)
 _session_start_counter: Any = None  # session.start.count         (8)
+_llm_call_cost_hist: Any = None  # llm.call.cost             (9)
 # (instruments 9 and 10 come from lib/durability/runtime_detectors.py gauge
 #  and the a2a server if instrumented; this module contributes 8 of the ≥10.)
 if _METRICS_OK:
@@ -139,7 +148,13 @@ if _METRICS_OK:
             description="Number of Hermes agent sessions started",
             unit="1",
         )
-    except Exception:  # pragma: no cover
+        # O-1: Per-turn cost histogram.
+        _llm_call_cost_hist = _meter.create_histogram(
+            name="llm.call.cost",
+            description="Estimated cost per LLM HTTP request",
+            unit="USD",
+        )
+    except Exception:  # noqa: BLE001
         _meter = None
 
 # Active-span registry. Tool-call spans use the ``tool_call_id`` key

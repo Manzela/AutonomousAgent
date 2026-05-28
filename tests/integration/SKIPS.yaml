@@ -83,3 +83,6 @@ skips:
   - test: tests/integration/test_skill_creation.py::test_complex_session_creates_skill
     reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack with /v1/nudges/skill_extractor/run endpoint
     issue: P1-6-REVISED
+  - test: tests/integration/test_otel_redaction.py::test_otel_collector_redacts_pii
+    reason: docker daemon not available
+    issue: P0-5

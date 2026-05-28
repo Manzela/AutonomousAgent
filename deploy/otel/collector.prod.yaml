@@ -26,6 +26,27 @@ processors:
       - key: deployment.environment
         value: prod
         action: upsert
+  redaction:
+    # Scrub PII from trace/log attributes and log bodies
+    allow_all_keys: true
+    # Even though allow_all_keys=true means allowed_keys is unused, keep these
+    # for defence-in-depth (if a future contributor flips back to false).
+    allowed_keys:
+      - "http.*"
+      - "os.*"
+      - "process.*"
+      - "host.*"
+      - "gen_ai.system"
+      - "gen_ai.request.model"
+      - "gen_ai.response.model"
+      - "error"
+      - "error.type"
+    blocked_key_patterns:
+      - "(?i).*(email|ssn|phone|tenant_secret|api_key|bearer|customer_id|user_id|account_number).*"
+    blocked_values:
+      - "(?i)(password|secret|key|token|sk-[a-zA-Z0-9]{20,})"
+      - "\\b\\d{3}-\\d{2}-\\d{4}\\b" # SSN
+      - "\\b(?:[a-zA-Z0-9+_.-]+@[a-zA-Z0-9.-]+)\\b" # Email
   tail_sampling:
     decision_wait: 30s
     num_traces: 100000
@@ -51,6 +72,12 @@ processors:
       - name: slow
         type: latency
         latency: {threshold_ms: 5000}
+      - name: human-overrides
+        type: string_attribute
+        string_attribute:
+          key: "gen_ai.human_override"
+          values: ["true", "1"]
+          enabled_regex_matching: false
       - name: probabilistic
         type: probabilistic
         probabilistic: {sampling_percentage: 10}
@@ -82,15 +109,15 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, resource, tail_sampling, batch]
+      processors: [memory_limiter, resource, redaction, tail_sampling, batch]
       # Export to Cloud Monitoring AND feed into spanmetrics connector.
       exporters: [googlecloud, spanmetrics]
     metrics:
       # Both native OTLP metrics AND spanmetrics-derived latency histograms.
       receivers: [otlp, spanmetrics]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, resource, redaction, batch]
       exporters: [googlecloud]
     logs:
       receivers: [otlp]
-      processors: [memory_limiter, resource, batch]
+      processors: [memory_limiter, resource, redaction, batch]
       exporters: [googlecloud]

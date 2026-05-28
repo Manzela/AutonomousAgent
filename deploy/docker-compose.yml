@@ -91,6 +91,23 @@ services:
       retries: 10
       start_period: 30s
 
+  # ---- Langfuse (Phase 1.8) ----
+  langfuse:
+    image: ghcr.io/langfuse/langfuse:3
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://litellm:postgres@litellm-db:5432/litellm_db
+      - NEXTAUTH_SECRET=local_langfuse_secret_do_not_use_in_prod
+      - SALT=local_langfuse_salt_do_not_use_in_prod
+      - NEXTAUTH_URL=http://localhost:3000
+      - TELEMETRY_ENABLED=false
+    depends_on:
+      litellm-db: {condition: service_healthy}
+    networks:
+      - internal
+
   # ---- LiteLLM proxy ----
 
   litellm-proxy:
@@ -412,6 +429,7 @@ services:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_SERVICE_NAME: hermes
+      OTEL_SEMCONV_STABILITY_OPT_IN: gen_ai_latest_experimental
       # P-2: CloudSqlPgvectorStore DSN — Cloud SQL Auth Proxy on localhost.
       # IAM auth via the proxy; no password in the DSN.
       # Unset in dev/CI where InMemoryStore is used (the store is lazy-imported).

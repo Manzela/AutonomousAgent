@@ -1,0 +1,23 @@
+name: OSV Scanner
+on:
+  pull_request:
+    branches: [main]
+    paths: ['pyproject.toml', 'uv.lock']
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 6 * * 1'  # weekly Monday catch-up
+permissions:
+  contents: read
+  security-events: write
+jobs:
+  osv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@main
+        with:
+          scan-args: |-
+            --lockfile=uv.lock
+            --fail-on-vuln

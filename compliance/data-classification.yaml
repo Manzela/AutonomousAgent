@@ -1,0 +1,25 @@
+tiers:
+  PUBLIC:
+    description: Marketing copy, public docs
+    encryption: none-required
+    retention_days: unlimited
+  INTERNAL:
+    description: Source code, build artifacts
+    encryption: at-rest
+    retention_days: unlimited
+  CONFIDENTIAL:
+    description: User prompts, LLM responses (without PII), spend logs
+    encryption: at-rest + in-transit
+    retention_days: 90
+  RESTRICTED:
+    description: PII (email, user_id, session_id), API keys, payment data
+    encryption: CMEK at-rest, mTLS in-transit
+    retention_days: 30
+    access_log_required: true
+data_sources:
+  - path: gs://autonomousagent-malt-*/malt/trajectory/
+    tier: CONFIDENTIAL
+  - path: postgres://honcho/*
+    tier: RESTRICTED
+  - path: chroma://*
+    tier: RESTRICTED

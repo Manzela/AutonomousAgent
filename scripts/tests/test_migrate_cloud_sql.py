@@ -199,9 +199,9 @@ class TestMigrateUnit:
             n = asyncio.run(migrate("postgresql://mock/db"))
 
         assert n == len(DDL_BLOCKS), f"Expected {len(DDL_BLOCKS)} blocks applied; got {n}"
-        assert conn.execute.call_count == len(DDL_BLOCKS), (
-            f"conn.execute called {conn.execute.call_count} times; " f"expected {len(DDL_BLOCKS)}"
-        )
+        assert conn.execute.call_count == len(
+            DDL_BLOCKS
+        ), f"conn.execute called {conn.execute.call_count} times; expected {len(DDL_BLOCKS)}"
 
     def test_execute_called_with_each_sql(self):
         """Each SQL string from DDL_BLOCKS must reach conn.execute verbatim."""

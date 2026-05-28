@@ -82,7 +82,7 @@ async def _get_pool(dsn: Optional[str] = None) -> asyncpg.Pool:
     effective_dsn = dsn or os.environ.get("CLOUD_SQL_DSN")
     if not effective_dsn:
         raise RuntimeError(
-            "CloudSqlPgvectorStore requires CLOUD_SQL_DSN env var " "or explicit dsn= arg"
+            "CloudSqlPgvectorStore requires CLOUD_SQL_DSN env var or explicit dsn= arg"
         )
     if effective_dsn in _POOLS:
         return _POOLS[effective_dsn]
@@ -157,7 +157,7 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
         if not _HAS_ASYNCPG:
             missing = " and ".join(_MISSING_DEPS)
             raise ImportError(
-                f"CloudSqlPgvectorStore requires {missing}. " "Install with: uv sync --extra gcp"
+                f"CloudSqlPgvectorStore requires {missing}. Install with: uv sync --extra gcp"
             )
         self._dim = dim
         self._dsn = dsn

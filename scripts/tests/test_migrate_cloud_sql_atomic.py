@@ -149,10 +149,9 @@ class TestMigrateAtomicity:
         aexit_call = tx.__aexit__.await_args
         assert aexit_call is not None
         exc_type, _, _ = aexit_call.args
-        assert exc_type is RuntimeError, (
-            f"Block {fail_idx}: __aexit__ must receive RuntimeError for rollback; "
-            f"got {exc_type!r}"
-        )
+        assert (
+            exc_type is RuntimeError
+        ), f"Block {fail_idx}: __aexit__ must receive RuntimeError for rollback; got {exc_type!r}"
         conn.close.assert_awaited_once()
 
     def test_execute_stops_after_first_failure(self):

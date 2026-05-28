@@ -33,7 +33,7 @@ def _blocked(card: Any) -> str:
         getattr(card, "last_failure_error", None) or getattr(card, "body", None) or "unspecified"
     )
     card_id = getattr(card, "id", "?")
-    return f"Blocked on: {reason}. " f"Use `/resume {card_id}` to unblock"
+    return f"Blocked on: {reason}. Use `/resume {card_id}` to unblock"
 
 
 def _done(card: Any) -> str:

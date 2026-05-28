@@ -158,8 +158,7 @@ class AgentCapability(BaseModel):
         if self.peer_endpoint is not None:
             if not self.peer_endpoint.startswith(("http://", "https://")):
                 raise ValueError(
-                    f"peer_endpoint must start with http:// or https://, "
-                    f"got {self.peer_endpoint!r}"
+                    f"peer_endpoint must start with http:// or https://, got {self.peer_endpoint!r}"
                 )
         return self
 

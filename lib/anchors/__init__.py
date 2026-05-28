@@ -71,7 +71,7 @@ def _resolve_storage_dir() -> Path:
             p.mkdir(parents=True, exist_ok=True)
         except (PermissionError, OSError):
             logger.info(
-                "anchors: configured spec_storage_dir %s not writable; " "falling back to %s",
+                "anchors: configured spec_storage_dir %s not writable; falling back to %s",
                 p,
                 _FALLBACK_STORAGE_DIR,
             )

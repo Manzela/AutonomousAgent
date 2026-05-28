@@ -62,7 +62,7 @@ class VertexEmbeddingsEmbedder(AbstractEmbedder):
     def __init__(self) -> None:
         if not _HAS_AIPLATFORM:
             raise ImportError(
-                "google-cloud-aiplatform is not installed. " "Install with: uv sync --extra gcp"
+                "google-cloud-aiplatform is not installed. Install with: uv sync --extra gcp"
             )
         client_options = {"api_endpoint": f"{_LOCATION}-aiplatform.googleapis.com"}
         self._client = aiplatform.gapic.PredictionServiceClient(client_options=client_options)
@@ -83,8 +83,7 @@ class VertexEmbeddingsEmbedder(AbstractEmbedder):
         for idx, text in enumerate(texts_list):
             if not isinstance(text, str):
                 raise TypeError(
-                    f"embed_many() expects str elements; got {type(text).__name__!r} "
-                    f"at index {idx}"
+                    f"embed_many() expects str elements; got {type(text).__name__!r} at index {idx}"
                 )
 
         instances = [{"content": text} for text in texts_list]

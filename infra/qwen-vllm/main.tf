@@ -175,14 +175,12 @@ resource "google_compute_instance" "qwen_vllm" {
     preemptible = var.provisioning_model == "SPOT" ? true : false
   }
 
-  guest_accelerator {
-    type  = "nvidia-a100-80gb"
-    count = 1
-  }
+  # NOTE: a2-highgpu-1g includes 1× A100 80GB implicitly.
+  # Do NOT specify guest_accelerator for A2 machine types.
 
   boot_disk {
     initialize_params {
-      image = "projects/ml-images/global/images/family/common-gpu-debian-12-py312"
+      image = "projects/deeplearning-platform-release/global/images/family/pytorch-2-9-cu129-ubuntu-2404-nvidia-580"
       size  = 200 # GB — model weights are ~15GB; OS + Docker layers need room
       type  = "pd-balanced"
     }

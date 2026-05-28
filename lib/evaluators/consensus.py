@@ -56,17 +56,27 @@ def decide_consensus(
     judges: list[JudgeResult],
     *,
     fifth_judge: Optional[JudgeResult] = None,
-    accept_threshold: float = 0.75,
-    reject_threshold: float = 0.75,
+    accept_threshold: Optional[float] = None,
+    reject_threshold: Optional[float] = None,
 ) -> ConsensusResult:
     """Apply consensus rule to the judge panel.
 
-    If `fifth_judge` is None and the panel doesn't reach a 75% majority
+    Thresholds default to config/limits.yaml evaluators.consensus.accept_threshold /
+    reject_threshold (currently 0.75 each). Callers may override by passing explicit
+    float values.
+
+    If `fifth_judge` is None and the panel doesn't reach a majority
     OR contains any 'unsure', returns verdict='needs_5th_judge' (caller
     must dispatch the 5th judge and call again with fifth_judge set).
 
     With fifth_judge set, returns final verdict (or fail_loud if still tied).
     """
+    if accept_threshold is None or reject_threshold is None:
+        cfg_a, cfg_r = _consensus_thresholds()
+        if accept_threshold is None:
+            accept_threshold = cfg_a
+        if reject_threshold is None:
+            reject_threshold = cfg_r
     n = len(judges)
     if n != 4:
         raise ValueError(f"4-judge consensus expects 4 judges, got {n}")
@@ -141,6 +151,29 @@ def decide_consensus(
         judges=judges,
         fifth_judge=fifth_judge,
     )
+
+
+def _consensus_thresholds() -> tuple[float, float]:
+    """Read accept/reject thresholds from config/limits.yaml evaluators.consensus.*.
+
+    Returns (accept_threshold, reject_threshold). Falls back to (0.75, 0.75) on
+    any read failure so consensus is never blocked by a config read error.
+    """
+    try:
+        import yaml
+        from pathlib import Path
+
+        cfg_path = Path(__file__).resolve().parents[2] / "config" / "limits.yaml"
+        if not cfg_path.exists():
+            return 0.75, 0.75
+        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        ev_consensus = (cfg.get("evaluators") or {}).get("consensus") or {}
+        return (
+            float(ev_consensus.get("accept_threshold", 0.75)),
+            float(ev_consensus.get("reject_threshold", 0.75)),
+        )
+    except Exception:  # noqa: BLE001 — config faults must not break consensus
+        return 0.75, 0.75
 
 
 def _rejection_repeat_threshold() -> int:

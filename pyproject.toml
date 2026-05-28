@@ -19,6 +19,9 @@ dependencies = [
   "google-cloud-storage>=2.18",
   "google-cloud-modelarmor>=0.1.0,<0.2",
   "numpy>=2.4.6,<3",
+  # Judge panel dispatcher: lib/evaluators/judge_panel.py calls litellm directly
+  # for multi-axis evaluations. Hard import at top level — must be in main deps.
+  "litellm>=1.0",
   # P2-13: OTel SDK moved to main deps so `uv sync` (without --extra a2a or
   # --extra dev) still provides a working OTel SDK on prod. Previously only
   # in the `dev` and `a2a` extras — a prod uv-sync without those extras
@@ -85,7 +88,14 @@ line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = [
+  "tests",
+  "lib/durability/tests",
+  "lib/evaluators/tests",
+  "lib/router/tests",
+  "scripts/tests",
+  "app/tests",
+]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"
 # Custom markers. Registered here so `--strict-markers` (and the default

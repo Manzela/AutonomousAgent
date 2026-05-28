@@ -143,7 +143,7 @@ services:
       - litellm_master_key
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
-      - ./secrets/sa-keys/litellm-proxy.json.sops:/secrets/sa-key.json:ro
+      - ${SECRETS_DIR:-../secrets}/sa-keys/litellm-proxy.json:/secrets/sa-key.json:ro
       # Audit C1: wire lib/scrubber.py as a LiteLLM CustomLogger so prompts
       # and responses are scanned for secrets before they reach OTel/Phoenix.
       # `scrubber_callback.py` must sit next to config.yaml (same directory
@@ -551,7 +551,7 @@ services:
       # ADC chain — per-service SA key mount
       GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     volumes:
-      - ./secrets/sa-keys/cloud-sql-proxy.json.sops:/secrets/sa-key.json:ro
+      - ${SECRETS_DIR:-../secrets}/sa-keys/cloud-sql-proxy.json:/secrets/sa-key.json:ro
     networks: [internal]
     healthcheck:
       test:
@@ -647,7 +647,7 @@ services:
       - ../lib:/app/lib:ro
       - ../scripts:/app/scripts:ro
       # Service Account key for GCS write access.
-      - ./secrets/sa-keys/snapshot-watchdog.json.sops:/secrets/sa-key.json:ro
+      - ${SECRETS_DIR:-../secrets}/sa-keys/snapshot-watchdog.json:/secrets/sa-key.json:ro
     networks: [internal, egress]   # egress for GCS API + Telegram
     depends_on:
       volume-init: {condition: service_completed_successfully}

@@ -9,6 +9,15 @@
 # Capacity: 1GB handles ~3M entries at 160 bytes each (5K/sec burst × 600s TTL).
 # Cost: ~$150/mo for STANDARD_HA in us-central1.
 
+resource "google_project_service" "apis" {
+  for_each = toset([
+    "redis.googleapis.com",
+  ])
+  project            = var.project_id
+  service            = each.value
+  disable_on_destroy = false
+}
+
 # Data source: look up the existing VPC by name.
 data "google_compute_network" "vpc" {
   name    = var.vpc_network_name
@@ -29,6 +38,8 @@ resource "google_redis_instance" "jti_replay_cache" {
   display_name   = "A2A JTI replay cache"
 
   authorized_network = data.google_compute_network.vpc.id
+
+  depends_on = [google_project_service.apis]
 
   # TLS for PHI-adjacent traffic — Memorystore terminates TLS on port 6380.
   transit_encryption_mode = "SERVER_AUTHENTICATION"

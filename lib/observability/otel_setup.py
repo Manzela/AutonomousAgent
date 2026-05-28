@@ -286,32 +286,36 @@ def setup_json_logging() -> bool:
         if _json_logging_initialized:
             return True
 
-    try:
-        root = logging.getLogger()
-
-        # Install JSON formatter on every existing handler.  If basicConfig
-        # hasn't run yet (e.g. unit-test context), attach a StreamHandler.
-        if not root.handlers:
-            root.addHandler(logging.StreamHandler())
-
-        json_fmt = _GcpJsonFormatter()
-        for handler in root.handlers:
-            handler.setFormatter(json_fmt)
-
-        # O-7: install ScrubFilter so all Python logger.* calls are scrubbed.
+        # Hold the lock for the entire critical section — same pattern as
+        # setup_tracing / setup_metrics.  Without this, two concurrent callers
+        # both see _json_logging_initialized=False, both proceed outside the
+        # lock, and both install duplicate formatters and ScrubFilter instances
+        # on the root logger (TOCTOU race).
         try:
-            from lib.scrubber import ScrubFilter
+            root = logging.getLogger()
 
-            root.addFilter(ScrubFilter())
-        except Exception as exc:  # noqa: BLE001 — scrubber optional
-            logger.warning("setup_json_logging: ScrubFilter unavailable: %s", exc)
+            # Install JSON formatter on every existing handler.  If basicConfig
+            # hasn't run yet (e.g. unit-test context), attach a StreamHandler.
+            if not root.handlers:
+                root.addHandler(logging.StreamHandler())
 
-        with _json_logging_lock:
+            json_fmt = _GcpJsonFormatter()
+            for handler in root.handlers:
+                handler.setFormatter(json_fmt)
+
+            # O-7: install ScrubFilter so all Python logger.* calls are scrubbed.
+            try:
+                from lib.scrubber import ScrubFilter
+
+                root.addFilter(ScrubFilter())
+            except Exception as exc:  # noqa: BLE001 — scrubber optional
+                logger.warning("setup_json_logging: ScrubFilter unavailable: %s", exc)
+
             _json_logging_initialized = True
 
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("setup_json_logging: failed to install JSON formatter: %s", exc)
-        return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("setup_json_logging: failed to install JSON formatter: %s", exc)
+            return False
 
     logger.info("setup_json_logging: GCP JSON formatter + ScrubFilter installed on root logger")
     return True

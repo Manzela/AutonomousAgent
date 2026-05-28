@@ -73,7 +73,6 @@ if _A2A_DEV_INSECURE and os.getenv("PRODUCTION", "").lower() in ("1", "true"):
 _PEERS_CACHE: list[dict[str, Any]] | None = None
 _PEERS_CACHE_AT: float = 0.0
 _PEERS_CACHE_TTL = 60.0
-_PEERS_CACHE_LOCK = asyncio.Lock()
 _PEERS_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "../../config/a2a/peers.yaml")
 _PEERS_METHODS_MAP: dict[str, list[str]] = {}  # issuer -> allowed_methods
 
@@ -83,10 +82,14 @@ _PEERS_METHODS_MAP: dict[str, list[str]] = {}  # issuer -> allowed_methods
 # on replica B for a task created on replica A will return 404 (ghost tasks).
 # Use Cloud SQL or Redis when scaling beyond single replica. Default stays
 # in-process for single-replica deploys.
+#
+# Thread-safety: in a single asyncio event loop there is no preemption
+# between sync statements, so TTLCache reads and writes within a single
+# coroutine are atomic without an explicit lock. No asyncio.Lock is needed
+# for standard FastAPI/Uvicorn deployments.
 from cachetools import TTLCache  # noqa: E402
 
 _TASK_REGISTRY: TTLCache = TTLCache(maxsize=10_000, ttl=3600)
-_REGISTRY_LOCK = asyncio.Lock()
 
 # --- OTel tracer ----------------------------------------------------------
 

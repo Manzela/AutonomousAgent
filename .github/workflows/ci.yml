@@ -259,6 +259,41 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------
+  # W1.E-new: Import smoke gate — catch import-time crashes in critical
+  # module trees before any tests run. Cheap (5s), prevents NameError
+  # or ImportError from lurking until integration time.
+  # ------------------------------------------------------------------
+  import-smoke:
+    name: Import Smoke Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python + install
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv sync --frozen --extra dev --extra gcp --extra a2a
+
+      - name: Verify critical module imports
+        run: |
+          source .venv/bin/activate
+          python -c "import lib.a2a.server; print('lib.a2a.server: OK')"
+          python -c "import lib.evaluators; print('lib.evaluators: OK')"
+          python -c "import lib.durability; print('lib.durability: OK')"
+          python -c "import lib.observability; print('lib.observability: OK')"
+          python -c "import lib.router.intent_router; print('lib.router.intent_router: OK')"
+
+  # ------------------------------------------------------------------
   # Assert no plaintext secrets on disk
   # ------------------------------------------------------------------
   secrets-lint:

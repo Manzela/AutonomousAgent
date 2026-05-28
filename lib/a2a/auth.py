@@ -192,13 +192,22 @@ _JWKS_URL_TEMPLATE = "https://www.googleapis.com/service_accounts/v1/jwk/{sa_ema
 
 
 async def _fetch_jwks(sa_email: str) -> list[dict]:
+    # Fast path: check both caches WITHOUT the lock.  In the asyncio event
+    # loop there is no preemption between sync statements, so the reads are
+    # safe.  This eliminates the pathological case where a cache hit for
+    # SA-B is blocked by an ongoing (up-to-10 s) HTTP fetch for SA-A.
+    cached = _JWKS_CACHE.get(sa_email)
+    if cached is not None:
+        return cached
+    if sa_email in _JWKS_FAIL_CACHE:
+        raise ValueError(f"JWKS fetch for {sa_email} recently failed; backing off for 30s")
+
     lock = _get_jwks_lock()
-    async with lock:  # single-flight: no thundering herd on cache miss
-        # Positive cache hit
+    async with lock:  # single-flight inside the lock: prevents duplicate fetches
+        # Re-check under the lock (classic double-checked pattern for asyncio).
         cached = _JWKS_CACHE.get(sa_email)
         if cached is not None:
             return cached
-        # M6: negative cache — back off if JWKS endpoint recently failed
         if sa_email in _JWKS_FAIL_CACHE:
             raise ValueError(f"JWKS fetch for {sa_email} recently failed; backing off for 30s")
         url = _JWKS_URL_TEMPLATE.format(sa_email=sa_email)

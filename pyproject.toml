@@ -95,6 +95,7 @@ testpaths = [
   "lib/router/tests",
   "scripts/tests",
   "app/tests",
+  "app/adapters/inmemory/tests",
 ]
 python_files = ["test_*.py"]
 asyncio_mode = "auto"

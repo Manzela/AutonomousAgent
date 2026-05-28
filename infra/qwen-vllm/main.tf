@@ -47,7 +47,7 @@ variable "network_name" {
 
 variable "subnet_name" {
   type    = string
-  default = "autonomousagent-subnet"
+  default = "autonomousagent-subnet-us-central1"
 }
 
 # Use the existing VPC

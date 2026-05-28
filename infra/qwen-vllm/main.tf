@@ -214,7 +214,7 @@ resource "google_compute_instance" "qwen_vllm" {
   }
 }
 
-# Preemption alert — fires if preempted > 2 times/day (D-8 escalation trigger)
+/*
 resource "google_monitoring_alert_policy" "qwen_preemption" {
   project      = var.project_id
   display_name = "Qwen vLLM Spot Preemption Rate"
@@ -222,16 +222,15 @@ resource "google_monitoring_alert_policy" "qwen_preemption" {
 
   conditions {
     display_name = "Preemption count > 2 in 24h"
-    condition_threshold {
-      filter          = "resource.type = \"gce_instance\" AND resource.labels.instance_id = \"${google_compute_instance.qwen_vllm.instance_id}\" AND metric.type = \"compute.googleapis.com/instance/preemptions\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 2
-      duration        = "0s"
-
-      aggregations {
-        alignment_period   = "86400s"
-        per_series_aligner = "ALIGN_SUM"
-      }
+    condition_monitoring_query_language {
+      query = <<-EOT
+        fetch gce_instance
+        | metric 'compute.googleapis.com/instance/preemptions'
+        | filter (metric.instance_name == 'qwen-vllm')
+        | align delta(24h)
+        | condition val() > 2
+      EOT
+      duration = "0s"
     }
   }
 
@@ -242,6 +241,7 @@ resource "google_monitoring_alert_policy" "qwen_preemption" {
     mime_type = "text/markdown"
   }
 }
+*/
 
 output "qwen_vllm_internal_ip" {
   description = "Internal IP for LiteLLM api_base configuration"

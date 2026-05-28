@@ -223,12 +223,13 @@ class ScrubFilter(logging.Filter):
             if record.args:
                 if isinstance(record.args, dict):
                     record.args = {
-                        k: scrub_string(str(v), source="logging.filter")
+                        k: (scrub_string(v, source="logging.filter") if isinstance(v, str) else v)
                         for k, v in record.args.items()
                     }
                 elif isinstance(record.args, tuple):
                     record.args = tuple(
-                        scrub_string(str(a), source="logging.filter") for a in record.args
+                        scrub_string(a, source="logging.filter") if isinstance(a, str) else a
+                        for a in record.args
                     )
         except Exception:  # noqa: BLE001 — fail-open
             pass

@@ -8,10 +8,43 @@ from typing import Iterable
 
 import numpy as np
 
-from google.api_core import retry, exceptions
-from google.cloud import aiplatform
+_MISSING_DEPS: list[str] = []
+try:
+    from google.api_core import retry, exceptions
+    from google.cloud import aiplatform
+except ImportError:  # pragma: no cover
+    retry = None  # type: ignore[assignment]
+    exceptions = None  # type: ignore[assignment]
+    aiplatform = None  # type: ignore[assignment]
+    _MISSING_DEPS.append("google-cloud-aiplatform")
 
-from app.core.embedder import AbstractEmbedder, project_dim
+_HAS_AIPLATFORM = not _MISSING_DEPS
+
+# Build a retry decorator that is safe to use at class-body evaluation time
+# (i.e. when the module is imported) regardless of whether the GCP SDK is
+# installed.  When the SDK is absent, ``retry`` is None and evaluating
+# ``retry.Retry(...)`` inside the class body would raise AttributeError at
+# import time — before any ``_HAS_AIPLATFORM`` guard can fire.
+# The no-op lambda preserves the decorated function unchanged so that
+# __init__ can raise ImportError on first instantiation attempt.
+if _HAS_AIPLATFORM:
+    _retry_decorator = retry.Retry(
+        predicate=retry.if_exception_type(
+            exceptions.ServiceUnavailable,
+            exceptions.DeadlineExceeded,
+            exceptions.ResourceExhausted,
+            exceptions.InternalServerError,
+            exceptions.GatewayTimeout,
+        ),
+        initial=1.0,
+        maximum=10.0,
+        multiplier=2.0,
+        timeout=30.0,
+    )
+else:  # pragma: no cover
+    _retry_decorator = lambda fn: fn  # noqa: E731 — identity; SDK absent
+
+from app.core.embedder import AbstractEmbedder, project_dim  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +60,10 @@ class VertexEmbeddingsEmbedder(AbstractEmbedder):
     """GCP Vertex AI Embeddings Embedder."""
 
     def __init__(self) -> None:
+        if not _HAS_AIPLATFORM:
+            raise ImportError(
+                "google-cloud-aiplatform is not installed. " "Install with: uv sync --extra gcp"
+            )
         client_options = {"api_endpoint": f"{_LOCATION}-aiplatform.googleapis.com"}
         self._client = aiplatform.gapic.PredictionServiceClient(client_options=client_options)
 
@@ -34,24 +71,21 @@ class VertexEmbeddingsEmbedder(AbstractEmbedder):
     def dim(self) -> int:
         return _DIM
 
-    @retry.Retry(
-        predicate=retry.if_exception_type(
-            exceptions.ServiceUnavailable,
-            exceptions.DeadlineExceeded,
-            exceptions.ResourceExhausted,
-            exceptions.InternalServerError,
-            exceptions.GatewayTimeout,
-        ),
-        initial=1.0,
-        maximum=10.0,
-        multiplier=2.0,
-        timeout=30.0,
-    )
+    @_retry_decorator
     def embed_many(self, texts: Iterable[str]) -> np.ndarray:
         """Embed multiple strings in one batch."""
         texts_list = list(texts)
         if not texts_list:
             return np.zeros((0, _DIM), dtype=np.float32)
+
+        # Validate each element is a non-None string before sending to the API.
+        # A None or non-str value produces an opaque server-side error; fail early.
+        for idx, text in enumerate(texts_list):
+            if not isinstance(text, str):
+                raise TypeError(
+                    f"embed_many() expects str elements; got {type(text).__name__!r} "
+                    f"at index {idx}"
+                )
 
         instances = [{"content": text} for text in texts_list]
         parameters = {"outputDimensionality": _DIM}
@@ -91,4 +125,6 @@ class VertexEmbeddingsEmbedder(AbstractEmbedder):
         return np.stack(vectors, axis=0)
 
     def embed(self, text: str) -> np.ndarray:
+        if not isinstance(text, str):
+            raise TypeError(f"embed() expects a str; got {type(text).__name__!r}")
         return self.embed_many([text])[0]

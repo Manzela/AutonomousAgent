@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Iterable, Optional
+from typing import Optional
 
 _MISSING_DEPS: list[str] = []
 try:
@@ -42,7 +42,7 @@ _HAS_ASYNCPG = not _MISSING_DEPS
 
 import numpy as np  # noqa: E402
 
-from app.core.memory import AbstractMemoryStore, EmptyScope  # noqa: E402
+from app.core.memory import AbstractMemoryStore  # noqa: E402
 from app.core.schemas import (  # noqa: E402
     AgentID,
     ContentHash,
@@ -220,22 +220,42 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
             )
 
     # ─────────────────────────────────────────────────────────────
-    # search()
+    # _search() — ABC implementation. EmptyScope enforced by base class.
     # ─────────────────────────────────────────────────────────────
 
-    async def search(
+    async def _search(
         self,
         *,
         query_embedding: np.ndarray,
         tier: MemoryTier,
-        project_scopes: Iterable[Optional[ProjectID]],
+        project_scopes: list[Optional[ProjectID]],
+        k: int = 10,
+    ) -> list[tuple[MemoryRecord, float]]:
+        return await self.search_with_ef(
+            query_embedding=query_embedding,
+            tier=tier,
+            project_scopes=project_scopes,
+            k=k,
+            ef_search=None,
+        )
+
+    async def search_with_ef(
+        self,
+        *,
+        query_embedding: np.ndarray,
+        tier: MemoryTier,
+        project_scopes: list[Optional[ProjectID]],
         k: int = 10,
         ef_search: Optional[int] = None,
     ) -> list[tuple[MemoryRecord, float]]:
-        scopes = list(project_scopes)
-        if not scopes:
-            # Layer-3 defence — identical wording to InMemoryStore.
-            raise EmptyScope("search() requires at least one project_scope (None for CONSENSUS)")
+        """Search with an optional per-call HNSW ef_search override.
+
+        Prefer ``search()`` (the ABC method) for normal callers. Use this
+        method only when you need to override ef_search at the call site
+        (e.g. recall-accuracy benchmarks). scope validation is the caller's
+        responsibility here — pass already-validated scopes.
+        """
+        scopes = project_scopes
         if query_embedding.shape[0] != self._dim:
             raise ValueError(f"query dim {query_embedding.shape[0]} != store dim {self._dim}")
 

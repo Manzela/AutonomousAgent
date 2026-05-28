@@ -85,7 +85,7 @@ async def _tcp_check(name: str, host: str, port: int, timeout: float = 2.0) -> C
 
     try:
         start = time.perf_counter()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         conn = await asyncio.wait_for(
             loop.run_in_executor(
                 None,
@@ -98,6 +98,11 @@ async def _tcp_check(name: str, host: str, port: int, timeout: float = 2.0) -> C
         return CheckResult(name, Status.OK, f"tcp connect {host}:{port}", elapsed)
     except Exception as e:
         return CheckResult(name, Status.DOWN, repr(e))
+
+
+async def _immediate_down(name: str, reason: str) -> CheckResult:
+    """Return a DOWN CheckResult immediately, without doing any I/O."""
+    return CheckResult(name, Status.DOWN, reason)
 
 
 async def run_checks(deps: dict[str, str] | None = None) -> HealthReport:
@@ -118,8 +123,20 @@ async def run_checks(deps: dict[str, str] | None = None) -> HealthReport:
     async with httpx.AsyncClient() as client:
         for name, spec in deps.items():
             if spec.startswith("tcp:"):
-                _, host, port_s = spec.split(":", 2)
-                tasks.append(_tcp_check(name, host, int(port_s)))
+                parts = spec.split(":", 2)
+                if len(parts) != 3:
+                    # Malformed spec — record as DOWN immediately without a coroutine.
+                    tasks.append(_immediate_down(name, f"malformed tcp spec: {spec!r}"))
+                else:
+                    _, host, port_s = parts
+                    try:
+                        port = int(port_s)
+                    except ValueError:
+                        tasks.append(
+                            _immediate_down(name, f"non-integer port in tcp spec: {spec!r}")
+                        )
+                    else:
+                        tasks.append(_tcp_check(name, host, port))
             else:
                 url = spec[len("http:") :] if spec.startswith("http:http") else spec
                 tasks.append(_http_check(client, name, url))

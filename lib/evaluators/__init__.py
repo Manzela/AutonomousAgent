@@ -55,7 +55,13 @@ def _on_post_tool_call(
 
         try:
             worker_action = {"tool": tool_name, "args": args, "result": result}
-            consensus_result = asyncio.run(judge_panel.evaluate(worker_action))
+            # Create an explicit new event loop for this daemon thread so we
+            # never collide with a running loop in the spawning thread.
+            loop = asyncio.new_event_loop()
+            try:
+                consensus_result = loop.run_until_complete(judge_panel.evaluate(worker_action))
+            finally:
+                loop.close()
 
             fb = PendingFeedback(
                 verdict=consensus_result.verdict,

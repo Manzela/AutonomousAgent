@@ -21,7 +21,12 @@ def validate_all_peers() -> None:
 
     try:
         data = yaml.safe_load(_PEERS_CONFIG_PATH.read_text()) or {}
-    except Exception:
+    except Exception as exc:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "audience_validator: failed to load peers.yaml: %s", exc
+        )
         return
 
     peers_list = data.get("peers") or []

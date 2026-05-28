@@ -1,7 +1,11 @@
-import yaml
-from pathlib import Path
+import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
+
+import yaml
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -17,9 +21,13 @@ class ModelSpec:
 
 def load_tiers() -> dict:
     config_path = Path(__file__).parent.parent.parent / "config" / "hermes" / "model-tiers.yaml"
-    with open(config_path) as f:
-        data = yaml.safe_load(f)
-    return data.get("tiers", {})
+    try:
+        with open(config_path) as f:
+            data = yaml.safe_load(f)
+        return (data or {}).get("tiers", {})
+    except (FileNotFoundError, OSError, yaml.YAMLError) as exc:
+        logger.warning("intent_router: failed to load model-tiers.yaml (%s); tiers empty", exc)
+        return {}
 
 
 TIERS = load_tiers()
@@ -30,8 +38,14 @@ def resolve_model(task_intent: str) -> ModelSpec:
     tier_data = TIERS.get(task_intent)
 
     if not tier_data:
-        # Require explicit intent; missing/invalid intent fails CLOSED to orchestrator
-        tier_data = TIERS["orchestrator"]
+        # Require explicit intent; missing/invalid intent fails CLOSED to orchestrator.
+        # Guard against missing 'orchestrator' key (e.g. empty or malformed config).
+        tier_data = TIERS.get("orchestrator")
+        if not tier_data:
+            raise KeyError(
+                f"task_intent={task_intent!r} has no tier mapping and 'orchestrator' fallback "
+                "is not present in config/hermes/model-tiers.yaml"
+            )
 
     status = tier_data.get("status")
     if status == "stub-until-w1j":

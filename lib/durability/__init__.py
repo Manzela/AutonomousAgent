@@ -266,7 +266,5 @@ def _p1_4_inject_rejected(**kwargs: Any) -> None:
         )
         return None
     except Exception as exc:  # noqa: BLE001 — never block session start
-        import logging
-
-        logging.getLogger(__name__).warning("P1-4 REJECTED inject failed (non-fatal): %s", exc)
+        logger.warning("P1-4 REJECTED inject failed (non-fatal): %s", exc)
         return None

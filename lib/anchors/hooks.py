@@ -37,7 +37,7 @@ def main() -> None:
         print(f"anchors.hooks: fail-open — {exc}", file=sys.stderr)
         sys.exit(0)
 
-    if result is not None and result.get("veto"):
+    if result is not None and result.get("error"):
         # Veto: print reason so Claude Code shows it to the user, exit 2.
         print(json.dumps(result, indent=2))
         sys.exit(2)

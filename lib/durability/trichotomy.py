@@ -133,7 +133,7 @@ def after_tool_call(
     task_id: Optional[str] = None,
     session_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
-    duration_ms: Optional[int] = None,
+    duration_ms: Optional[float] = None,
     **_: Any,
 ) -> None:
     """Hermes ``post_tool_call`` hook. Classifies errors, emits span, dispatches handler.

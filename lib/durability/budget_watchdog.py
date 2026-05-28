@@ -237,7 +237,12 @@ def run_once(
     state = evaluate_budget(spend, cap_usd, alert_at_pct=alert_at_pct)
     if state.triggered_f21 and state.alert:
         _dispatch_f21(state.spend_usd or 0.0, state.cap_usd or 0.0, state.alert)
-    if state.alert:
+        # F21 path: _dispatch_f21 already fans out alert + snapshot via the
+        # failure-matrix handler (halt_alert_snapshot → send_alert). Do NOT
+        # call _emit_alert here — that would produce a duplicate Telegram
+        # message on every tick above 100%.
+    elif state.alert:
+        # Warning threshold only (>= alert_at_pct but < 100%).
         _emit_alert(state.alert)
     return state
 

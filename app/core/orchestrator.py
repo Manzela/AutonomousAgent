@@ -146,7 +146,8 @@ async def _execute_via_a2a(
     # boundary: lib.a2a.client is Claude Code territory — we call it, never modify.
     from lib.a2a.client import send_message  # type: ignore[import-untyped]
 
-    assert capability.peer_endpoint is not None  # Narrowing for type checker
+    if capability.peer_endpoint is None:  # Narrowing for type checker (assert stripped by -O)
+        raise RuntimeError("_execute_via_a2a called with no peer_endpoint")
 
     # Build the A2A Message from the orchestrator request.
     # Spec §7.6.1 requires at least `parts` with one text entry.
@@ -287,9 +288,12 @@ async def _execute_local(
         )
 
     try:
+        effective_timeout = (
+            min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
+        )
         result = await asyncio.wait_for(
             capability.invoke(request),
-            timeout=min(timeout_s, request.deadline_s or 60.0),
+            timeout=effective_timeout,
         )
         if not isinstance(result, ExecutionResult):
             return ExecutionResult(

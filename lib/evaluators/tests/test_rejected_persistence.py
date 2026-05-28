@@ -44,7 +44,12 @@ def test_judge_rejection_writes_row_and_durability_injects(tmp_path):
 
         import time
 
-        time.sleep(0.5)  # Wait for daemon thread
+        # Poll instead of fixed sleep — up to 5 s, exits as soon as file appears.
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if (tmp_path / "REJECTED.md").exists():
+                break
+            time.sleep(0.05)
 
         # Verify that it wrote to REJECTED.md
         rejected_file = tmp_path / "REJECTED.md"

@@ -6,9 +6,11 @@
 # Removed checks vs the original spec: chroma local reachability (now Chroma
 # Cloud, no internal endpoint), separate-agent endpoints (collapsed into
 # the gateway).
-set -uo pipefail
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SMOKE_LOG="$(mktemp)"
+trap 'rm -f "$SMOKE_LOG"' EXIT
 
 # Auto-decrypt secrets if any plaintext is missing — smoke tests need
 # the Telegram bot token + LiteLLM master key to run their probes.
@@ -25,11 +27,11 @@ failures=0
 check() {
   local name="$1"
   shift
-  if "$@" >/tmp/smoke.log 2>&1; then
+  if "$@" >"$SMOKE_LOG" 2>&1; then
     echo "✓ $name"
   else
     echo "✗ $name"
-    sed 's/^/    /' /tmp/smoke.log
+    sed 's/^/    /' "$SMOKE_LOG"
     failures=$((failures + 1))
   fi
 }

@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,20 @@ logger = logging.getLogger(__name__)
 # Volume `hermes-data` is mounted at /data per deploy/docker-compose.yml.
 # Override via HERMES_LOCAL_LOG_DIR for tests or alternative deployments.
 DEFAULT_LOCAL_LOG_DIR = Path(os.environ.get("HERMES_LOCAL_LOG_DIR", "/data/local_logs"))
+
+# Per-path write locks for fallback_local_log JSONL files.
+# Prevents torn JSON lines when two handler threads fire simultaneously
+# (e.g. F13 + F14 on the same tick) and both open the same .jsonl for append.
+_jsonl_lock_registry: Dict[str, threading.Lock] = {}
+_jsonl_lock_registry_lock = threading.Lock()
+
+
+def _jsonl_lock_for(path: Path) -> threading.Lock:
+    key = str(path)
+    with _jsonl_lock_registry_lock:
+        if key not in _jsonl_lock_registry:
+            _jsonl_lock_registry[key] = threading.Lock()
+        return _jsonl_lock_registry[key]
 
 
 @dataclass
@@ -239,8 +254,10 @@ def fallback_local_log(
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        with out_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+        line = json.dumps(record, separators=(",", ":")) + "\n"
+        with _jsonl_lock_for(out_path):
+            with out_path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
         logger.debug(
             "handlers.fallback_local_log f_code=%s wrote %s",
             f_code,

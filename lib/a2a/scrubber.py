@@ -31,15 +31,25 @@ def _load_patterns() -> list[re.Pattern]:
     try:
         with open(_PATTERNS_PATH) as fh:
             config = yaml.safe_load(fh)
-        patterns = [re.compile(p) for p in config.get("patterns", [])]
-        logger.debug("a2a.scrubber: loaded %d patterns", len(patterns))
-        return patterns
     except FileNotFoundError:
-        logger.warning("a2a.scrubber: patterns file not found at %s", _PATTERNS_PATH)
+        logger.warning(
+            "a2a.scrubber: patterns file not found at %s — PHI scrubbing DISABLED", _PATTERNS_PATH
+        )
         return []
     except Exception as exc:
-        logger.error("a2a.scrubber: failed to load patterns: %s", exc)
-        return []
+        # YAML parse failure: raise rather than silently disabling scrubbing,
+        # so misconfiguration is caught at startup rather than leaving PHI unredacted.
+        raise RuntimeError(
+            f"a2a.scrubber: failed to load patterns from {_PATTERNS_PATH}: {exc}"
+        ) from exc
+    try:
+        patterns = [re.compile(p) for p in config.get("patterns", [])]
+    except re.error as exc:
+        # Invalid regex in patterns file: raise at startup rather than silently
+        # disabling scrubbing and risking PHI leaking into logs/spans.
+        raise RuntimeError(f"a2a.scrubber: invalid regex in {_PATTERNS_PATH}: {exc}") from exc
+    logger.debug("a2a.scrubber: loaded %d patterns", len(patterns))
+    return patterns
 
 
 _COMPILED_PATTERNS: list[re.Pattern] = _load_patterns()

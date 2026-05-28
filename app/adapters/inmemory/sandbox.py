@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.sandbox import AbstractSandbox, SandboxResult
+
+logger = logging.getLogger(__name__)
 
 
 class LocalSubprocessSandbox(AbstractSandbox):
@@ -73,7 +76,13 @@ class LocalSubprocessSandbox(AbstractSandbox):
                     pass
                 try:
                     stdout_b, stderr_b = await proc.communicate()
-                except Exception:
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug(
+                        "sandbox: proc.communicate() failed after SIGKILL; "
+                        "discarding output (pid=%s, exc=%r)",
+                        proc.pid,
+                        _exc,
+                    )
                     stdout_b, stderr_b = b"", b""
             duration = _now() - t0
             rc = proc.returncode if proc.returncode is not None else -1

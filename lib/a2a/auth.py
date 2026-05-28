@@ -44,9 +44,10 @@ _audit_logger.addHandler(logging.NullHandler())
 _MINT_CACHE: cachetools.TTLCache[tuple[str, str], str] = cachetools.TTLCache(
     maxsize=10_000, ttl=240
 )
-_MINT_LOCK: asyncio.Lock | None = (
-    None  # initialized lazily (avoids event-loop-before-creation error)
-)
+# Eager init — asyncio.Lock() does not require a running event loop in Python 3.10+.
+# Lazy init had a data-race window: two coroutines both see None and create two
+# different Lock objects, meaning mint_token has no mutual exclusion at startup.
+_MINT_LOCK: asyncio.Lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Redis-backed jti replay cache
@@ -82,22 +83,17 @@ _JWKS_CACHE: cachetools.TTLCache[str, list[dict]] = cachetools.TTLCache(
 )
 # M6: negative cache — if JWKS fetch fails (429/503), back off for 30s
 _JWKS_FAIL_CACHE: cachetools.TTLCache[str, str] = cachetools.TTLCache(maxsize=100, ttl=30)
-_JWKS_LOCK: asyncio.Lock | None = (
-    None  # initialized lazily (avoids event-loop-before-creation error)
-)
+# Eager init — asyncio.Lock() does not require a running event loop in Python 3.10+.
+# Lazy init had a data-race window: two coroutines both see None and create two
+# different Lock objects, meaning _fetch_jwks has no mutual exclusion at startup.
+_JWKS_LOCK: asyncio.Lock = asyncio.Lock()
 
 
 def _get_jwks_lock() -> asyncio.Lock:
-    global _JWKS_LOCK
-    if _JWKS_LOCK is None:
-        _JWKS_LOCK = asyncio.Lock()
     return _JWKS_LOCK
 
 
 def _get_mint_lock() -> asyncio.Lock:
-    global _MINT_LOCK
-    if _MINT_LOCK is None:
-        _MINT_LOCK = asyncio.Lock()
     return _MINT_LOCK
 
 
@@ -366,9 +362,13 @@ async def verify_token(
             _JTI_L1_FALLBACK[replay_key] = True
 
     acting_for: dict = payload.get("acting_for", {})
+    # PyJWT decodes `aud` as a list when multiple audiences are present.
+    # Normalise to str so AgentIdentity.audience is always the declared type.
+    raw_aud = payload.get("aud", our_sa)
+    audience_str: str = raw_aud if isinstance(raw_aud, str) else (raw_aud[0] if raw_aud else our_sa)
     identity = AgentIdentity(
         sub=issuer,
-        audience=payload.get("aud", our_sa),
+        audience=audience_str,
         acting_for=acting_for,
         expiry=payload.get("exp", 0),
         jti=jti,

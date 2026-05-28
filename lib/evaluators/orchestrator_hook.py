@@ -37,6 +37,8 @@ def get_per_axis_model() -> dict[str, str]:
         from pathlib import Path
 
         cfg_path = Path(__file__).resolve().parents[2] / "config" / "limits.yaml"
+        if not cfg_path.exists():
+            return _DEFAULT_PER_AXIS_MODEL
         cfg = yaml.safe_load(cfg_path.read_text()) or {}
         return cfg.get("evaluators", {}).get("per_axis_model", _DEFAULT_PER_AXIS_MODEL)
     except Exception:  # noqa: BLE001 — config errors must not crash

@@ -9,10 +9,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-COMPOSE="docker compose -f $ROOT/deploy/docker-compose.yml"
+COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.yml")
 
 echo "==> PANIC: pausing hermes"
-$COMPOSE pause hermes
+"${COMPOSE[@]}" pause hermes
 
 echo "==> Snapshotting state"
 "$ROOT/scripts/snapshot.sh"
@@ -24,4 +24,4 @@ echo "$TS panic invoked by user" >> "$ROOT/logs/panic.log"
 
 echo
 echo "Agent halted. Inspect logs, then resume with:"
-echo "    $COMPOSE unpause hermes"
+echo "    docker compose -f \"$ROOT/deploy/docker-compose.yml\" unpause hermes"

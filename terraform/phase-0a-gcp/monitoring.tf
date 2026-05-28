@@ -136,6 +136,10 @@ resource "google_storage_bucket" "forensic_log_archive" {
 
   uniform_bucket_level_access = true
 
+  lifecycle {
+    prevent_destroy = true
+  }
+
   depends_on = [google_project_service.enabled]
 }
 

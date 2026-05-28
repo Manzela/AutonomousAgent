@@ -61,63 +61,62 @@ def setup_tracing(service_name: str = "hermes-agent") -> bool:
         importable. The plugin's ``register()`` uses this signal to decide
         whether to wire its span-emitting hooks.
     """
-    global _initialized
+    global _initialized, _provider
     with _trace_lock:
         if _initialized:
             return True
 
-    try:
-        from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
-            OTLPSpanExporter,
-        )
-        from opentelemetry.sdk.resources import Resource
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    except ImportError as exc:  # pragma: no cover — verified present in container
-        logger.warning(
-            "OTel SDK not importable (%s); observability plugin will be inert.",
-            exc,
-        )
-        return False
-
-    # OTEL_SERVICE_NAME env var (set to "hermes" in deploy/docker-compose.yml)
-    # is intentionally overridden here so spans show up at the
-    # service.name=hermes-agent the runbook expects.
-    resource = Resource.create({"service.name": service_name})
-    provider = TracerProvider(resource=resource)
-
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
-    # The OTLP HTTP exporter requires the /v1/traces path. Append it if
-    # the env var is a bare base URL (which is the case in our compose
-    # file). Don't double-append if the caller already pointed at the
-    # full path.
-    base = endpoint.rstrip("/")
-    if not base.endswith("/v1/traces"):
-        endpoint = base + "/v1/traces"
-    else:
-        endpoint = base
-
-    exporter = OTLPSpanExporter(endpoint=endpoint)
-    provider.add_span_processor(BatchSpanProcessor(exporter))
-    trace.set_tracer_provider(provider)
-
-    # Force-flush pending spans on interpreter shutdown so short-lived
-    # CLI invocations (`hermes -z ...`) don't drop the last batch.
-    # BatchSpanProcessor's default schedule_delay_millis is 5000 — without
-    # this hook our final-turn spans would never reach the collector.
-    def _flush_on_exit() -> None:
         try:
-            provider.shutdown()
-        except Exception:  # pragma: no cover
-            pass
+            from opentelemetry import trace
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.resources import Resource
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        except ImportError as exc:  # pragma: no cover — verified present in container
+            logger.warning(
+                "OTel SDK not importable (%s); observability plugin will be inert.",
+                exc,
+            )
+            return False
 
-    atexit.register(_flush_on_exit)
+        # OTEL_SERVICE_NAME env var (set to "hermes" in deploy/docker-compose.yml)
+        # is intentionally overridden here so spans show up at the
+        # service.name=hermes-agent the runbook expects.
+        resource = Resource.create({"service.name": service_name})
+        provider = TracerProvider(resource=resource)
 
-    global _provider
-    _provider = provider
-    with _trace_lock:
+        endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+        # The OTLP HTTP exporter requires the /v1/traces path. Append it if
+        # the env var is a bare base URL (which is the case in our compose
+        # file). Don't double-append if the caller already pointed at the
+        # full path.
+        base = endpoint.rstrip("/")
+        if not base.endswith("/v1/traces"):
+            endpoint = base + "/v1/traces"
+        else:
+            endpoint = base
+
+        exporter = OTLPSpanExporter(endpoint=endpoint)
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        trace.set_tracer_provider(provider)
+
+        # Force-flush pending spans on interpreter shutdown so short-lived
+        # CLI invocations (`hermes -z ...`) don't drop the last batch.
+        # BatchSpanProcessor's default schedule_delay_millis is 5000 — without
+        # this hook our final-turn spans would never reach the collector.
+        def _flush_on_exit() -> None:
+            try:
+                provider.shutdown()
+            except Exception:  # pragma: no cover
+                pass
+
+        atexit.register(_flush_on_exit)
+
+        _provider = provider
         _initialized = True
+
     logger.info(
         "OTel tracing initialized: service.name=%s endpoint=%s",
         service_name,
@@ -164,55 +163,54 @@ def setup_metrics(
         require a callback that reads the last snapshot, adding a polling
         delay and an extra round-trip per session.
     """
-    global _metrics_initialized
+    global _metrics_initialized, _meter_provider
     with _metrics_lock:
         if _metrics_initialized:
             return True
 
-    try:
-        from opentelemetry import metrics
-        from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
-            OTLPMetricExporter,
-        )
-        from opentelemetry.sdk.metrics import MeterProvider
-        from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
-        from opentelemetry.sdk.resources import Resource
-    except ImportError as exc:  # pragma: no cover — verified present in container
-        logger.warning(
-            "OTel metrics SDK not importable (%s); metric instruments will be inert.",
-            exc,
-        )
-        return False
-
-    resource = Resource.create({"service.name": service_name})
-
-    endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
-    base = endpoint.rstrip("/")
-    if not base.endswith("/v1/metrics"):
-        metrics_endpoint = base + "/v1/metrics"
-    else:
-        metrics_endpoint = base
-
-    exporter = OTLPMetricExporter(endpoint=metrics_endpoint)
-    reader = PeriodicExportingMetricReader(
-        exporter,
-        export_interval_millis=export_interval_ms,
-    )
-    provider = MeterProvider(resource=resource, metric_readers=[reader])
-    metrics.set_meter_provider(provider)
-
-    def _flush_metrics_on_exit() -> None:
         try:
-            provider.shutdown()
-        except Exception:  # pragma: no cover
-            pass
+            from opentelemetry import metrics
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+                OTLPMetricExporter,
+            )
+            from opentelemetry.sdk.metrics import MeterProvider
+            from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+            from opentelemetry.sdk.resources import Resource
+        except ImportError as exc:  # pragma: no cover — verified present in container
+            logger.warning(
+                "OTel metrics SDK not importable (%s); metric instruments will be inert.",
+                exc,
+            )
+            return False
 
-    atexit.register(_flush_metrics_on_exit)
+        resource = Resource.create({"service.name": service_name})
 
-    global _meter_provider
-    _meter_provider = provider
-    with _metrics_lock:
+        endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+        base = endpoint.rstrip("/")
+        if not base.endswith("/v1/metrics"):
+            metrics_endpoint = base + "/v1/metrics"
+        else:
+            metrics_endpoint = base
+
+        exporter = OTLPMetricExporter(endpoint=metrics_endpoint)
+        reader = PeriodicExportingMetricReader(
+            exporter,
+            export_interval_millis=export_interval_ms,
+        )
+        provider = MeterProvider(resource=resource, metric_readers=[reader])
+        metrics.set_meter_provider(provider)
+
+        def _flush_metrics_on_exit() -> None:
+            try:
+                provider.shutdown()
+            except Exception:  # pragma: no cover
+                pass
+
+        atexit.register(_flush_metrics_on_exit)
+
+        _meter_provider = provider
         _metrics_initialized = True
+
     logger.info(
         "OTel metrics initialized: service.name=%s endpoint=%s interval_ms=%d",
         service_name,
@@ -311,9 +309,9 @@ def setup_json_logging() -> bool:
         with _json_logging_lock:
             _json_logging_initialized = True
 
-        logger.info("setup_json_logging: GCP JSON formatter + ScrubFilter installed on root logger")
-        return True
-
     except Exception as exc:  # noqa: BLE001
         logger.warning("setup_json_logging: failed to install JSON formatter: %s", exc)
         return False
+
+    logger.info("setup_json_logging: GCP JSON formatter + ScrubFilter installed on root logger")
+    return True

@@ -41,6 +41,6 @@ resource "google_service_account" "snapshot_watchdog" {
 
 resource "google_storage_bucket_iam_member" "snapshot_watchdog_storage" {
   bucket = google_storage_bucket.snapshots.name
-  role   = "roles/storage.objectAdmin"
+  role   = "roles/storage.objectCreator"
   member = "serviceAccount:${google_service_account.snapshot_watchdog.email}"
 }

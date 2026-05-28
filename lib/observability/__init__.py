@@ -778,12 +778,21 @@ def _post_api_request(
             except (TypeError, ValueError):
                 in_tok = 0
                 out_tok = 0
+            new_in: int = 0
+            new_out: int = 0
+            _accum_valid = False
             if in_tok or out_tok:
                 with _LOCK:
-                    prev_in, prev_out = _LLM_TOKEN_ACCUM.get(session_id, (0, 0))
-                    new_in = prev_in + in_tok
-                    new_out = prev_out + out_tok
-                    _LLM_TOKEN_ACCUM[session_id] = (new_in, new_out)
+                    # Re-check the span is still live under the lock. A concurrent
+                    # _post_llm_call may have already popped both the span and the
+                    # accumulator between our initial span read and this point.
+                    if session_id in _LLM_SPANS:
+                        prev_in, prev_out = _LLM_TOKEN_ACCUM.get(session_id, (0, 0))
+                        new_in = prev_in + in_tok
+                        new_out = prev_out + out_tok
+                        _LLM_TOKEN_ACCUM[session_id] = (new_in, new_out)
+                        _accum_valid = True
+            if _accum_valid:
                 span.set_attribute("llm.token_count.prompt", new_in)
                 span.set_attribute("llm.token_count.completion", new_out)
                 span.set_attribute("llm.token_count.total", new_in + new_out)

@@ -26,6 +26,19 @@ class SentenceTransformerEmbedder(AbstractEmbedder):
                 "Add it to your pyproject.toml when you swap embedders."
             ) from e
         self._model = SentenceTransformer(model_name)
+        # Validate declared dim matches the model's actual output dimension so
+        # that callers (e.g. memory stores) never see a silent dim mismatch.
+        probe: np.ndarray = np.asarray(
+            self._model.encode(["dim-probe"], normalize_embeddings=True)[0],
+            dtype=np.float32,
+        )
+        actual_dim = probe.shape[0]
+        if actual_dim != dim:
+            raise ValueError(
+                f"SentenceTransformerEmbedder(model_name={model_name!r}, dim={dim}) — "
+                f"declared dim {dim} does not match model output dim {actual_dim}. "
+                f"Pass dim={actual_dim} or choose a different model."
+            )
         self._dim = dim
 
     @property

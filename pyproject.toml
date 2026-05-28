@@ -49,6 +49,9 @@ dev = [
 gcp = [
   "asyncpg>=0.29,<0.30",
   "pgvector>=0.3,<0.4",
+  # Vertex AI embeddings (VertexEmbeddingsEmbedder in app/adapters/gcp/embedder.py).
+  # Uses the gapic PredictionServiceClient from the high-level aiplatform package.
+  "google-cloud-aiplatform>=1.50",
 ]
 # A2A spike extra — Day 1 scaffolding pulls the runtime deps the Day 2-10
 # build-out will use (FastAPI/uvicorn for the JSON-RPC server, httpx + httpx-sse

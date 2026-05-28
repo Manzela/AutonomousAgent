@@ -61,13 +61,13 @@ if _A2A_DEV_INSECURE:
         "a2a: A2A_DEV_INSECURE=1 — unauthenticated requests ALLOWED (dev-only). "
         "Do NOT use in production."
     )
-if not _A2A_DEV_INSECURE and os.getenv("PRODUCTION", "").lower() in ("1", "true"):
-    # Guard: if somehow auth is off in production, crash immediately.
-    if not _A2A_REQUIRE_AUTH:
-        raise RuntimeError(
-            "A2A auth is disabled in production (PRODUCTION=1). "
-            "Remove A2A_DEV_INSECURE or set A2A_REQUIRE_AUTH=true."
-        )
+if _A2A_DEV_INSECURE and os.getenv("PRODUCTION", "").lower() in ("1", "true"):
+    # Guard: auth is off (A2A_DEV_INSECURE=1) AND PRODUCTION=1 — forbidden.
+    # Crash at import time so the deploy surface is never exposed without auth.
+    raise RuntimeError(
+        "A2A auth is disabled (A2A_DEV_INSECURE=1) but PRODUCTION=1 is set. "
+        "Remove A2A_DEV_INSECURE from the production environment."
+    )
 
 # Peers.yaml TTL cache (60s) — avoids per-request file reads.
 _PEERS_CACHE: list[dict[str, Any]] | None = None
@@ -140,6 +140,8 @@ def _load_peers_config() -> list[str]:
     now = time.monotonic()
     if _PEERS_CACHE is not None and (now - _PEERS_CACHE_AT) < _PEERS_CACHE_TTL:
         return [p["issuer"] for p in _PEERS_CACHE if "issuer" in p]
+    peers_list: list[dict[str, Any]] = []
+    result: list[str] = []
     try:
         with open(_PEERS_CONFIG_PATH) as f:
             data = yaml.safe_load(f)
@@ -155,14 +157,12 @@ def _load_peers_config() -> list[str]:
             "a2a: peers.yaml not found at %s — no peers allowlisted; all inbound JWTs will be rejected",
             _PEERS_CONFIG_PATH,
         )
-        result = []
     except Exception as exc:
         logger.error(
             "a2a: failed to load peers.yaml (%s) — all inbound JWTs will be rejected",
             type(exc).__name__,
         )
-        result = []
-    _PEERS_CACHE = data.get("peers") or [] if "data" in dir() else []
+    _PEERS_CACHE = peers_list
     _PEERS_CACHE_AT = now
     return result
 
@@ -206,8 +206,9 @@ async def _jwt_guard(request: Request) -> AgentIdentity | None:
     request.state.identity = identity
 
     # Attach allowed_methods from peers.yaml to the identity object.
-    if identity and hasattr(identity, "issuer"):
-        allowed = _PEERS_METHODS_MAP.get(identity.issuer, [])
+    # AgentIdentity.sub holds the peer SA email (set to issuer in verify_token).
+    if identity and hasattr(identity, "sub"):
+        allowed = _PEERS_METHODS_MAP.get(identity.sub, [])
         request.state.allowed_methods = allowed
 
     return identity
@@ -250,11 +251,13 @@ async def handle_send_message(
     if not isinstance(message, dict) or "parts" not in message:
         raise ValueError("params.message.parts is required")
     spec = bridge_inbound_to_taskspec(params, identity)
+    # Set owner from authenticated identity BEFORE writing to registry so any
+    # concurrent tasks/get after the registry write sees the correct owner.
+    # AgentIdentity.sub holds the peer SA email (set to issuer in verify_token).
+    if identity and hasattr(identity, "sub"):
+        spec.owner = identity.sub
     _TASK_REGISTRY[spec.id] = spec
     status = bridge_taskspec_status_to_a2a(spec)
-    # Set owner from authenticated identity for ownership checks.
-    if identity and hasattr(identity, "issuer"):
-        spec.owner = identity.issuer
     return {"id": spec.id, "status": status}
 
 
@@ -274,7 +277,8 @@ async def handle_tasks_get(
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
     # Ownership check — only the task creator can read it.
-    caller = getattr(identity, "issuer", None) if identity else None
+    # AgentIdentity.sub holds the peer SA email (set to issuer in verify_token).
+    caller = getattr(identity, "sub", None) if identity else None
     if hasattr(spec, "owner") and spec.owner and caller != spec.owner:
         raise _A2ATaskNotFound(f"tasks/get: task {task_id!r} not found")
     return {"id": task_id, "status": bridge_taskspec_status_to_a2a(spec)}
@@ -297,7 +301,8 @@ async def handle_tasks_cancel(
     if spec is None:
         raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")
     # Ownership check — only the task creator can cancel it.
-    caller = getattr(identity, "issuer", None) if identity else None
+    # AgentIdentity.sub holds the peer SA email (set to issuer in verify_token).
+    caller = getattr(identity, "sub", None) if identity else None
     if hasattr(spec, "owner") and spec.owner and caller != spec.owner:
         raise _A2ATaskNotFound(f"tasks/cancel: task {task_id!r} not found")
     from dataclasses import replace as _dc_replace
@@ -511,15 +516,17 @@ async def stream_endpoint(
             content=_jsonrpc_error(None, JSONRPC_INVALID_REQUEST, "Invalid or expired token"),
         )
     _ctx_token = _attach_inbound_context(request)
-    with _get_tracer().start_as_current_span("a2a.server.stream"):
-        body_bytes = await request.body()
-        try:
-            params = json.loads(body_bytes) if body_bytes else {}
-        except json.JSONDecodeError:
-            params = {}
-        params = scrub_inbound_params(params)
-        response = await handle_stream_message(params)
-    otel_context.detach(_ctx_token)
+    try:
+        with _get_tracer().start_as_current_span("a2a.server.stream"):
+            body_bytes = await request.body()
+            try:
+                params = json.loads(body_bytes) if body_bytes else {}
+            except json.JSONDecodeError:
+                params = {}
+            params = scrub_inbound_params(params)
+            response = await handle_stream_message(params)
+    finally:
+        otel_context.detach(_ctx_token)
     return response
 
 
@@ -539,15 +546,17 @@ async def subscribe_endpoint(
             content=_jsonrpc_error(None, JSONRPC_INVALID_REQUEST, "Invalid or expired token"),
         )
     _ctx_token = _attach_inbound_context(request)
-    with _get_tracer().start_as_current_span("a2a.server.subscribe"):
-        body_bytes = await request.body()
-        try:
-            params = json.loads(body_bytes) if body_bytes else {}
-        except json.JSONDecodeError:
-            params = {}
-        params = scrub_inbound_params(params)
-        response = await handle_subscribe_task(params)
-    otel_context.detach(_ctx_token)
+    try:
+        with _get_tracer().start_as_current_span("a2a.server.subscribe"):
+            body_bytes = await request.body()
+            try:
+                params = json.loads(body_bytes) if body_bytes else {}
+            except json.JSONDecodeError:
+                params = {}
+            params = scrub_inbound_params(params)
+            response = await handle_subscribe_task(params)
+    finally:
+        otel_context.detach(_ctx_token)
     return response
 
 
@@ -676,7 +685,9 @@ async def jsonrpc_dispatch(
 
     # Day 6: extract inbound OTel context and wrap dispatch in a server span.
     _ctx_token = _attach_inbound_context(request)
-    with _get_tracer().start_as_current_span("a2a.server.dispatch"):
-        result = await _jsonrpc_dispatch_inner(request)
-    otel_context.detach(_ctx_token)
+    try:
+        with _get_tracer().start_as_current_span("a2a.server.dispatch"):
+            result = await _jsonrpc_dispatch_inner(request)
+    finally:
+        otel_context.detach(_ctx_token)
     return result

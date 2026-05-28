@@ -5,7 +5,7 @@ ensures partial migration failures roll back completely, leaving the schema in a
 clean state rather than half-migrated.
 
 Audit-plan W1.D gate command:
-    pytest scripts/tests/test_migrate_cloud_sql_atomic.py::test_partial_failure_rolls_back -x
+    pytest scripts/migration_tests/test_migrate_cloud_sql_atomic.py::test_partial_failure_rolls_back -x
 Expected: Pass
 """
 

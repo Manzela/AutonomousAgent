@@ -244,6 +244,16 @@ jobs:
           source .venv/bin/activate
           uv sync --frozen --extra dev --extra gcp --extra a2a
 
+      - name: Check for script test filename collisions
+        if: steps.detect.outputs.has_tests == 'true'
+        run: |
+          duplicates=$(find . -name "test_*.py" -path "*/scripts/*" -not -path "./.venv/*" -not -path "./.worktrees/*" | xargs -I{} basename {} | sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "ERROR: Duplicate test filenames found in scripts/:"
+            echo "$duplicates"
+            exit 1
+          fi
+
       - name: Run pytest
         if: steps.detect.outputs.has_tests == 'true'
         run: |

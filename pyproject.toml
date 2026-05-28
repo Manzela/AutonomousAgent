@@ -50,8 +50,8 @@ dev = [
 # (app/adapters/inmemory/memory.py) does not pull these.
 # Install on production: `uv sync --extra gcp`
 gcp = [
-  "asyncpg>=0.29,<0.30",
-  "pgvector>=0.3,<0.4",
+  "asyncpg>=0.29,<0.32",
+  "pgvector>=0.3,<0.5",
   # Vertex AI embeddings (VertexEmbeddingsEmbedder in app/adapters/gcp/embedder.py).
   # Uses the gapic PredictionServiceClient from the high-level aiplatform package.
   "google-cloud-aiplatform>=1.50",
@@ -77,7 +77,7 @@ a2a = [
   "jcs>=0.2",
   # Distributed jti replay cache — Redis-backed per
   # docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md
-  "redis[asyncio]>=5.0,<6",
+  "redis[asyncio]>=5.0,<8",
 ]
 
 [tool.setuptools.packages.find]

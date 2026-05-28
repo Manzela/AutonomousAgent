@@ -55,3 +55,17 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-commit]
+
+      - id: block-update-plan-scripts
+        name: Block update_plan.py / update_rubric.py / update_brain.py
+        entry: |
+          bash -c '
+          BAD=$(git diff --cached --name-only --diff-filter=A | grep -E "(^|/)update_(plan|rubric|brain|audit_[a-z]+)\.py$" || true)
+          if [ -n "$BAD" ]; then
+            echo "BLOCKED: forbidden script pattern: $BAD"
+            exit 1
+          fi
+          '
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

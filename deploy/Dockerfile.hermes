@@ -23,7 +23,7 @@ ARG BASE_IMAGE=python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fe
 # Carries uv, git, and apt build tools — none of which land in
 # the runtime stage.
 # ============================================================
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS builder
+FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97 AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -80,7 +80,7 @@ RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 # Lean image — only runtime system packages + the pre-built venv.
 # No uv, no build tooling, no source trees.
 # ============================================================
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS runtime
+FROM python:3.14-slim@sha256:c845af9399020c7e562969a13689e929074a10fd057acd1b1fad06a2fb068e97 AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

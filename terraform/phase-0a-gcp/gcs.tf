@@ -69,15 +69,28 @@ resource "google_storage_bucket" "j3_trajectories" {
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
-  versioning { enabled = false }
+  versioning { enabled = true }
 
   lifecycle_rule {
     condition {
-      age = 365 # days
+      age = 90
     }
     action {
       type = "Delete"
     }
+  }
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type          = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+  }
+
+  retention_policy {
+    retention_period = 86400 # 1-day minimum for tamper window
   }
 
   # Belt + braces against accidental teardown: Persistence Trap data is the

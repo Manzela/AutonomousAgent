@@ -715,6 +715,29 @@ services:
     cpus: 0.25
     pids_limit: 100
 
+  # Volume pruner sidecar to sweep directories and delete files older than 90 days.
+  volume-pruner:
+    image: alpine:3.20
+    <<: [*restart_policy, *json_logging]
+    container_name: autonomous-agent-volume-pruner-1
+    command: >
+      sh -c "while true; do
+        find /data -type f -mtime +90 -delete;
+        sleep 86400;
+      done"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
+    volumes:
+      - phoenix-data:/data/phoenix:rw
+      - hermes-data:/data/hermes:rw
+    # Resource limits.
+    mem_limit: 64m
+    cpus: 0.1
+    pids_limit: 10
+
 secrets:
   # honcho_db_password: removed (Phase 1 — Honcho disabled)
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)

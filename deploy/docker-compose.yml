@@ -261,8 +261,10 @@ services:
     network_mode: none
     cap_drop: [ALL]
     # LOW-1: prevent setuid escalation from any Debian base-image binaries.
+    # SB-4: seccomp profile enforces syscall allowlist (deny-by-default).
     security_opt:
       - no-new-privileges:true
+      - seccomp:sandboxes/seccomp-sandbox.json
     read_only: true
     tmpfs:
       - /tmp:size=100M

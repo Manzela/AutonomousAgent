@@ -215,6 +215,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: build-and-push
+    environment:
+      name: production
+      url: https://autonomousagent-vm.autonomous-agent-2026.cloud.goog
 
     permissions:
       contents: read

@@ -3,6 +3,7 @@ terraform {
   required_providers {
     google      = { source = "hashicorp/google", version = "~> 5.30" }
     google-beta = { source = "hashicorp/google-beta", version = "~> 5.30" }
+    github      = { source = "integrations/github", version = "~> 6.0" }
   }
   # Backend bucket name is literal: Terraform forbids variable interpolation in backend blocks.
   backend "gcs" {

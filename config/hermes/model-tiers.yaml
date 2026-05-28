@@ -83,7 +83,7 @@ tiers:
     api_base: http://qwen-vllm.autonomous-agent-2026.svc.cluster.local:8000/v1
     provider: self-host
     provisioning: spot
-    status: stub-until-w1j
+    status: pending-infra  # W1.J: main.tf + LiteLLM config ready; activate after terraform apply
     fallback_tier: orchestrator
     agentic_coding:
       tool_call_format: qwen3_coder

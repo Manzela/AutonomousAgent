@@ -21,8 +21,8 @@ def test_resolve_model_missing_intent_fails_closed():
 
 
 def test_resolve_model_stubbed_raises_w1j():
-    # 'privacy' tier is still stub-until-w1j (Qwen vLLM not yet provisioned)
-    with pytest.raises(NotImplementedError, match="W1.J pending"):
+    # 'privacy' tier is pending-infra (Qwen vLLM not yet provisioned)
+    with pytest.raises(NotImplementedError, match="pending-infra"):
         resolve_model("privacy")
 
 

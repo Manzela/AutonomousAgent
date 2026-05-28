@@ -63,6 +63,19 @@ model_list:
       model: openrouter/google/gemini-2.5-pro
       api_key: os.environ/OPENROUTER_API_KEY  # pragma: allowlist secret
 
+  # ---- W1.J: Self-hosted Qwen3-Coder (privacy tier) ----
+  #
+  # Served by vLLM on a Spot A100 80GB instance (infra/qwen-vllm/).
+  # LiteLLM prefix: `hosted_vllm/` — routes to the self-hosted OpenAI-compat
+  # API. The api_base is the internal VPC IP of the qwen-vllm instance.
+  # Decision: D-2.a (Qwen3-Coder-30B-A3B-Instruct), D-8 (spot pricing).
+  - model_name: hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    litellm_params:
+      model: hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
+      api_base: os.environ/QWEN_VLLM_API_BASE  # e.g. http://10.128.0.X:8000/v1
+      tags: ["tier:privacy"]
+      max_budget: 0  # self-hosted, no external API cost
+
 litellm_settings:
   drop_params: true
   num_retries: 5

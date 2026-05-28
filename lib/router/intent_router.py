@@ -48,9 +48,10 @@ def resolve_model(task_intent: str) -> ModelSpec:
             )
 
     status = tier_data.get("status")
-    if status == "stub-until-w1j":
+    if status in ("stub-until-w1j", "pending-infra"):
         raise NotImplementedError(
-            "W1.J pending \u2014 see audit/2026-05-27-ground-truth/decisions.md D-2.c"
+            f"Tier '{task_intent}' is {status} — infrastructure not yet provisioned. "
+            "See infra/qwen-vllm/main.tf and audit/2026-05-27-ground-truth/decisions.md D-2.c"
         )
 
     return ModelSpec(

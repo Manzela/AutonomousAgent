@@ -31,30 +31,27 @@ tiers:
     status: stub-until-w1j
     fallback_tier: orchestrator
   privacy:
-    # CORRECTED 2026-05-27 (second pass): Qwen3.5 IS released (Feb-Mar 2026,
-    # post-prior-cutoff); the prior "never released" claim was stale training
-    # data. Selected default = Qwen3.5-35B-A3B (Instruct MoE), the newer
-    # generation at same single-A100 footprint as the originally-considered
-    # Qwen3-30B-A3B-Instruct-2507. 36B total / 3B active params; 256 experts
-    # (8 routed + 1 shared); hybrid Gated DeltaNet+Attention+FFN; 256K context.
-    # vLLM ≥0.21.0 supports it. LiteLLM prefix `hosted_vllm/` (NOT `openai/`
-    # or the deprecated `vllm/`). Reference:
-    # https://huggingface.co/Qwen/Qwen3.5-35B-A3B (verified 2026-05-27)
-    # https://huggingface.co/collections/Qwen/qwen35
-    # https://docs.litellm.ai/docs/providers/vllm
+    # Default: Qwen3-Coder-30B-A3B-Instruct (user decision 2026-05-28).
+    # Qwen3 generation; purpose-built for agentic coding with dedicated
+    # `qwen3_coder` tool-call format. Same single-A100 80GB footprint as
+    # Qwen3.5-35B-A3B. Selected over the newer Qwen3.5 MoE because coder
+    # specialization directly matches the privacy/self-host use-case (local
+    # code execution where data must not leave the controlled boundary).
+    # LiteLLM prefix `hosted_vllm/` (NOT `openai/` or deprecated `vllm/`).
+    # Reference: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
     #
-    # ALTERNATIVES (commented; operator may un-comment + comment out the
-    # default block if their workload warrants):
-    #   (alt-a) hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
-    #     Older-gen Qwen3 BUT purpose-built for agentic coding; same single-
-    #     A100 footprint; `qwen3_coder` tool-call format. Pick if coder
-    #     specialization > generational newness for the workload.
+    # ALTERNATIVES (commented; operator may un-comment + comment default block):
+    #   (alt-b) hosted_vllm/Qwen/Qwen3.5-35B-A3B
+    #     Newer-gen general-instruct MoE (Feb-Mar 2026); 256 experts / 3B active;
+    #     256K native context; hybrid Gated DeltaNet+Attention+FFN. Pick if
+    #     general instruction-following > coder specialization.
+    #     https://huggingface.co/Qwen/Qwen3.5-35B-A3B
     #   (alt-c) hosted_vllm/Qwen/Qwen3.5-27B
     #     Dense 28B; strongest published code benchmarks (SWE-Bench Verified
     #     72.4, LiveCodeBench v6 80.7); REQUIRES 8× A100 80GB tensor-parallel
     #     (`a2-ultragpu-8g`); ~10× cost (~$20K/mo on-demand). Re-escalate to
     #     human before flipping — exceeds default budget envelope.
-    model: hosted_vllm/Qwen/Qwen3.5-35B-A3B
+    model: hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
     api_base: http://qwen-vllm.autonomous-agent-2026.svc.cluster.local:8000/v1
     provider: self-host
     status: stub-until-w1j

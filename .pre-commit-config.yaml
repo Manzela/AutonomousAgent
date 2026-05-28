@@ -34,3 +34,24 @@ repos:
       - id: ruff
         args: [--fix]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: block-plaintext-in-secrets
+        name: Block non-.sops files under secrets/
+        entry: |
+          bash -c '
+          set -e
+          STAGED=$(git diff --cached --name-only --diff-filter=AM | grep "^secrets/" || true)
+          for f in $STAGED; do
+            base=$(basename "$f")
+            case "$f" in
+              secrets/README.md|secrets/.gitignore) continue ;;
+              *.sops) continue ;;
+              *) echo "BLOCKED: $f is not encrypted (.sops). Run scripts/encrypt_secrets.sh."; exit 1 ;;
+            esac
+          done
+          '
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

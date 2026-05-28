@@ -60,3 +60,20 @@ variable "github_repo" {
   type    = string
   default = "AutonomousAgent"
 }
+
+variable "ar_repo" {
+  type        = string
+  description = "Artifact Registry repo path (without trailing slash or image name). Set via TF_VAR_ar_repo or tfvars."
+  default     = "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images"
+}
+
+variable "image_tag" {
+  type        = string
+  description = "Immutable image tag (git SHA prefix) to deploy. Must be supplied at apply time by CI/CD — no default to prevent accidental :latest deploy."
+  default     = ""
+
+  validation {
+    condition     = length(var.image_tag) > 0
+    error_message = "image_tag must be set (e.g. sha-abc123def456). Never deploy with an empty tag."
+  }
+}

@@ -84,8 +84,90 @@ Literal `.gitignore` would have been wrong (would un-track files actively in use
 
 ---
 
+## D-6. HIGH-1 WIF architecture = **Cloud Run metadata-server ADC + github_ci SA for CI/CD only** (resolved 2026-05-28)
+
+### Root cause (what was wrong)
+
+`wif-migration.tf` (original) created a **second** WIF pool (`github-actions-pool`) and bound three RUNTIME service accounts (`litellm_proxy`, `cloud_sql_proxy`, `snapshot_watchdog`) to it. This was wrong in two ways:
+
+1. **Unreachable from runtime**: Cloud Run containers cannot present a GitHub Actions OIDC token — they have no connection to `token.actions.githubusercontent.com`. The WIF bindings were dead code.
+2. **Privilege escalation**: A GitHub Actions job could have impersonated those runtime SAs (which have DB and Secret Manager access), widening the CI/CD blast radius.
+
+### Why/If analysis
+
+| Question | Answer |
+|---|---|
+| **Why** can't runtime containers use GitHub Actions WIF? | GitHub WIF authenticates GitHub Actions *runners* by verifying OIDC tokens from `token.actions.githubusercontent.com`. Cloud Run containers are inside GCP — they have no GitHub job context and can't obtain such tokens. |
+| **If** we kept the WIF bindings? | Runtime services still worked (metadata server ADC was unaffected), but any GitHub Actions job in the repo could have impersonated `litellm_proxy` / `cloud_sql_proxy` / `snapshot_watchdog` — lateral movement risk in CI/CD. |
+| **Why** does Cloud Run not need WIF? | Cloud Run provides native identity: setting `template.service_account` causes GCP's metadata server to automatically vend access tokens for that SA. Any client calling `google.auth.default()` / ADC picks them up with zero configuration. |
+| **If** we needed runtime containers to authenticate WITHOUT a service account? | That would require GKE Workload Identity (maps a *Kubernetes* SA to a GCP SA — different from GitHub WIF). Not needed here: Cloud Run service accounts work natively. |
+
+### Correct identity graph
+
+```
+CI/CD:   GitHub Actions OIDC → WIF pool (wif.tf) → github_ci SA
+Runtime: Cloud Run service   → GCP metadata server → hermes_agent SA
+         GCE VM              → GCP metadata server → vm_runtime SA
+         litellm_proxy/cloud_sql_proxy/snapshot_watchdog → SA key (W0 transitional)
+                                                         → W1.D.I-8 migrates to Cloud Run + drops keys
+```
+
+### Fix applied
+
+- `wif-migration.tf` rewritten (2026-05-28): duplicate WIF pool removed; incorrect runtime SA bindings removed; Cloud Run service uses GAR image `${var.ar_repo}/hermes:${var.image_tag}` with `ingress = INGRESS_TRAFFIC_INTERNAL_ONLY`; `github_ci` SA granted `roles/run.developer` for CI/CD deployments.
+- `variables.tf`: added `var.ar_repo` (default: GAR repo path) and `var.image_tag` (no default — validation blocks empty tag at plan time to prevent `:latest` deploy).
+
+---
+
+## D-7. Container registry = **Google Artifact Registry (GAR) primary; GHCR for SBOM/cosign only** (resolved 2026-05-28)
+
+The audit plan label "W0.5 GHCR first push" was imprecise. Clarification:
+
+- **Runtime images** (`hermes`, `shell-sandbox`): pushed to **GAR** at `us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/` by `phase-0a-deploy.yml`. GAR is co-located with the GCP project — no cross-cloud egress, IAM integrates natively with Artifact Registry roles.
+- **GHCR** (`ghcr.io/manzela/`): used **only** by `sbom-cosign.yml` on release tags to attach SBOM + cosign signature. This is the security provenance artifact, not the runtime image.
+
+**Why GAR over GHCR for runtime images?**
+- Zero additional IAM hop: `github_ci` SA already has `roles/artifactregistry.writer`; Cloud Run / GCE pull with `roles/artifactregistry.reader`. No cross-cloud auth needed.
+- Image tags are SHA-pinned via `${IMAGE_TAG:?}` hard-fail syntax — `:latest` is impossible.
+- GAR integrates with Binary Authorization and vulnerability scanning natively.
+
+**Why GHCR for SBOM/cosign?**
+- GitHub Packages stores cosign signatures alongside the release — reviewers can `cosign verify` without any GCP credentials.
+- SBOM is a public attestation; keeping it on GitHub makes it discoverable via `gh attestation`.
+
+---
+
+## D-8. W1.J Qwen provisioning = **GCP Spot, promote to on-demand if preemption > 2/day** (resolved 2026-05-28)
+
+- **Default provisioning**: GCP Spot instance (`a2-highgpu-1g`, 1× A100 80GB). Cost: ~$400/mo.
+- **Promotion trigger**: if Cloud Monitoring `compute.googleapis.com/instance/preemptions` exceeds **2 events/day** on a rolling 7-day average, change `provisioning_model = "SPOT"` → `"STANDARD"` in `infra/qwen-vllm/terraform/main.tf`. Cost rises to ~$2,600/mo — re-confirm with user before applying.
+- **Why Spot first?** The privacy tier is NOT on the critical hot path. Inference requests are retried via LiteLLM `fallback_tier: orchestrator`. Spot gives ~85% cost saving while the workload's preemption sensitivity is being characterised.
+- **If on-demand is needed immediately** (e.g. SLA requirement added): flip `provisioning_model` in Terraform — 1-line change, no architecture change.
+
+### Qwen3-Coder-30B-A3B-Instruct agentic coding best practices (applied in `config/hermes/model-tiers.yaml`)
+
+| Parameter | Value | Why |
+|---|---|---|
+| `tool_call_format` | `qwen3_coder` | **MUST** — generic OpenAI format misparses Qwen3-Coder's tool schema |
+| `enable_thinking` | `true` | Chain-of-thought for complex multi-step coding tasks |
+| `temperature` | 0.1 (code gen) / 0.6 (explore) | Low temp = deterministic, correct syntax; higher for design exploration |
+| `max_tokens` | 4096 (function) / 8192 (multi-file) | Code generation routinely fills context; under-budgeting truncates output |
+| `top_p` | 0.9 | Standard nucleus sampling; works well with coder models |
+| `presence_penalty` | 0.0 | **Never apply** — penalises repeated valid tokens (closing braces, common idioms) |
+| vLLM flag: `--tool-call-parser qwen3_coder` | | Must match LiteLLM `tool_call_format` |
+| vLLM flag: `--enable-auto-tool-choice` | | Required for function-calling to work |
+| vLLM flag: `--enforce-eager` | | Disables CUDA graph capture for MoE stability |
+| vLLM flag: `--max-model-len 32768` | | 128K native; cap at 32K to fit A100 VRAM safely |
+| vLLM flag: `--trust-remote-code` | | Required for Qwen3 MoE custom architecture |
+
+---
+
 ## Handoff target
 
 These decisions + `findings.md` + `audit-plan.md` are the input packet for **Antigravity Claude Opus 4.6 Thinking** to execute W0.
 
-See chat reply for handoff readiness assessment.
+Current human-decision status as of 2026-05-28:
+- HIGH-1 (WIF architecture): **RESOLVED** — see D-6. `wif-migration.tf` rewritten.
+- W0.5 (GHCR/GAR first push): **RESOLVED** — see D-7. GAR is the runtime registry; GHCR for SBOM only. First push occurs automatically on the next merge to `main` that touches deploy paths.
+- W0.6 (terraform apply): **APPROVED** — execute `terraform plan` first; show diff; apply only after operator reviews plan output. See security requirements: least-privilege roles, `prevent_destroy` on forensic bucket, `var.image_tag` validation enforced.
+- W1.J (Qwen provisioning): **APPROVED on Spot** — see D-8. Start `a2-highgpu-1g` spot (~$400/mo); monitor preemption metric; promote at > 2 events/day.

@@ -91,3 +91,18 @@ against `adapters/inmemory/`; staging + prod run against `adapters/gcp/`.
 - Conventional commit PR titles (lowercase subject after `type(scope):`)
 - `autonomousagent-*` prefix for all GCP resources
 - GitHub operations via `gh` CLI (authenticated as `Manzela`)
+
+## Audit reviewer model class rule
+
+Every P0/P1 fix produced by an LLM agent MUST be reviewed by an LLM of a different model class.
+Same-vendor counts as same-class (Opus reviewing Sonnet → ALLOWED; Opus reviewing Opus → FORBIDDEN; Claude → Gemini → ALLOWED).
+The reviewer model is recorded in the PR description under `Reviewer model:` (line literal). PR template enforces.
+
+## Audit rubric immutability
+
+Audit rubrics MUST be sha256-pinned and chmod 444 for the duration of any audit session.
+Files matching `update_plan.py`, `update_rubric.py`, `update_brain.py`, `update_audit_*.py`
+are FORBIDDEN in this repository and are blocked by `.pre-commit-config.yaml`.
+
+If a rubric must be revised, the change lands in a SEPARATE dated commit by a DIFFERENT
+actor (4-eyes principle). No in-session rubric edits.

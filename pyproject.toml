@@ -43,6 +43,12 @@ dev = [
   "testcontainers[postgres]>=4.8,<5",
   # Redis jti: in-process fakeredis for distributed replay cache tests.
   "fakeredis[asyncio]>=2.20",
+  "pytest-vcr>=1.0.2",
+  "hypothesis>=6.92",
+  "inspect-ai>=0.3.0",
+  "deepeval>=1.0.0",
+  "pyrit>=0.4.0",
+  "garak>=0.9.0",
 ]
 # Phase 2 production memory store — Cloud SQL + pgvector.
 # P-2 work item per docs/research/autonomous-agent-seed-orchestrator/INTEGRATION.md.
@@ -86,6 +92,7 @@ include = ["lib*"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = ["hermes-agent"]
 
 [tool.pytest.ini_options]
 testpaths = [
@@ -107,5 +114,6 @@ asyncio_mode = "auto"
 markers = [
   "integration: integration-tier tests that cross module boundaries (config, plugin, container)",
   "docker: tests that require a running docker daemon and `docker compose` CLI (auto-skipped on docker-less hosts)",
+  "slow: tests that take a long time to run (e.g. sleep, live DB setups)",
   "persistence_trap: Persistence Trap (#12.c) contract tests for the J3 trajectory shipper. Required on every PR that touches lib/trajectory/, lib/durability/failure_matrix.py, lib/evaluators/judge_events.py, or terraform/phase-0a-gcp/model-armor/.",
 ]

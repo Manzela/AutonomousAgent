@@ -1,0 +1,29 @@
+name: No pytest.mark.skip in remediation PRs
+on:
+  pull_request:
+    branches: [main]
+    paths: ['tests/**', 'lib/**', 'app/**']
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+      - name: Block new pytest.mark.skip lines
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          ADDED=$(git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
+                  | grep -E '^\+[^+].*pytest\.mark\.skip' \
+                  | grep -v 'pytest.mark.skipif' || true)
+          if [ -n "$ADDED" ]; then
+            echo "::error::PR adds pytest.mark.skip lines:"
+            echo "$ADDED"
+            exit 1
+          fi

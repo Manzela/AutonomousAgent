@@ -33,19 +33,83 @@ def _on_post_tool_call(
     session_id: str = "",
     **_: Any,
 ) -> None:
-    """Dispatch judge panel asynchronously when toolset is evaluation-eligible.
+    """Dispatch judge panel asynchronously when toolset is evaluation-eligible."""
+    try:
+        from pathlib import Path
+        from lib.toolset_router import ToolsetRouter
 
-    The eligibility check reads `config/toolsets.yaml` `evaluate_after` field
-    via the existing toolset_router. Background dispatch happens in a thread
-    so this hook returns immediately (Hermes contract: `post_tool_call` is
-    observational and must not block the agent loop).
+        cfg_path = Path(__file__).resolve().parents[2] / "config" / "toolsets.yaml"
+        router = ToolsetRouter.from_config(cfg_path)
+        if not router.is_evaluation_eligible(tool_name):
+            return
+    except Exception as exc:
+        logger.warning("evaluators: failed to check evaluation eligibility: %s", exc)
+        return
 
-    Wiring to `toolset_router.is_evaluation_eligible()` is intentionally
-    deferred to Task 21 (live integration) — the orchestrator-side dispatch
-    plumbing is fully in place via `orchestrator_hook.queue_judge_dispatch`,
-    callable from a background thread once the eligibility lookup lands.
-    """
-    return None
+    def _runner() -> None:
+        import asyncio
+        from lib.evaluators import judge_panel
+        from lib.evaluators.orchestrator_hook import PendingFeedback, queue_judge_dispatch
+        from lib.evaluators.judge_events import record_consensus_event
+        from lib.anchors import _get_spec_store, _most_recent_draft
+
+        try:
+            worker_action = {"tool": tool_name, "args": args, "result": result}
+            # Create an explicit new event loop for this daemon thread so we
+            # never collide with a running loop in the spawning thread.
+            loop = asyncio.new_event_loop()
+            try:
+                consensus_result = loop.run_until_complete(judge_panel.evaluate(worker_action))
+            finally:
+                loop.close()
+
+            fb = PendingFeedback(
+                verdict=consensus_result.verdict,
+                reasoning=consensus_result.rationale,
+                axes_failed=[j.axis for j in consensus_result.judges if j.verdict == "reject"],
+            )
+            queue_judge_dispatch(session_id=session_id, feedback=fb)
+
+            # Record the consensus event
+            store = _get_spec_store()
+            spec = _most_recent_draft(store, statuses=("locked",))
+            spec_id = str(spec.spec_id) if spec else "unknown"
+
+            # Create a one-line summary
+            summary = f"{tool_name}({str(args)[:100]}) -> {str(result)[:100]}"
+            record_consensus_event(
+                result=consensus_result,
+                session_id=session_id,
+                task_spec_id=spec_id,
+                worker_action_summary=summary,
+            )
+
+            if consensus_result.verdict == "reject":
+                from lib.evaluators.consensus import record_rejection_for_fingerprint
+                import json
+                import hashlib
+
+                fp_data = [{"tool": tool_name, "first_arg": str(args)[:80]}]
+                fp = hashlib.sha256(json.dumps(fp_data, sort_keys=True).encode("utf-8")).hexdigest()
+
+                intent_category = getattr(spec, "intent_category", "unknown") if spec else "unknown"
+
+                record_rejection_for_fingerprint(
+                    session_id=session_id,
+                    approach_fingerprint=fp,
+                    approach_summary=summary,
+                    taskspec_id=spec_id,
+                    intent_category=intent_category,
+                    why_failed=consensus_result.rationale,
+                    alternatives="Please reconsider your approach.",
+                )
+        except Exception as exc:
+            logger.error("Judge panel runner failed: %s", exc)
+
+    import threading
+
+    t = threading.Thread(target=_runner, name=f"judge-panel-{session_id}-{task_id}", daemon=True)
+    t.start()
 
 
 def _on_pre_llm_call(session_id: str = "", messages: list | None = None, **_: Any) -> None:

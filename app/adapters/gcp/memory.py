@@ -23,23 +23,27 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import time
-from typing import Iterable, Optional
+from typing import Optional
 
+_MISSING_DEPS: list[str] = []
 try:
     import asyncpg
-    from pgvector.asyncpg import register_vector
-
-    _HAS_ASYNCPG = True
 except ImportError:  # pragma: no cover
     asyncpg = None  # type: ignore[assignment]
+    _MISSING_DEPS.append("asyncpg")
+
+try:
+    from pgvector.asyncpg import register_vector
+except ImportError:  # pragma: no cover
     register_vector = None  # type: ignore[assignment]
-    _HAS_ASYNCPG = False
+    _MISSING_DEPS.append("pgvector")
 
-import numpy as np
+_HAS_ASYNCPG = not _MISSING_DEPS
 
-from app.core.memory import AbstractMemoryStore, EmptyScope
-from app.core.schemas import (
+import numpy as np  # noqa: E402
+
+from app.core.memory import AbstractMemoryStore  # noqa: E402
+from app.core.schemas import (  # noqa: E402
     AgentID,
     ContentHash,
     MemoryRecord,
@@ -53,7 +57,7 @@ from app.core.schemas import (
 # Pool singleton.
 # ─────────────────────────────────────────────────────────────────────
 
-_POOL: Optional[asyncpg.Pool] = None
+_POOLS: dict[str, asyncpg.Pool] = {}
 _POOL_LOCK = asyncio.Lock()
 
 
@@ -72,19 +76,20 @@ async def _get_pool(dsn: Optional[str] = None) -> asyncpg.Pool:
     Raises RuntimeError if asyncpg is not installed (run: uv sync --extra gcp).
     """
     if not _HAS_ASYNCPG:
-        raise RuntimeError("asyncpg / pgvector not installed. " "Install with: uv sync --extra gcp")
-    global _POOL
-    if _POOL is not None:
-        return _POOL
+        missing = " and ".join(_MISSING_DEPS)
+        raise ImportError(f"{missing} not installed. Install with: uv sync --extra gcp")
+    global _POOLS
+    effective_dsn = dsn or os.environ.get("CLOUD_SQL_DSN")
+    if not effective_dsn:
+        raise RuntimeError(
+            "CloudSqlPgvectorStore requires CLOUD_SQL_DSN env var " "or explicit dsn= arg"
+        )
+    if effective_dsn in _POOLS:
+        return _POOLS[effective_dsn]
     async with _POOL_LOCK:
-        if _POOL is not None:  # raced — another coroutine won
-            return _POOL
-        effective_dsn = dsn or os.environ.get("CLOUD_SQL_DSN")
-        if not effective_dsn:
-            raise RuntimeError(
-                "CloudSqlPgvectorStore requires CLOUD_SQL_DSN env var " "or explicit dsn= arg"
-            )
-        _POOL = await asyncpg.create_pool(
+        if effective_dsn in _POOLS:  # raced — another coroutine won
+            return _POOLS[effective_dsn]
+        pool = await asyncpg.create_pool(
             dsn=effective_dsn,
             min_size=2,
             max_size=10,
@@ -97,16 +102,30 @@ async def _get_pool(dsn: Optional[str] = None) -> asyncpg.Pool:
             # query is recommended to avoid confusing QueryCanceledError.
             command_timeout=10.0,
         )
-        return _POOL
+        # One-time startup self-check: surface a clear error if CREATE EXTENSION
+        # vector has not been run, rather than a cryptic asyncpg codec failure on
+        # the first real query.
+        async with pool.acquire() as _probe:
+            installed = await _probe.fetchval(
+                "SELECT installed_version FROM pg_available_extensions WHERE name = 'vector'"
+            )
+            if not installed:
+                await pool.close()
+                raise RuntimeError(
+                    "pgvector extension not installed in database. "
+                    "Run: CREATE EXTENSION IF NOT EXISTS vector;"
+                )
+        _POOLS[effective_dsn] = pool
+        return pool
 
 
 async def _reset_pool_for_tests() -> None:
     """Test-only hook — close the pool and let the next call recreate it."""
-    global _POOL
+    global _POOLS
     async with _POOL_LOCK:
-        if _POOL is not None:
-            await _POOL.close()
-            _POOL = None
+        for pool in _POOLS.values():
+            await pool.close()
+        _POOLS.clear()
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -135,6 +154,11 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
         dsn: Optional[str] = None,
         ef_search: int = 100,
     ) -> None:
+        if not _HAS_ASYNCPG:
+            missing = " and ".join(_MISSING_DEPS)
+            raise ImportError(
+                f"CloudSqlPgvectorStore requires {missing}. " "Install with: uv sync --extra gcp"
+            )
         self._dim = dim
         self._dsn = dsn
         self._ef_search = ef_search
@@ -153,6 +177,13 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
 
         pool = await _get_pool(self._dsn)
         async with pool.acquire() as conn:
+            if record.content_hash is not None:
+                existing_id = await conn.fetchval(
+                    "SELECT record_id FROM memory_records WHERE content_hash = $1",
+                    record.content_hash,
+                )
+                if existing_id is not None and existing_id != record.record_id:
+                    return
             await conn.execute(
                 """
                 INSERT INTO memory_records (
@@ -189,21 +220,42 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
             )
 
     # ─────────────────────────────────────────────────────────────
-    # search()
+    # _search() — ABC implementation. EmptyScope enforced by base class.
     # ─────────────────────────────────────────────────────────────
 
-    async def search(
+    async def _search(
         self,
         *,
         query_embedding: np.ndarray,
         tier: MemoryTier,
-        project_scopes: Iterable[Optional[ProjectID]],
+        project_scopes: list[Optional[ProjectID]],
         k: int = 10,
     ) -> list[tuple[MemoryRecord, float]]:
-        scopes = list(project_scopes)
-        if not scopes:
-            # Layer-3 defence — identical wording to InMemoryStore.
-            raise EmptyScope("search() requires at least one project_scope (None for CONSENSUS)")
+        return await self.search_with_ef(
+            query_embedding=query_embedding,
+            tier=tier,
+            project_scopes=project_scopes,
+            k=k,
+            ef_search=None,
+        )
+
+    async def search_with_ef(
+        self,
+        *,
+        query_embedding: np.ndarray,
+        tier: MemoryTier,
+        project_scopes: list[Optional[ProjectID]],
+        k: int = 10,
+        ef_search: Optional[int] = None,
+    ) -> list[tuple[MemoryRecord, float]]:
+        """Search with an optional per-call HNSW ef_search override.
+
+        Prefer ``search()`` (the ABC method) for normal callers. Use this
+        method only when you need to override ef_search at the call site
+        (e.g. recall-accuracy benchmarks). scope validation is the caller's
+        responsibility here — pass already-validated scopes.
+        """
+        scopes = project_scopes
         if query_embedding.shape[0] != self._dim:
             raise ValueError(f"query dim {query_embedding.shape[0]} != store dim {self._dim}")
 
@@ -214,7 +266,6 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
         non_null_scopes: list[str] = [str(s) for s in scopes if s is not None]
 
         q = np.ascontiguousarray(query_embedding, dtype=np.float32)
-        now_ts = time.time()
         pool = await _get_pool(self._dsn)
 
         async with pool.acquire() as conn:
@@ -222,7 +273,8 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
             # change to the transaction so it does NOT leak into the
             # next caller's session via the pool.
             async with conn.transaction():
-                await conn.execute(f"SET LOCAL hnsw.ef_search = {int(self._ef_search)}")
+                ef = ef_search if ef_search is not None else self._ef_search
+                await conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef)}")
                 # 1 - cosine_distance = cosine_similarity. The `<=>` operator
                 # is pgvector's cosine-distance op; we sort ascending on
                 # distance (= descending on similarity) and return similarity
@@ -238,15 +290,14 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
                     WHERE tier = $2
                       AND (project_id = ANY($3::text[])
                            OR ($4 AND project_id IS NULL))
-                      AND (expires_at IS NULL OR expires_at > $5)
+                      AND (expires_at IS NULL OR expires_at > EXTRACT(EPOCH FROM NOW()))
                     ORDER BY embedding <=> $1::vector
-                    LIMIT $6
+                    LIMIT $5
                     """,
                     q,
                     tier.value,
                     non_null_scopes,
                     include_consensus,
-                    now_ts,
                     int(k),
                 )
 
@@ -296,21 +347,40 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
     async def gc_expired(self, tier: MemoryTier, before_ts: float) -> int:
         pool = await _get_pool(self._dsn)
         async with pool.acquire() as conn:
-            # asyncpg returns "DELETE N" for DELETE statements.
-            status = await conn.execute(
+            count = await conn.fetchval(
                 """
-                DELETE FROM memory_records
-                WHERE tier = $1
-                  AND expires_at IS NOT NULL
-                  AND expires_at <= $2
+                WITH deleted AS (
+                    DELETE FROM memory_records
+                    WHERE tier = $1
+                      AND expires_at IS NOT NULL
+                      AND expires_at <= $2
+                    RETURNING 1
+                )
+                SELECT count(*)::int FROM deleted
                 """,
                 tier.value,
                 float(before_ts),
             )
-        parts = status.split()
-        if len(parts) == 2 and parts[0] == "DELETE":
-            return int(parts[1])
-        return 0
+        return count or 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Factory — enforces embedder.dim == store dim at construction time.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def make_store_for_embedder(
+    embedder,
+    *,
+    dsn: Optional[str] = None,
+    ef_search: int = 100,
+) -> CloudSqlPgvectorStore:
+    """Create a store whose dim is pinned to embedder.dim.
+
+    Raises AttributeError immediately if ``embedder`` has no ``.dim``
+    attribute — fails at deploy time instead of at the first put()/search().
+    """
+    return CloudSqlPgvectorStore(dim=embedder.dim, dsn=dsn, ef_search=ef_search)
 
 
 # ─────────────────────────────────────────────────────────────────────

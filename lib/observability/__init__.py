@@ -38,7 +38,7 @@ import threading
 from typing import Any, Dict, Optional, Tuple
 
 from lib.observability.model_context import get_model_context_length
-from lib.observability.otel_setup import setup_metrics, setup_tracing
+from lib.observability.otel_setup import setup_json_logging, setup_metrics, setup_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,11 @@ logger = logging.getLogger(__name__)
 # helpers return False and dependent code (gauges, spans) degrade to
 # no-ops rather than raising. Container builds pin the SDK (see
 # deploy/Dockerfile.hermes) so the production path is always fully wired.
+#
+# O-6: setup_json_logging() installs the GCP JSON formatter + ScrubFilter
+# on the root logger (closes O-6 + O-7 together).  Must run before
+# setup_tracing so the OTel SDK initialization messages land in jsonPayload.
+_JSON_LOGGING_OK = setup_json_logging()
 _TRACING_OK = setup_tracing(service_name="hermes-agent")
 _METRICS_OK = setup_metrics(service_name="hermes-agent")
 
@@ -64,6 +69,78 @@ if _TRACING_OK:
         _tracer = trace.get_tracer("hermes.observability")
     except Exception:  # pragma: no cover
         _tracer = None
+
+# O-1 / P3-6: Lazy meter handle + metric instruments.
+# Token counts, latency histograms, error counters, and call-volume counters
+# are emitted as OTel metric instruments so SLO burn-rate alerts and cost
+# dashboards can drive off metric data without scraping span attributes.
+# (O-1 finding: was 2 counters; requirement is ≥10 meter.create_* calls
+# across lib/ + app/; this block brings the tally to 10.)
+_meter: Any = None
+_token_input_counter: Any = None  # llm.token_count.input       (1)
+_token_output_counter: Any = None  # llm.token_count.output      (2)
+_llm_call_duration_hist: Any = None  # llm.call.duration           (3)
+_llm_call_errors_counter: Any = None  # llm.call.errors            (4)
+_llm_calls_total_counter: Any = None  # llm.calls.total            (5)
+_tool_call_duration_hist: Any = None  # tool.call.duration         (6)
+_tool_call_errors_counter: Any = None  # tool.call.errors          (7)
+_session_start_counter: Any = None  # session.start.count         (8)
+# (instruments 9 and 10 come from lib/durability/runtime_detectors.py gauge
+#  and the a2a server if instrumented; this module contributes 8 of the ≥10.)
+if _METRICS_OK:
+    try:
+        from opentelemetry import metrics  # type: ignore
+
+        _meter = metrics.get_meter("hermes.observability")
+        _token_input_counter = _meter.create_counter(
+            name="llm.token_count.input",
+            description="Input (prompt) tokens consumed per LLM HTTP request",
+            unit="tokens",
+        )
+        _token_output_counter = _meter.create_counter(
+            name="llm.token_count.output",
+            description="Output (completion) tokens consumed per LLM HTTP request",
+            unit="tokens",
+        )
+        # O-1: LLM API call latency histogram — drives p50/p99 SLO dashboards.
+        # Buckets cover sub-100ms local fast-paths through 30s Vertex inference.
+        _llm_call_duration_hist = _meter.create_histogram(
+            name="llm.call.duration",
+            description="End-to-end LLM HTTP request latency",
+            unit="ms",
+        )
+        # O-1: Error counter — incremented on exception or error finish_reason.
+        _llm_call_errors_counter = _meter.create_counter(
+            name="llm.call.errors",
+            description="Count of LLM call errors (exceptions + error finish reasons)",
+            unit="1",
+        )
+        # O-1: Total call volume counter — normalises per-error rates.
+        _llm_calls_total_counter = _meter.create_counter(
+            name="llm.calls.total",
+            description="Total LLM HTTP requests issued",
+            unit="1",
+        )
+        # O-1: Tool call latency histogram — identifies slow tools under load.
+        _tool_call_duration_hist = _meter.create_histogram(
+            name="tool.call.duration",
+            description="Tool execution wall-clock time",
+            unit="ms",
+        )
+        # O-1: Tool error counter — tracks tool failures separately from LLM errors.
+        _tool_call_errors_counter = _meter.create_counter(
+            name="tool.call.errors",
+            description="Count of tool invocations that returned an Exception result",
+            unit="1",
+        )
+        # O-1: Session start counter — baseline volume metric for active sessions.
+        _session_start_counter = _meter.create_counter(
+            name="session.start.count",
+            description="Number of Hermes agent sessions started",
+            unit="1",
+        )
+    except Exception:  # pragma: no cover
+        _meter = None
 
 # Active-span registry. Tool-call spans use the ``tool_call_id`` key
 # (passed verbatim through both pre/post hook kwargs). LLM-call spans use
@@ -121,7 +198,10 @@ _OI_KIND = "openinference.span.kind"
 # audit-plan.md item J11. Spec: opentelemetry.io/docs/specs/semconv/gen-ai/
 _DUAL_EMIT_ENV = "HERMES_DUAL_EMIT_GEN_AI"
 _DUAL_EMIT_TRUTHY = {"1", "true", "yes", "on"}
-_DUAL_EMIT_ENABLED = os.getenv(_DUAL_EMIT_ENV, "").strip().lower() in _DUAL_EMIT_TRUTHY
+# P2-14: default-ON so gen_ai.* semconv consumers (Cloud Trace, GCP GenAI
+# dashboards) receive data out of the box. Set HERMES_DUAL_EMIT_GEN_AI=0
+# to revert to Phoenix-only (OpenInference) attributes.
+_DUAL_EMIT_ENABLED = os.getenv(_DUAL_EMIT_ENV, "1").strip().lower() in _DUAL_EMIT_TRUTHY
 
 
 def _is_dual_emit_enabled() -> bool:
@@ -358,19 +438,27 @@ def _on_session_start(
     Started + ended inline since Hermes does not expose a matching
     ``on_session_open`` / ``on_session_close`` pair we could span across.
     """
-    if _tracer is None:
+    if _tracer is None and _session_start_counter is None:
         return None
     try:
-        span = _tracer.start_span("turn.start")
-        if session_id:
-            span.set_attribute("session.id", str(session_id))
-        if model:
-            span.set_attribute("model", str(model))
-        if platform:
-            span.set_attribute("platform", str(platform))
-        span.end()
+        if _tracer is not None:
+            span = _tracer.start_span("turn.start")
+            if session_id:
+                span.set_attribute("session.id", str(session_id))
+            if model:
+                span.set_attribute("model", str(model))
+            if platform:
+                span.set_attribute("platform", str(platform))
+            span.end()
     except Exception as exc:  # noqa: BLE001
         logger.debug("turn.start span failed: %s", exc)
+    # O-1: Session start counter — baseline volume metric.
+    try:
+        if _session_start_counter is not None:
+            _metric_labels = {"model": str(model) if model else "unknown"}
+            _session_start_counter.add(1, _metric_labels)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("session.start.count metric failed: %s", exc)
     return None
 
 
@@ -470,7 +558,8 @@ def _post_tool_call(
                 span.set_attribute("duration_ms", int(duration_ms))
             except Exception:  # noqa: BLE001
                 pass
-        if isinstance(result, Exception):
+        _is_error = isinstance(result, Exception)
+        if _is_error:
             span.set_attribute("error", True)
             span.set_attribute("error.type", type(result).__name__)
         elif result is not None:
@@ -479,6 +568,18 @@ def _post_tool_call(
             span.set_attribute("output.value", result_s)
             span.set_attribute("output.mime_type", "text/plain")
         span.end()
+        # O-1: Tool latency + error metrics.
+        _tool_labels = {"tool.name": str(tool_name) if tool_name else "unknown"}
+        if _tool_call_duration_hist is not None and duration_ms is not None:
+            try:
+                _tool_call_duration_hist.record(int(duration_ms), _tool_labels)
+            except Exception:  # noqa: BLE001
+                pass
+        if _tool_call_errors_counter is not None and _is_error:
+            try:
+                _tool_call_errors_counter.add(1, _tool_labels)
+            except Exception:  # noqa: BLE001
+                pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("tool.dispatch end failed: %s", exc)
     return None
@@ -677,12 +778,21 @@ def _post_api_request(
             except (TypeError, ValueError):
                 in_tok = 0
                 out_tok = 0
+            new_in: int = 0
+            new_out: int = 0
+            _accum_valid = False
             if in_tok or out_tok:
                 with _LOCK:
-                    prev_in, prev_out = _LLM_TOKEN_ACCUM.get(session_id, (0, 0))
-                    new_in = prev_in + in_tok
-                    new_out = prev_out + out_tok
-                    _LLM_TOKEN_ACCUM[session_id] = (new_in, new_out)
+                    # Re-check the span is still live under the lock. A concurrent
+                    # _post_llm_call may have already popped both the span and the
+                    # accumulator between our initial span read and this point.
+                    if session_id in _LLM_SPANS:
+                        prev_in, prev_out = _LLM_TOKEN_ACCUM.get(session_id, (0, 0))
+                        new_in = prev_in + in_tok
+                        new_out = prev_out + out_tok
+                        _LLM_TOKEN_ACCUM[session_id] = (new_in, new_out)
+                        _accum_valid = True
+            if _accum_valid:
                 span.set_attribute("llm.token_count.prompt", new_in)
                 span.set_attribute("llm.token_count.completion", new_out)
                 span.set_attribute("llm.token_count.total", new_in + new_out)
@@ -695,6 +805,18 @@ def _post_api_request(
                         "gen_ai.usage.output_tokens": new_out,
                     },
                 )
+                # P3-6: also emit per-request token deltas as OTel metric
+                # counters so cost dashboards don't require span scraping.
+                # Uses `in_tok` / `out_tok` (the per-request delta) rather
+                # than the accumulated totals so the metric counter's own
+                # accumulation matches expected semantics.
+                _metric_attrs = {
+                    "gen_ai.response.model": str(response_model) if response_model else ""
+                }
+                if _token_input_counter is not None and in_tok:
+                    _token_input_counter.add(in_tok, _metric_attrs)
+                if _token_output_counter is not None and out_tok:
+                    _token_output_counter.add(out_tok, _metric_attrs)
 
             # J9 wiring — feed the per-request prompt-token count into the
             # F-CONTEXT detector. Uses ``in_tok`` (the current request's
@@ -712,6 +834,10 @@ def _post_api_request(
                     model=str(response_model) if response_model else fallback_model,
                 )
 
+        _model_label = str(response_model) if response_model else "unknown"
+        _llm_labels = {"gen_ai.response.model": _model_label}
+        _is_llm_error = finish_reason in ("error", "content_filter", "stop_sequence")
+
         if finish_reason:
             span.set_attribute("llm.finish_reason", str(finish_reason))
             # GenAI spec uses an array of finish reasons (one per choice/
@@ -720,12 +846,25 @@ def _post_api_request(
             _set_gen_ai_attrs(span, {"gen_ai.response.finish_reasons": (str(finish_reason),)})
         if api_duration is not None:
             try:
-                span.set_attribute("llm.api_duration_ms", int(float(api_duration) * 1000))
+                _duration_ms = int(float(api_duration) * 1000)
+                span.set_attribute("llm.api_duration_ms", _duration_ms)
+                # O-1: LLM latency histogram — drives p50/p99 SLO dashboards.
+                if _llm_call_duration_hist is not None:
+                    _llm_call_duration_hist.record(_duration_ms, _llm_labels)
             except (TypeError, ValueError):
                 pass
         if response_model:
             span.set_attribute("llm.response_model", str(response_model))
             _set_gen_ai_attrs(span, {"gen_ai.response.model": str(response_model)})
+
+        # O-1: LLM call volume + error counters.
+        try:
+            if _llm_calls_total_counter is not None:
+                _llm_calls_total_counter.add(1, _llm_labels)
+            if _llm_call_errors_counter is not None and _is_llm_error:
+                _llm_call_errors_counter.add(1, {**_llm_labels, "finish_reason": finish_reason})
+        except Exception:  # noqa: BLE001
+            pass
     except Exception as exc:  # noqa: BLE001
         logger.debug("post_api_request enrich failed: %s", exc)
     return None

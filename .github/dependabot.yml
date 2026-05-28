@@ -6,8 +6,8 @@
 #   - Docker base images in our Dockerfiles + docker-compose
 #
 # Security updates fire immediately regardless of schedule.
-# Routine updates batched MONTHLY (changed from weekly) to conserve Actions
-# minutes — every Dependabot PR triggers the full required CI matrix.
+# Routine updates batched WEEKLY to meet OpenSSF Scorecard baseline.
+# Every Dependabot PR triggers the full required CI matrix.
 
 version: 2
 
@@ -18,8 +18,8 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
-      day: monday  # first Monday of the month
+      interval: weekly
+      day: monday
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -38,8 +38,8 @@ updates:
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: monthly
-      day: monday  # first Monday of the month
+      interval: weekly
+      day: monday
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 10
@@ -62,8 +62,8 @@ updates:
   - package-ecosystem: docker
     directory: /deploy
     schedule:
-      interval: monthly
-      day: monday  # first Monday of the month
+      interval: weekly
+      day: monday
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 5
@@ -75,8 +75,8 @@ updates:
   - package-ecosystem: docker
     directory: /deploy/sandboxes
     schedule:
-      interval: monthly
-      day: monday  # first Monday of the month
+      interval: weekly
+      day: monday
       time: "06:00"
       timezone: Etc/UTC
     open-pull-requests-limit: 3

@@ -49,29 +49,6 @@ class HashingEmbedder(AbstractEmbedder):
         return vec
 
 
-class SentenceTransformerEmbedder(AbstractEmbedder):
-    """Stub: model-backed embedder. Production-grade replacement for HashingEmbedder.
-
-    Deferred until the active fleet exceeds ~500 agents (see R4 residual risk
-    in `02-self-correction-pass.md`). Construction raises until the sentence-
-    transformers dependency is added to the project's `pyproject.toml`.
-    """
-
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", dim: int = 384) -> None:
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore
-        except ImportError as e:  # pragma: no cover
-            raise RuntimeError(
-                "sentence-transformers is not installed. "
-                "Add it to your pyproject.toml when you swap embedders."
-            ) from e
-        self._model = SentenceTransformer(model_name)
-        self._dim = dim
-
-    @property
-    def dim(self) -> int:
-        return self._dim
-
-    def embed(self, text: str) -> np.ndarray:  # pragma: no cover - exercised only when SDK present
-        vec = self._model.encode([text], normalize_embeddings=True)[0]
-        return np.asarray(vec, dtype=np.float32)
+# SentenceTransformerEmbedder was moved to app.adapters.local_model.embedder (P3-3).
+# Re-exported here for backward compatibility with existing imports.
+from app.adapters.local_model.embedder import SentenceTransformerEmbedder  # noqa: E402, F401

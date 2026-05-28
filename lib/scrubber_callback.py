@@ -222,7 +222,11 @@ class ScrubberCallback(CustomLogger):
     async def async_logging_hook(
         self, kwargs: dict, result: Any, call_type: str
     ) -> Tuple[dict, Any]:
-        return self._do_scrub(kwargs, result, call_type)
+        import asyncio
+
+        # _do_scrub does synchronous file I/O (_record_hits). Offload to a
+        # thread so the event loop is not blocked on the log-file append.
+        return await asyncio.to_thread(self._do_scrub, kwargs, result, call_type)
 
     def logging_hook(self, kwargs: dict, result: Any, call_type: str) -> Tuple[dict, Any]:
         return self._do_scrub(kwargs, result, call_type)

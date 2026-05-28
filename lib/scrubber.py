@@ -198,9 +198,48 @@ def _reset_singleton_for_tests() -> None:
         _SINGLETON_FAILED = False
 
 
+class ScrubFilter(logging.Filter):
+    """logging.Filter that redacts secrets from Python logger messages.
+
+    Install on any logger or root handler so that every ``logger.info/warning/
+    error/debug(...)`` call is scrubbed before it reaches Cloud Logging or
+    stdout.  Closes O-7: without this, JWTs, session-ids, and chat-ids written
+    by any Python logger bypass the scrubber that guards A2A + Telegram.
+
+    Usage::
+
+        import logging
+        from lib.scrubber import ScrubFilter
+        logging.getLogger().addFilter(ScrubFilter())   # root logger — catches all
+
+    Fail-open: if the scrubber singleton fails to load, or if scrubbing itself
+    raises, the original log record passes through unmodified.  The filter
+    always returns ``True`` so callers never lose a log line.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+        try:
+            record.msg = scrub_string(str(record.msg), source="logging.filter")
+            if record.args:
+                if isinstance(record.args, dict):
+                    record.args = {
+                        k: (scrub_string(v, source="logging.filter") if isinstance(v, str) else v)
+                        for k, v in record.args.items()
+                    }
+                elif isinstance(record.args, tuple):
+                    record.args = tuple(
+                        scrub_string(a, source="logging.filter") if isinstance(a, str) else a
+                        for a in record.args
+                    )
+        except Exception:  # noqa: BLE001 — fail-open
+            pass
+        return True
+
+
 __all__ = [
     "ScrubPattern",
     "ScrubHit",
     "Scrubber",
+    "ScrubFilter",
     "scrub_string",
 ]

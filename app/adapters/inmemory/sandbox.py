@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 from app.core.sandbox import AbstractSandbox, SandboxResult
+
+logger = logging.getLogger(__name__)
 
 
 class LocalSubprocessSandbox(AbstractSandbox):
@@ -73,7 +76,13 @@ class LocalSubprocessSandbox(AbstractSandbox):
                     pass
                 try:
                     stdout_b, stderr_b = await proc.communicate()
-                except Exception:
+                except Exception as _exc:  # noqa: BLE001
+                    logger.debug(
+                        "sandbox: proc.communicate() failed after SIGKILL; "
+                        "discarding output (pid=%s, exc=%r)",
+                        proc.pid,
+                        _exc,
+                    )
                     stdout_b, stderr_b = b"", b""
             duration = _now() - t0
             rc = proc.returncode if proc.returncode is not None else -1
@@ -89,7 +98,12 @@ class LocalSubprocessSandbox(AbstractSandbox):
 def _make_preexec(*, cpu_seconds: int, memory_mb: int, max_files: int):
     """Build a preexec_fn that applies POSIX rlimits to the child.
 
-    Returns None on non-POSIX (preexec_fn isn't supported on Windows anyway).
+    KNOWN RISK (P3-11): preexec_fn is unsafe in multi-threaded Python processes
+    because the child is created via fork() while other threads may hold locks
+    that are never released in the forked child (fork-deadlock).  This is
+    accepted for the CI / test-only context where LocalSubprocessSandbox runs.
+    Production deployments MUST use FirecrackerSandbox, which uses a
+    process-manager sidecar instead of fork+exec (no preexec_fn).
     """
 
     def preexec() -> None:
@@ -98,22 +112,28 @@ def _make_preexec(*, cpu_seconds: int, memory_mb: int, max_files: int):
         # CPU seconds (SIGXCPU at soft limit, SIGKILL at hard).
         resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 5))
         # Address space (bytes). Affects malloc/mmap and most heap growth.
+        # Fail-CLOSED: if the OS rejects the rlimit (ValueError = bad value;
+        # OSError/EPERM = container hard-limit prevents the request), abort the
+        # child process before exec rather than running without memory isolation.
+        # The parent sees this as SubprocessError from create_subprocess_exec.
         as_bytes = memory_mb * 1024 * 1024
         try:
             resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             sys.stderr.write(
-                f"sandbox: WARNING: RLIMIT_AS ({as_bytes // (1024 * 1024)}MB) rejected by OS: {exc!r}; "
-                f"process will start WITHOUT memory isolation\n"
+                f"sandbox: RLIMIT_AS ({as_bytes // (1024 * 1024)}MB) rejected by OS: {exc!r}; "
+                f"aborting child (fail-closed — no memory isolation)\n"
             )
-        # Max open files.
+            raise  # Abort child process before exec; parent gets SubprocessError.
+        # Max open files. Same fail-closed policy.
         try:
             resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, max_files))
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
             sys.stderr.write(
-                f"sandbox: WARNING: RLIMIT_NOFILE ({max_files}) rejected by OS: {exc!r}; "
-                f"process will start WITHOUT file-descriptor isolation\n"
+                f"sandbox: RLIMIT_NOFILE ({max_files}) rejected by OS: {exc!r}; "
+                f"aborting child (fail-closed — no file-descriptor isolation)\n"
             )
+            raise  # Abort child process before exec.
         # Detach from parent's stdio session (start_new_session already does
         # this when set on subprocess.create), but make doubly sure.
         try:

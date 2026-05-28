@@ -26,7 +26,11 @@ class AbstractEmbedder(ABC):
         raise NotImplementedError(f"{self.__class__.__name__}.embed() must be implemented")
 
     def embed_many(self, texts: Iterable[str]) -> np.ndarray:
-        return np.stack([self.embed(t) for t in texts], axis=0)
+        results = [self.embed(t) for t in texts]
+        if not results:
+            # Return a (0, dim) shaped array so callers can safely check shape[0].
+            return np.empty((0, self.dim), dtype=np.float32)
+        return np.stack(results, axis=0)
 
 
 def project_dim(vec: np.ndarray, target_dim: int) -> np.ndarray:

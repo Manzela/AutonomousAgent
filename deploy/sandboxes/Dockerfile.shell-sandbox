@@ -14,7 +14,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ripgrep jq \
       ca-certificates \
       python3 python3-pip \
-      build-essential \
       vim less \
     && rm -rf /var/lib/apt/lists/*
 

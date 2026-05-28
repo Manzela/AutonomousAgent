@@ -223,6 +223,8 @@ def test_run_once_at_warning_emits_alert_but_no_f21_dispatch():
 
 
 def test_run_once_at_100_dispatches_f21_and_alerts():
+    # _dispatch_f21 handles alerting internally via halt_alert_snapshot → send_alert.
+    # _emit_alert must NOT be called on the F21 path — it would duplicate the Telegram message.
     with (
         mock.patch.object(budget_watchdog, "get_daily_spend_usd", return_value=500.0),
         mock.patch.object(budget_watchdog, "_emit_alert") as mock_alert,
@@ -231,15 +233,15 @@ def test_run_once_at_100_dispatches_f21_and_alerts():
         state = budget_watchdog.run_once(cap_usd=500.0, alert_at_pct=75)
     assert state.triggered_f21 is True
     mock_dispatch.assert_called_once()
-    mock_alert.assert_called_once()
+    mock_alert.assert_not_called()
 
 
 def test_run_once_dispatch_happens_before_alert():
-    """Order matters: halt the agent first, alert the operator second.
+    """F21 path: _dispatch_f21 handles both halt AND alert internally.
 
-    If we alerted first and the F21 dispatch then raised, we'd have
-    a 'budget at 100%' Telegram message without the actual halt taking
-    effect — confusing operator experience.
+    _emit_alert must NOT be called on the F21 path — that would
+    produce a duplicate Telegram message. Ordering (halt-before-alert)
+    is now enforced inside halt_alert_snapshot, not at the run_once level.
     """
     call_log = []
     with (
@@ -256,7 +258,7 @@ def test_run_once_dispatch_happens_before_alert():
         ),
     ):
         budget_watchdog.run_once(cap_usd=500.0, alert_at_pct=75)
-    assert call_log == ["dispatch", "alert"]
+    assert call_log == ["dispatch"]
 
 
 def test_run_once_emit_alert_failure_does_not_raise(monkeypatch):

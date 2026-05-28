@@ -63,16 +63,12 @@ def test_atomic_write_no_partial_files_on_success(tmp_path: Path):
 
 
 def test_atomic_write_no_partial_files_on_failure(tmp_path: Path, monkeypatch):
-    """If os.replace fails mid-save, no target file should appear.
+    """If os.replace fails mid-save, neither the target file nor the .tmp file should exist.
 
-    Asserts the strong invariant: a failed save MUST NOT leave a corrupted
-    target file (the atomic-rename pattern guarantees this).
-
-    KNOWN GAP: spec_store currently does NOT cleanup the .tmp file on
-    failure. This is documented (not asserted) below. A future polish
-    should add try/finally to spec_store.SpecStore.save and add the
-    `assert not list(tmp_path.glob("*.tmp"))` line below to make this
-    test enforce both invariants.
+    Both invariants are now enforced:
+    1. A failed save MUST NOT leave a corrupted target file.
+    2. A failed save MUST NOT leave a stale .tmp sibling (spec_store.save
+       cleans it up in a try/finally block after the os.replace call).
     """
     import os
 
@@ -90,10 +86,8 @@ def test_atomic_write_no_partial_files_on_failure(tmp_path: Path, monkeypatch):
     target_files = [f for f in tmp_path.glob("*.json") if not f.name.endswith(".tmp")]
     assert target_files == [], f"Target file leaked despite save failure: {target_files}"
 
-    # KNOWN GAP (documented in docstring above): .tmp file MAY still exist
-    # after a save failure because spec_store.SpecStore.save lacks try/finally
-    # cleanup. When that's fixed, uncomment the line below to enforce no-leak.
-    # assert not list(tmp_path.glob("*.tmp")), "tmp file leaked after failed save"
+    # The .tmp file must also be cleaned up (try/finally in spec_store.SpecStore.save).
+    assert not list(tmp_path.glob("*.tmp")), "tmp file leaked after failed save"
 
 
 def test_load_unknown_id_raises(tmp_path: Path):

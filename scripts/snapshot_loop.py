@@ -30,6 +30,26 @@ DEFAULT_INTERVAL_S = 1800
 
 logger = logging.getLogger("snapshot_loop")
 
+# O-5 fix: OTel tick counter for snapshot watchdog visibility.
+_watchdog_ticks: object = None
+_watchdog_errors: object = None
+try:
+    from opentelemetry import metrics as _otel_metrics  # type: ignore
+
+    _meter = _otel_metrics.get_meter("hermes.scripts.snapshot_loop")
+    _watchdog_ticks = _meter.create_counter(
+        name="watchdog.ticks",
+        description="Snapshot watchdog loop iterations completed (label: loop=snapshot)",
+        unit="1",
+    )
+    _watchdog_errors = _meter.create_counter(
+        name="watchdog.errors",
+        description="Snapshot watchdog loop iterations that raised an exception",
+        unit="1",
+    )
+except Exception:  # pragma: no cover
+    pass
+
 
 def _parse_snapshot_hour(cron_str: str) -> int:
     """Extract the hour field from a 5-field cron string.
@@ -98,8 +118,18 @@ def main() -> int:
                     "snapshot_loop skipped reason=%s",
                     state.reason,
                 )
+            if _watchdog_ticks is not None:
+                try:
+                    _watchdog_ticks.add(1, {"loop": "snapshot"})  # type: ignore[union-attr]
+                except Exception:
+                    pass
         except Exception as exc:  # noqa: BLE001 — sidecar must keep ticking
             logger.warning("snapshot_loop iteration failed: %s", exc)
+            if _watchdog_errors is not None:
+                try:
+                    _watchdog_errors.add(1, {"loop": "snapshot"})  # type: ignore[union-attr]
+                except Exception:
+                    pass
             interval = DEFAULT_INTERVAL_S
         time.sleep(interval)
 

@@ -44,9 +44,10 @@ _audit_logger.addHandler(logging.NullHandler())
 _MINT_CACHE: cachetools.TTLCache[tuple[str, str], str] = cachetools.TTLCache(
     maxsize=10_000, ttl=240
 )
-_MINT_LOCK: asyncio.Lock | None = (
-    None  # initialized lazily (avoids event-loop-before-creation error)
-)
+# Eager init — asyncio.Lock() does not require a running event loop in Python 3.10+.
+# Lazy init had a data-race window: two coroutines both see None and create two
+# different Lock objects, meaning mint_token has no mutual exclusion at startup.
+_MINT_LOCK: asyncio.Lock = asyncio.Lock()
 
 # ---------------------------------------------------------------------------
 # Redis-backed jti replay cache
@@ -82,22 +83,17 @@ _JWKS_CACHE: cachetools.TTLCache[str, list[dict]] = cachetools.TTLCache(
 )
 # M6: negative cache — if JWKS fetch fails (429/503), back off for 30s
 _JWKS_FAIL_CACHE: cachetools.TTLCache[str, str] = cachetools.TTLCache(maxsize=100, ttl=30)
-_JWKS_LOCK: asyncio.Lock | None = (
-    None  # initialized lazily (avoids event-loop-before-creation error)
-)
+# Eager init — asyncio.Lock() does not require a running event loop in Python 3.10+.
+# Lazy init had a data-race window: two coroutines both see None and create two
+# different Lock objects, meaning _fetch_jwks has no mutual exclusion at startup.
+_JWKS_LOCK: asyncio.Lock = asyncio.Lock()
 
 
 def _get_jwks_lock() -> asyncio.Lock:
-    global _JWKS_LOCK
-    if _JWKS_LOCK is None:
-        _JWKS_LOCK = asyncio.Lock()
     return _JWKS_LOCK
 
 
 def _get_mint_lock() -> asyncio.Lock:
-    global _MINT_LOCK
-    if _MINT_LOCK is None:
-        _MINT_LOCK = asyncio.Lock()
     return _MINT_LOCK
 
 
@@ -196,13 +192,22 @@ _JWKS_URL_TEMPLATE = "https://www.googleapis.com/service_accounts/v1/jwk/{sa_ema
 
 
 async def _fetch_jwks(sa_email: str) -> list[dict]:
+    # Fast path: check both caches WITHOUT the lock.  In the asyncio event
+    # loop there is no preemption between sync statements, so the reads are
+    # safe.  This eliminates the pathological case where a cache hit for
+    # SA-B is blocked by an ongoing (up-to-10 s) HTTP fetch for SA-A.
+    cached = _JWKS_CACHE.get(sa_email)
+    if cached is not None:
+        return cached
+    if sa_email in _JWKS_FAIL_CACHE:
+        raise ValueError(f"JWKS fetch for {sa_email} recently failed; backing off for 30s")
+
     lock = _get_jwks_lock()
-    async with lock:  # single-flight: no thundering herd on cache miss
-        # Positive cache hit
+    async with lock:  # single-flight inside the lock: prevents duplicate fetches
+        # Re-check under the lock (classic double-checked pattern for asyncio).
         cached = _JWKS_CACHE.get(sa_email)
         if cached is not None:
             return cached
-        # M6: negative cache — back off if JWKS endpoint recently failed
         if sa_email in _JWKS_FAIL_CACHE:
             raise ValueError(f"JWKS fetch for {sa_email} recently failed; backing off for 30s")
         url = _JWKS_URL_TEMPLATE.format(sa_email=sa_email)
@@ -241,6 +246,11 @@ async def verify_token(
         raise ValueError(f"JWT decode error: {exc}") from exc
 
     issuer: str = unverified.get("iss", "")
+    # validate issuer format before allowlist lookup. Reject anything
+    # that doesn't look like a GCP SA email to prevent injection/confusion.
+    if not issuer or not issuer.endswith(".iam.gserviceaccount.com"):
+        _emit_audit_log("rejected_invalid_issuer_format", None, None, None, None, peer_sa=issuer)
+        raise ValueError(f"issuer format invalid (expected *.iam.gserviceaccount.com): {issuer!r}")
     if issuer not in peers_allowlist:
         _emit_audit_log("rejected_not_allowlisted", None, None, None, None, peer_sa=issuer)
         raise ValueError(f"issuer not allowlisted: {issuer!r}")
@@ -288,11 +298,11 @@ async def verify_token(
     replay_key = (issuer, jti)
 
     # --- Distributed jti replay check (Redis primary, L1 fallback) ---
-    # Per spec §1: default fail-OPEN with 60s L1 bounded-replay window.
-    # Operator override: A2A_JTI_FAIL_MODE=closed. Read per-call (not
+    # Per spec §1: default fail-CLOSED in production.
+    # Operator override: A2A_JTI_FAIL_MODE=open. Read per-call (not
     # captured at module import) so tests + revisions can flip the knob
     # without re-importing the module.
-    fail_closed = _os.getenv("A2A_JTI_FAIL_MODE", "open").lower() == "closed"
+    fail_closed = _os.getenv("A2A_JTI_FAIL_MODE", "closed").lower() == "closed"
     redis_pool = await _get_redis_pool()
 
     if redis_pool is not None:
@@ -361,9 +371,13 @@ async def verify_token(
             _JTI_L1_FALLBACK[replay_key] = True
 
     acting_for: dict = payload.get("acting_for", {})
+    # PyJWT decodes `aud` as a list when multiple audiences are present.
+    # Normalise to str so AgentIdentity.audience is always the declared type.
+    raw_aud = payload.get("aud", our_sa)
+    audience_str: str = raw_aud if isinstance(raw_aud, str) else (raw_aud[0] if raw_aud else our_sa)
     identity = AgentIdentity(
         sub=issuer,
-        audience=payload.get("aud", our_sa),
+        audience=audience_str,
         acting_for=acting_for,
         expiry=payload.get("exp", 0),
         jti=jti,
@@ -387,7 +401,8 @@ async def _call_sign_jwt(our_sa: str, payload_json: str) -> str:
     import google.auth.transport.requests
 
     credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
-    credentials.refresh(google.auth.transport.requests.Request())
+    req = google.auth.transport.requests.Request()
+    await asyncio.to_thread(credentials.refresh, req)
     url = _IAM_SIGN_JWT_URL.format(sa_email=our_sa)
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(

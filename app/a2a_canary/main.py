@@ -21,11 +21,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
-from typing import Any
+from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="A2A Canary Peer", version="0.1.0-spike")
 
@@ -48,7 +51,8 @@ async def jsonrpc_dispatch(request: Request) -> JSONResponse:
     """JSON-RPC 2.0 dispatcher — handles message/send, tasks/get, tasks/cancel."""
     try:
         body = await request.json()
-    except Exception:
+    except Exception as exc:
+        logger.warning("jsonrpc_dispatch: JSON parse error from %s: %r", request.client, exc)
         return JSONResponse(content=_error(None, -32700, "Parse error"))
 
     req_id = body.get("id")
@@ -73,7 +77,7 @@ async def jsonrpc_dispatch(request: Request) -> JSONResponse:
     return JSONResponse(content=_error(req_id, -32004, f"Use /stream or /subscribe for {method}"))
 
 
-async def _sse_events(request: Request, req_id: int = 1) -> Any:
+async def _sse_events(request: Request, req_id: int = 1) -> AsyncIterator[str]:
     """Emit 3 SSE frames with proper event:, id:, and JSON-RPC envelope."""
     events = [
         ("TaskStatusUpdateEvent", {"id": req_id, "result": {"status": "WORKING"}}),

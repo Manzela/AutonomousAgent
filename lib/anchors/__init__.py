@@ -189,6 +189,28 @@ def _on_pre_tool_call(
     intent, redirect the agent into the clarification loop instead of letting
     the tool run. Returns a block dict to short-circuit, or None to allow.
     """
+    # CC-6 β-path: check halt sentinel before any tool dispatch.  Written by
+    # lib.durability.handlers.halt_alert_snapshot when the F21 (budget-cap)
+    # handler fires.  Operator clears the file after reviewing spend and
+    # restarting.  Fail-CLOSED: if the sentinel exists, block the tool call
+    # with an actionable error.
+    _sentinel = Path(os.environ.get("HALT_SENTINEL_PATH", "/data/HALT_F21"))
+    if _sentinel.exists():
+        logger.error(
+            "anchors: HALT sentinel %s is set — blocking tool_name=%s. "
+            "Review spend via LiteLLM /spend/logs, then `rm %s` and restart.",
+            _sentinel,
+            tool_name,
+            _sentinel,
+        )
+        return {
+            "error": (
+                f"AGENT HALTED: halt sentinel {_sentinel} is set. "
+                "A budget limit (F21) was exceeded. "
+                f"Review spend, then `rm {_sentinel}` and restart to resume."
+            )
+        }
+
     # TODO(P1-1 task 6): wire heuristic + state machine integration. The
     # state machine + intent classifier exist; the missing piece is the
     # session-aware adapter that hooks the user-message tool call. Owned by

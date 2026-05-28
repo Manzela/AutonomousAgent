@@ -4,6 +4,8 @@ model_list:
       model: vertex_ai/claude-opus-4-7
       vertex_project: autonomous-agent-2026
       vertex_location: global   # Use the GLOBAL endpoint — org-wide quota pools across all regions for headroom.
+      tags: ["tier:architect"]
+      max_budget: 150
   - model_name: vertex_ai/claude-sonnet-4-6
     litellm_params:
       model: vertex_ai/claude-sonnet-4-6
@@ -14,6 +16,15 @@ model_list:
       model: vertex_ai/gemini-3.1-pro-preview
       vertex_project: autonomous-agent-2026
       vertex_location: global   # Gemini 3.1 Pro Preview is only served via the global endpoint (verified 2026-05-15: us-central1 returns 404, global returns 200). 1M ctx, thinking model — judges using this axis must allow generous max_output_tokens.
+      tags: ["tier:orchestrator", "tier:researcher"]
+      max_budget: 200
+  - model_name: vertex_ai/gemini-3-5-flash
+    litellm_params:
+      model: vertex_ai/gemini-3-5-flash
+      vertex_project: autonomous-agent-2026
+      vertex_location: us-central1
+      tags: ["tier:fast-engineer"]
+      max_budget: 50
 
   # ---- OpenRouter fallback providers (R3 single-provider risk) ----
   #
@@ -52,6 +63,19 @@ model_list:
       model: openrouter/google/gemini-2.5-pro
       api_key: os.environ/OPENROUTER_API_KEY  # pragma: allowlist secret
 
+  # ---- W1.J: Self-hosted Qwen3-Coder (privacy tier) ----
+  #
+  # Served by vLLM on a Spot A100 80GB instance (infra/qwen-vllm/).
+  # LiteLLM prefix: `hosted_vllm/` — routes to the self-hosted OpenAI-compat
+  # API. The api_base is the internal VPC IP of the qwen-vllm instance.
+  # Decision: D-2.a (Qwen3-Coder-30B-A3B-Instruct), D-8 (spot pricing).
+  - model_name: hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    litellm_params:
+      model: hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
+      api_base: os.environ/QWEN_VLLM_API_BASE  # e.g. http://10.128.0.X:8000/v1
+      tags: ["tier:privacy"]
+      max_budget: 0  # self-hosted, no external API cost
+
 litellm_settings:
   drop_params: true
   num_retries: 5
@@ -62,9 +86,13 @@ litellm_settings:
   json_logs: true
 
   # Budget enforcement
-  max_budget: 100  # USD per day, hard cap
+  max_budget: 100  # USD per day, hard cap at the proxy layer
   budget_duration: 24h
-  alert_to_webhook_url: ""  # set after Phase 2 cloud monitoring is up
+  # CC-4: LiteLLM proxy budget alerts forwarded to the bot via env var.
+  # Set LITELLM_BUDGET_ALERT_WEBHOOK to a Telegram webhook or Cloud Monitoring
+  # ingest URL. Runtime budget enforcement runs at both proxy (this cap) and
+  # the budget_watchdog loop (config/limits.yaml budget.daily_usd_cap: 500).
+  alert_to_webhook_url: os.environ/LITELLM_BUDGET_ALERT_WEBHOOK
 
   # OTel for tracing; scrubber_callback.proxy_handler_instance redacts
   # secrets in prompts/responses BEFORE they reach OTel/Phoenix/disk.
@@ -78,7 +106,7 @@ litellm_settings:
 
 # OpenTelemetry export
 litellm_otel:
-  endpoint: http://otel-collector:4317
+  endpoint: http://otel-collector:4318
   service_name: litellm-proxy
 
 router_settings:

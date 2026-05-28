@@ -227,11 +227,22 @@ def send_alert(card_id: Any, msg: str) -> bool:
             resp.raise_for_status()
         logger.info("kanban: send_alert ok card=%s", card_id)
         return True
+    except httpx.HTTPStatusError as exc:
+        # Log status code only — never log the request URL (contains bot token).
+        logger.warning("kanban: send_alert HTTP %s card=%s", exc.response.status_code, card_id)
+        return False
     except httpx.HTTPError as exc:
-        logger.warning("kanban: send_alert HTTP failed card=%s err=%s", card_id, exc)
+        # Log exception type only — request URL (with token) must not appear in logs.
+        logger.warning(
+            "kanban: send_alert HTTP transport error %s card=%s",
+            type(exc).__name__,
+            card_id,
+        )
         return False
     except Exception as exc:  # noqa: BLE001 — bridge is fail-open
-        logger.warning("kanban: send_alert unexpected failure card=%s err=%s", card_id, exc)
+        logger.warning(
+            "kanban: send_alert unexpected failure %s card=%s", type(exc).__name__, card_id
+        )
         return False
 
 
@@ -264,8 +275,8 @@ def _find_task_by_session_or_task_id(
             ).fetchone()
             if row:
                 return _row_to_dict(row)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("kanban: task lookup by id failed tid=%s: %s", tid, exc)
 
     # Try by created_by
     for tid in (task_id, session_id):
@@ -280,8 +291,8 @@ def _find_task_by_session_or_task_id(
             ).fetchone()
             if row:
                 return _row_to_dict(row)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("kanban: task lookup by created_by failed tid=%s: %s", tid, exc)
     return None
 
 

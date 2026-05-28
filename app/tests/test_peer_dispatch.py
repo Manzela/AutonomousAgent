@@ -370,3 +370,148 @@ def test_existing_capability_unchanged():
     )
     assert cap.peer_endpoint is None
     assert cap.invoke is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Real-canary integration tests (P2-18)
+#
+# These tests wire app.a2a_canary.main.app directly via httpx.ASGITransport
+# so that the full execute() → send_message() → JSON-RPC → canary handler
+# path runs WITHOUT any unittest.mock.patch on send_message.
+#
+# The canary FastAPI app is served in-process; no Docker or real network
+# required.  Tests are marked @pytest.mark.integration and are skipped when
+# the canary or httpx ASGI support is unavailable.
+# ─────────────────────────────────────────────────────────────────────
+
+import contextlib  # noqa: E402
+
+import httpx  # noqa: E402
+import lib.a2a.client as _a2a_client  # noqa: E402
+import pytest  # noqa: E402
+
+try:
+    from app.a2a_canary.main import app as _canary_app
+
+    _CANARY_AVAILABLE = True
+except ImportError:
+    _CANARY_AVAILABLE = False
+
+_CANARY_PEER_URL = "http://test-canary/"
+
+
+@pytest.fixture()
+async def real_canary_client():
+    """Temporarily replace the module-level httpx singleton with an
+    ASGITransport-backed client pointing at the in-process canary app.
+
+    Restores the original client (or None) on teardown so other tests are
+    not affected.
+    """
+    if not _CANARY_AVAILABLE:
+        pytest.skip("app.a2a_canary.main not importable")
+
+    transport = httpx.ASGITransport(app=_canary_app, raise_app_exceptions=False)
+    asgi_client = httpx.AsyncClient(
+        transport=transport,
+        base_url=_CANARY_PEER_URL,
+        timeout=5.0,
+    )
+
+    original = _a2a_client._CLIENT
+    _a2a_client._CLIENT = asgi_client
+    try:
+        yield asgi_client
+    finally:
+        _a2a_client._CLIENT = original
+        with contextlib.suppress(Exception):
+            await asgi_client.aclose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _CANARY_AVAILABLE, reason="canary app not importable")
+async def test_real_dispatch_send_message_succeeds(real_canary_client):
+    """send_message against the real canary ASGI app returns a SUBMITTED Task.
+
+    This is the core P2-18 regression: the full execute() path from
+    orchestrator → lib.a2a.client.send_message → canary JSON-RPC handler
+    must work without any mock.patch on send_message.
+    """
+    cap = _make_capability(peer_endpoint=_CANARY_PEER_URL)
+    req = _make_request(summary="ping the canary")
+    result = await execute(req, cap)
+
+    assert (
+        result.status == TaskStatus.INFLIGHT
+    ), f"Expected INFLIGHT (SUBMITTED→INFLIGHT mapping) but got {result.status}"
+    assert result.agent_id == AgentID("agent-test-01")
+    assert result.task_id == req.task_id
+    assert result.output is not None
+    assert "canary-task-" in result.output.get(
+        "id", ""
+    ), "Canary task ID must carry the 'canary-task-' prefix"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _CANARY_AVAILABLE, reason="canary app not importable")
+async def test_real_dispatch_message_shape_reaches_canary(real_canary_client):
+    """The JSON-RPC envelope produced by send_message is accepted by the real canary.
+
+    Verifies that the message.parts[0].text and metadata survive the full
+    serialisation round-trip without the mock intercepting them mid-flight.
+    """
+    cap = _make_capability(peer_endpoint=_CANARY_PEER_URL)
+    req = _make_request(summary="real canary shape test")
+    result = await execute(req, cap)
+
+    # Canary responds with a Task dict; execute() maps it to ExecutionResult.
+    # The canary does NOT echo message content back in SUBMITTED state, so we
+    # verify the plumbing succeeded by checking the response shape.
+    assert result.status == TaskStatus.INFLIGHT
+    assert isinstance(result.output, dict)
+    assert "id" in result.output
+    assert result.output.get("status") == "SUBMITTED"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _CANARY_AVAILABLE, reason="canary app not importable")
+async def test_real_dispatch_tasks_get_via_canary(real_canary_client):
+    """tasks/get round-trip via the real canary returns COMPLETED status.
+
+    Exercises get_task() against the canary (which always returns COMPLETED
+    for any known task ID) to verify the tasks/get code path end-to-end.
+    """
+    from lib.a2a.client import get_task
+
+    fake_task_id = "canary-task-integration-test-001"
+    task = await get_task(_CANARY_PEER_URL, fake_task_id)
+
+    assert task["id"] == fake_task_id
+    assert task["status"] == "COMPLETED"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+@pytest.mark.skipif(not _CANARY_AVAILABLE, reason="canary app not importable")
+async def test_real_dispatch_unknown_method_returns_a2a_error(real_canary_client):
+    """The canary's JSON-RPC error response is decoded into an A2AError subclass.
+
+    Confirms that the error-propagation path from canary → JSON-RPC error →
+    A2A exception → ExecutionResult works without any mock.
+    """
+    from lib.a2a.client import A2AUnsupportedOperation
+
+    with pytest.raises(A2AUnsupportedOperation):
+        from lib.a2a.client import _call, get_client
+
+        client = await get_client()
+        await _call(
+            client,
+            _CANARY_PEER_URL,
+            "message/stream",
+            {"message": {"role": "USER", "parts": [{"text": "test"}]}},
+            timeout=5.0,
+        )

@@ -55,7 +55,14 @@ class SpecStore:
         target = self.root / f"{stamped.spec_id}.json"
         tmp = target.with_suffix(".json.tmp")
         tmp.write_text(stamped.model_dump_json(indent=2))
-        os.replace(tmp, target)  # atomic on POSIX same-filesystem
+        try:
+            os.replace(tmp, target)  # atomic on POSIX same-filesystem
+        except Exception:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
         return stamped
 
     def load(self, spec_id: UUID) -> TaskSpec:

@@ -20,6 +20,35 @@ resource "google_monitoring_notification_channel" "email" {
   depends_on = [google_project_service.enabled]
 }
 
+# P2-15: Slack / webhook fan-out channel. Created only when
+# var.slack_alert_webhook_url is non-empty so a bare `terraform apply`
+# with no tfvars doesn't fail on a missing URL.
+resource "google_monitoring_notification_channel" "slack_webhook" {
+  count        = var.slack_alert_webhook_url != "" ? 1 : 0
+  project      = var.project_id
+  display_name = "autonomousagent-slack-alert"
+  type         = "webhook_tokenauth"
+
+  labels = {
+    url = var.slack_alert_webhook_url
+  }
+
+  sensitive_labels {
+    auth_token = ""
+  }
+
+  depends_on = [google_project_service.enabled]
+}
+
+# Helper local: union of always-present email channel + optional Slack channel.
+# Alert policies reference this list so a single change here fans out to all.
+locals {
+  alert_notification_channels = concat(
+    [google_monitoring_notification_channel.email.id],
+    [for ch in google_monitoring_notification_channel.slack_webhook : ch.id],
+  )
+}
+
 # Log-based metric: count watchdog restart events emitted by hermes-watchdog.sh
 # as structured JSON via gcplogs -> Cloud Logging.
 resource "google_logging_metric" "watchdog_restart" {
@@ -64,11 +93,17 @@ resource "google_monitoring_alert_policy" "watchdog_restart" {
     }
   }
 
-  notification_channels = [google_monitoring_notification_channel.email.id]
+  # P2-15: fan out to both email and Slack/webhook (when configured).
+  notification_channels = local.alert_notification_channels
 
   documentation {
     content   = "A hermes container restart was triggered by the host-level watchdog. Check `journalctl -u hermes-watchdog.service` and `docker compose logs` on autonomousagent-vm."
     mime_type = "text/markdown"
+    # P2-16: runbook URL so on-call engineer has a canonical fix-it reference.
+    links {
+      display_name = "Watchdog restart runbook"
+      url          = "https://github.com/Manzela/AutonomousAgent/blob/main/docs/runbooks/watchdog-restart.md"
+    }
   }
 
   depends_on = [google_logging_metric.watchdog_restart]
@@ -76,6 +111,57 @@ resource "google_monitoring_alert_policy" "watchdog_restart" {
   alert_strategy {
     auto_close = "1800s"
   }
+}
+
+# ---------------------------------------------------------------------------
+# O-8: Long-term forensic log archival (closes audit finding P1.E O-8)
+#
+# All agent logs route to a GCS Coldline bucket so forensic incident-replay
+# remains possible after the 30-day Cloud Logging default retention window.
+# The sink grants the service-account writer identity access to the bucket;
+# no project-wide permission escalation is needed (unique_writer_identity).
+# ---------------------------------------------------------------------------
+
+resource "google_storage_bucket" "forensic_log_archive" {
+  project       = var.project_id
+  name          = "autonomousagent-forensic-logs-${var.project_id}"
+  location      = "US"
+  storage_class = "COLDLINE"
+  force_destroy = false
+
+  lifecycle_rule {
+    action { type = "Delete" }
+    condition { age = 365 }
+  }
+
+  uniform_bucket_level_access = true
+
+  lifecycle {
+    prevent_destroy = true
+  }
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_logging_project_sink" "forensic_archive" {
+  project     = var.project_id
+  name        = "autonomousagent-forensic-archive"
+  destination = "storage.googleapis.com/${google_storage_bucket.forensic_log_archive.name}"
+
+  # Scope: all logs from the autonomousagent VM instance.
+  filter = "resource.type=\"gce_instance\" resource.labels.instance_name=\"autonomousagent-vm\""
+
+  # unique_writer_identity = true so the sink gets its own SA,
+  # preventing privilege-escalation through a shared logging SA.
+  unique_writer_identity = true
+
+  depends_on = [google_project_service.enabled]
+}
+
+resource "google_storage_bucket_iam_member" "forensic_archive_sink_writer" {
+  bucket = google_storage_bucket.forensic_log_archive.name
+  role   = "roles/storage.objectCreator"
+  member = google_logging_project_sink.forensic_archive.writer_identity
 }
 
 # Alert: VM uptime drops to zero (instance stopped or terminated).
@@ -100,11 +186,17 @@ resource "google_monitoring_alert_policy" "vm_down" {
     }
   }
 
-  notification_channels = [google_monitoring_notification_channel.email.id]
+  # P2-15: fan out to both email and Slack/webhook (when configured).
+  notification_channels = local.alert_notification_channels
 
   documentation {
     content   = "autonomousagent-vm is not reporting uptime. Check GCE console — the instance may be stopped or preempted."
     mime_type = "text/markdown"
+    # P2-16: runbook URL so on-call engineer has a canonical fix-it reference.
+    links {
+      display_name = "VM down runbook"
+      url          = "https://github.com/Manzela/AutonomousAgent/blob/main/docs/runbooks/vm-down.md"
+    }
   }
 
   depends_on = [google_project_service.enabled]

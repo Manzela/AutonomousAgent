@@ -1,0 +1,96 @@
+# Source: audit/2026-05-27-ground-truth/decisions.md D-2.a
+# Quirks reference: ~/.claude/.../memory/gemini_3_1_pro_preview_quirks.md
+tiers:
+  orchestrator:
+    model: vertex_ai/gemini-3-1-pro-preview
+    endpoint: global
+    thinking_budget: high
+    max_tokens: 8192
+    daily_cost_cap_usd: 200
+  architect:
+    model: vertex_ai/claude-opus-4-7
+    max_tokens: 8192
+    daily_cost_cap_usd: 150
+  fast-engineer:
+    model: vertex_ai/gemini-3-5-flash
+    max_tokens: 4096
+    daily_cost_cap_usd: 50
+  researcher:
+    model: vertex_ai/gemini-3-1-pro-preview
+    endpoint: global
+    max_tokens: 16384
+    daily_cost_cap_usd: 100
+  # deep-math tier REMOVED 2026-05-28 per user directive:
+  # "We won't use DeepSeek R1 at the moment."
+  # Intent 'deep-math' now falls through to orchestrator (fail-closed).
+  privacy:
+    # Default: Qwen3-Coder-30B-A3B-Instruct (user decision 2026-05-28).
+    # Purpose-built for agentic coding — purpose-tuned tool-call format
+    # (`qwen3_coder`), 128K context, MoE 30B total / ~3B active params.
+    # Single A100 80GB is sufficient. Deployed on GCP Spot (~$400/mo);
+    # retry on preemption via LiteLLM fallback_tier. Promote to on-demand
+    # if preemption rate exceeds 2 events/day (monitor via Cloud Monitoring
+    # `compute.googleapis.com/instance/preemptions` metric).
+    #
+    # --- Agentic coding best practices for Qwen3-Coder ---
+    # tool_call_format: qwen3_coder           # MUST — not generic OpenAI format
+    # enable_thinking: true                   # chain-of-thought for complex tasks
+    # temperature: 0.1 for deterministic code generation
+    #              0.6 for exploration / architecture brainstorming
+    # max_tokens: 4096 minimum for full-function output
+    #             8192 for multi-file code generation tasks
+    # top_p: 0.9  — nucleus sampling works well with coder models
+    # presence_penalty: 0.0  — do NOT apply; penalises valid repeated tokens
+    #                          in code (e.g. closing braces, common idioms)
+    # stop_sequences: ["```"] only when wrapping output; unset for raw code
+    #
+    # --- LiteLLM configuration notes ---
+    # LiteLLM prefix: `hosted_vllm/` (NOT `openai/` or deprecated `vllm/`)
+    # extra_body must set model_extra.tool_choice_format = "qwen3_coder"
+    # Set `litellm_params.api_base` to the vLLM endpoint below.
+    # Set `litellm_params.model` to `hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct`
+    #
+    # --- vLLM serving flags (infra/qwen-vllm/docker-compose.yml) ---
+    # --served-model-name Qwen/Qwen3-Coder-30B-A3B-Instruct
+    # --enable-auto-tool-choice
+    # --tool-call-parser qwen3_coder          # MUST match LiteLLM tool_call_format
+    # --max-model-len 32768                   # 128K native; cap at 32K to fit A100 VRAM
+    # --gpu-memory-utilization 0.90
+    # --dtype bfloat16
+    # --enforce-eager                         # disable CUDA graph capture for MoE stability
+    # --trust-remote-code                     # required for Qwen3 MoE architecture
+    #
+    # Reference: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    # LiteLLM vLLM docs: https://docs.litellm.ai/docs/providers/vllm
+    #
+    # INFRASTRUCTURE: GCP Spot instance (a2-highgpu-1g, 1× A100 80GB)
+    # Cost: ~$400/mo spot vs ~$2,600/mo on-demand. Decision: start on Spot;
+    # promote to on-demand (change `provisioning_model = "SPOT"` → "STANDARD"
+    # in infra/qwen-vllm/terraform/main.tf) if daily preemption rate > 2.
+    #
+    # ALTERNATIVES (commented; operator may un-comment + comment default block):
+    #   (alt-b) hosted_vllm/Qwen/Qwen3.5-35B-A3B
+    #     Newer-gen general-instruct MoE (Feb-Mar 2026); 256 experts / 3B
+    #     active; 256K native context; hybrid Gated DeltaNet+Attention+FFN.
+    #     Same single-A100 footprint. Pick if general instruction-following
+    #     > coder specialization. tool_call_format: hermes (generic).
+    #   (alt-c) hosted_vllm/Qwen/Qwen3.5-27B
+    #     Dense 28B; strongest published code benchmarks (SWE-Bench Verified
+    #     72.4, LiveCodeBench v6 80.7); REQUIRES 8× A100 80GB tensor-parallel
+    #     (`a2-ultragpu-8g`); ~10× cost (~$20K/mo on-demand). Re-escalate to
+    #     human before flipping — exceeds default budget envelope.
+    model: hosted_vllm/Qwen/Qwen3-Coder-30B-A3B-Instruct
+    api_base: http://qwen-vllm.autonomous-agent-2026.svc.cluster.local:8000/v1
+    provider: self-host
+    provisioning: spot
+    status: pending-infra  # W1.J: main.tf + LiteLLM config ready; activate after terraform apply
+    fallback_tier: orchestrator
+    agentic_coding:
+      tool_call_format: qwen3_coder
+      enable_thinking: true
+      temperature_code: 0.1
+      temperature_explore: 0.6
+      max_tokens_function: 4096
+      max_tokens_multifile: 8192
+      top_p: 0.9
+      presence_penalty: 0.0

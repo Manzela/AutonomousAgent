@@ -19,7 +19,8 @@ model:
   # route to Sonnet 4.6 automatically while Opus stays the default for
   # `class:reasoning` / `class:headline`. Until then, all traffic gets
   # the highest-quality model.
-  default: "vertex_ai/claude-opus-4-7"
+  # Note: D-2 decision sets orchestrator tier (gemini-3-1-pro-preview) as default.
+  default: "vertex_ai/gemini-3-1-pro-preview"
   provider: "custom"
   base_url: "http://litellm-proxy:4000"
   # api_key is read from the OPENAI_API_KEY env var (set by

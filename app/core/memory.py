@@ -36,7 +36,6 @@ class AbstractMemoryStore(ABC):
     async def put(self, record: MemoryRecord) -> None:
         raise NotImplementedError(f"{self.__class__.__name__}.put() must be implemented")
 
-    @abstractmethod
     async def search(
         self,
         *,
@@ -50,8 +49,36 @@ class AbstractMemoryStore(ABC):
         `project_scopes` MUST be non-empty (an empty iterable raises
         EmptyScope). To search CONSENSUS, pass `[None]`. To search across
         a project plus consensus, pass `[project_id, None]`.
+
+        Layer-3 defence: EmptyScope is enforced here at the ABC level so
+        concrete subclasses cannot accidentally bypass namespace isolation.
+        Subclasses must implement `_search()` instead.
         """
-        raise NotImplementedError(f"{self.__class__.__name__}.search() must be implemented")
+        scopes = list(project_scopes)
+        if not scopes:
+            raise EmptyScope(
+                "search() called with an empty project_scopes iterable — "
+                "pass [None] to search CONSENSUS or [project_id] for a project scope. "
+                "An empty scope would bypass namespace isolation (layer-3 defence)."
+            )
+        return await self._search(
+            query_embedding=query_embedding,
+            tier=tier,
+            project_scopes=scopes,
+            k=k,
+        )
+
+    @abstractmethod
+    async def _search(
+        self,
+        *,
+        query_embedding: np.ndarray,
+        tier: MemoryTier,
+        project_scopes: list[Optional[ProjectID]],
+        k: int = 10,
+    ) -> list[tuple[MemoryRecord, float]]:
+        """Subclass implementation of search. Called only after scope validation."""
+        raise NotImplementedError(f"{self.__class__.__name__}._search() must be implemented")
 
     @abstractmethod
     async def get(self, record_id: str) -> Optional[MemoryRecord]:

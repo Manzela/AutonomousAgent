@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,20 @@ logger = logging.getLogger(__name__)
 # Volume `hermes-data` is mounted at /data per deploy/docker-compose.yml.
 # Override via HERMES_LOCAL_LOG_DIR for tests or alternative deployments.
 DEFAULT_LOCAL_LOG_DIR = Path(os.environ.get("HERMES_LOCAL_LOG_DIR", "/data/local_logs"))
+
+# Per-path write locks for fallback_local_log JSONL files.
+# Prevents torn JSON lines when two handler threads fire simultaneously
+# (e.g. F13 + F14 on the same tick) and both open the same .jsonl for append.
+_jsonl_lock_registry: Dict[str, threading.Lock] = {}
+_jsonl_lock_registry_lock = threading.Lock()
+
+
+def _jsonl_lock_for(path: Path) -> threading.Lock:
+    key = str(path)
+    with _jsonl_lock_registry_lock:
+        if key not in _jsonl_lock_registry:
+            _jsonl_lock_registry[key] = threading.Lock()
+        return _jsonl_lock_registry[key]
 
 
 @dataclass
@@ -181,6 +196,29 @@ def halt_alert_snapshot(
                 exc,
             )
 
+    # 4. Filesystem sentinel (CC-6 β-path): any hook that calls
+    #    _on_pre_tool_call will short-circuit tool execution when this
+    #    file is present.  chmod 600 so only the agent user can read/clear.
+    #    Failure to write is logged at ERROR but does not block the return —
+    #    the BLOCKED card transition above is still the primary halt signal.
+    _sentinel = Path(os.environ.get("HALT_SENTINEL_PATH", "/data/HALT_F21"))
+    try:
+        _sentinel.parent.mkdir(parents=True, exist_ok=True)
+        _sentinel.touch(mode=0o600)
+        logger.info(
+            "handlers.halt_alert_snapshot sentinel written f_code=%s path=%s",
+            f_code,
+            _sentinel,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "handlers.halt_alert_snapshot sentinel write FAILED f_code=%s path=%s err=%s — "
+            "tool-call veto from sentinel unavailable; rely on card BLOCKED state",
+            f_code,
+            _sentinel,
+            exc,
+        )
+
     return HandlerResult(
         action="halt",
         f_code=f_code,
@@ -216,8 +254,10 @@ def fallback_local_log(
 
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        with out_path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+        line = json.dumps(record, separators=(",", ":")) + "\n"
+        with _jsonl_lock_for(out_path):
+            with out_path.open("a", encoding="utf-8") as fh:
+                fh.write(line)
         logger.debug(
             "handlers.fallback_local_log f_code=%s wrote %s",
             f_code,

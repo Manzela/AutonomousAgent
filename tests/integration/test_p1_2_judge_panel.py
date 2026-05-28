@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -51,7 +52,7 @@ def _master_key() -> str:
         os.path.join(os.path.dirname(__file__), "..", "..", "secrets/litellm-master-key"),
     ):
         if os.path.exists(candidate):
-            return open(candidate).read().strip()
+            return Path(candidate).read_text().strip()
     return "sk-test"
 
 

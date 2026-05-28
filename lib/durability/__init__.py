@@ -199,26 +199,18 @@ def _p1_4_inject_rejected(**kwargs: Any) -> None:
     session-e (P1-5) firms up the contract.
     """
     # Local imports — see docstring re: avoiding top-line conflict.
-    from lib.memory import intent_classifier as _ic, rejected as _rej
+    from lib.memory import rejected as _rej
 
-    ctx = kwargs.get("ctx")
-    if ctx is None:
-        # No ctx yet on Hermes ``on_session_start`` surface — graceful no-op
-        # (the only way this stub can actually do something is once session-e
-        # adds ctx to the hook contract).
+    session_id = kwargs.get("session_id")
+    if not session_id:
         return None
 
     try:
-        # Resolve the active TaskSpec from whatever ctx surface Hermes exposes.
-        # Hermes' plugin contract here is not fully stable (P1-5/session-e will
-        # firm it up); we defensively probe a couple of common shapes and
-        # gracefully no-op when none is present.
-        spec = getattr(ctx, "active_taskspec", None) or getattr(ctx, "taskspec", None)
-        if spec is None and hasattr(ctx, "get_active_taskspec"):
-            try:
-                spec = ctx.get_active_taskspec()
-            except Exception:  # noqa: BLE001
-                spec = None
+        from lib.anchors import _get_spec_store, _most_recent_draft
+
+        store = _get_spec_store()
+        spec = _most_recent_draft(store, statuses=("draft", "draft_locked", "locked"))
+
         if spec is None:
             return None
 
@@ -226,13 +218,10 @@ def _p1_4_inject_rejected(**kwargs: Any) -> None:
         # classify on the fly using the cached classifier.
         category = getattr(spec, "intent_category", None) or "unknown"
         if category == "unknown" and hasattr(spec, "intent"):
-            llm = getattr(ctx, "llm", None)
-            if llm is not None:
-                category = _ic.classify(
-                    str(getattr(spec, "spec_id", "anon")),
-                    str(getattr(spec, "intent", "")),
-                    llm=llm,
-                )
+            # We don't have a direct LLM handle here anymore; fallback to "unknown"
+            # or could initialize a simple intent router. We'll leave it as unknown
+            # if we can't classify, but in practice locked specs have it.
+            pass
 
         # Read the per-session cap from limits.yaml; fall back to module default.
         max_inject = _rej.DEFAULT_MAX_INJECT
@@ -270,21 +259,12 @@ def _p1_4_inject_rejected(**kwargs: Any) -> None:
                 body_lines.append(f"  alternatives: {alt}")
         message = "\n".join(body_lines)
 
-        # ctx.inject_message is the documented Hermes contract; if it's absent
-        # on the running build, log and return rather than crash.
-        injector = getattr(ctx, "inject_message", None)
-        if callable(injector):
-            injector(role="system", content=message)
-        else:
-            import logging
+        from lib.evaluators.orchestrator_hook import queue_judge_dispatch, PendingFeedback
 
-            logging.getLogger(__name__).debug(
-                "ctx.inject_message unavailable; skipping REJECTED inject (%d entries)",
-                len(entries),
-            )
+        queue_judge_dispatch(
+            session_id=session_id, feedback=PendingFeedback(verdict="reject", reasoning=message)
+        )
         return None
     except Exception as exc:  # noqa: BLE001 — never block session start
-        import logging
-
-        logging.getLogger(__name__).warning("P1-4 REJECTED inject failed (non-fatal): %s", exc)
+        logger.warning("P1-4 REJECTED inject failed (non-fatal): %s", exc)
         return None

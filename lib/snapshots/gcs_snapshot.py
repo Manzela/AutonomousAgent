@@ -226,27 +226,33 @@ def _dump_spend_logs_csv(conn_str: str, dest_path: str) -> Optional[int]:
         return None
 
     row_count = 0
+    dump_failed = False
     try:
         with open(dest_path, "w", encoding="utf-8", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(_SPEND_LOGS_CSV_HEADERS)
             cur = conn.cursor()
-            cur.execute(_SPEND_LOGS_DUMP_SQL)
-            for row in cur:
-                writer.writerow(row)
-                row_count += 1
+            try:
+                cur.execute(_SPEND_LOGS_DUMP_SQL)
+                for row in cur:
+                    writer.writerow(row)
+                    row_count += 1
+            finally:
+                try:
+                    cur.close()
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception as exc:  # noqa: BLE001 — fail-open
         logger.warning("snapshot: spend_logs dump failed: %s", exc)
+        dump_failed = True
+    finally:
         try:
             conn.close()
         except Exception:  # noqa: BLE001
             pass
-        return None
 
-    try:
-        conn.close()
-    except Exception:  # noqa: BLE001
-        pass
+    if dump_failed:
+        return None
 
     logger.info("snapshot: dumped %d spend_logs rows to %s", row_count, dest_path)
     return row_count
@@ -339,6 +345,14 @@ def run_once(
     except Exception as exc:  # noqa: BLE001 — fail-open
         return SnapshotResult(object_name=object_name, error=f"client init failed: {exc}")
 
+    # TOCTOU note (P2-2): Two replicas can each observe `today_done=False`
+    # here and proceed to upload concurrently. GCS uploads are last-writer-wins
+    # (object names embed the UTC date, not a replica ID), so both writes land
+    # at the same object path — the final GCS object reflects whichever replica
+    # finished last. This is acceptable for daily disaster-recovery snapshots
+    # (idempotent content, same-day state). Active-active deployments with
+    # diverged state could upload non-identical tar archives; if that becomes
+    # a concern, coordinate via a GCS conditional-put or a distributed mutex.
     today_done = _today_already_uploaded(client, bucket, now_utc)
     skip_reason = evaluate_should_skip(now_utc, snapshot_hour_utc, today_done)
     if skip_reason:

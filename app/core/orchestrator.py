@@ -23,7 +23,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
+
+from app.core.sandbox import AbstractSandbox
+from app.core.embedder import AbstractEmbedder
 
 from app.core.schemas import (
     AgentCapability,
@@ -35,10 +39,51 @@ from app.core.schemas import (
 logger = logging.getLogger(__name__)
 
 # Default timeout for A2A peer requests (seconds).
-_DEFAULT_PEER_TIMEOUT_S = 30.0
+DEFAULT_PEER_TIMEOUT_S = 30.0
 
 # Default task timeout for local dispatch (seconds).
-_DEFAULT_LOCAL_TIMEOUT_S = 60.0
+DEFAULT_LOCAL_TIMEOUT_S = 60.0
+
+
+@dataclass
+class OrchestratorConfig:
+    """Configuration for the orchestrator."""
+
+    sandbox: Optional[AbstractSandbox] = None
+    embedder: Optional[AbstractEmbedder] = None
+    environment: str = "development"
+
+    def __post_init__(self) -> None:
+        # Auto-enforce the production sandbox gate on construction (P3-4).
+        # validate() is also callable explicitly for pre-flight checks.
+        if self.environment == "production":
+            self.validate()
+
+    def validate(self) -> None:
+        """Validate configuration for the given environment.
+
+        Called automatically at construction when environment='production'.
+        Safe to call explicitly at any time for pre-flight checks.
+        """
+        sandbox_cls = self.sandbox.__class__.__name__ if self.sandbox else "None"
+        embedder_cls = self.embedder.__class__.__name__ if self.embedder else "None"
+
+        logger.info(
+            "Orchestrator starting. Environment: %s | Sandbox: %s | Embedder: %s",
+            self.environment,
+            sandbox_cls,
+            embedder_cls,
+        )
+
+        if (
+            self.environment == "production"
+            and self.sandbox
+            and not getattr(self.sandbox, "is_production_grade", False)
+        ):
+            raise RuntimeError(
+                f"Cannot use non-production sandbox {sandbox_cls} in production environment. "
+                f"sandbox.is_production_grade=False."
+            )
 
 
 async def execute(
@@ -46,8 +91,8 @@ async def execute(
     capability: AgentCapability,
     *,
     agent_identity: Any = None,
-    peer_timeout_s: float = _DEFAULT_PEER_TIMEOUT_S,
-    local_timeout_s: float = _DEFAULT_LOCAL_TIMEOUT_S,
+    peer_timeout_s: float = DEFAULT_PEER_TIMEOUT_S,
+    local_timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
 ) -> ExecutionResult:
     """Dispatch a task to a capability — local or across the A2A boundary.
 
@@ -85,7 +130,7 @@ async def _execute_via_a2a(
     capability: AgentCapability,
     *,
     agent_identity: Any = None,
-    timeout_s: float = _DEFAULT_PEER_TIMEOUT_S,
+    timeout_s: float = DEFAULT_PEER_TIMEOUT_S,
 ) -> ExecutionResult:
     """Route task to peer agent via A2A JSON-RPC ``send_message``.
 
@@ -101,7 +146,8 @@ async def _execute_via_a2a(
     # boundary: lib.a2a.client is Claude Code territory — we call it, never modify.
     from lib.a2a.client import send_message  # type: ignore[import-untyped]
 
-    assert capability.peer_endpoint is not None  # Narrowing for type checker
+    if capability.peer_endpoint is None:  # Narrowing for type checker (assert stripped by -O)
+        raise RuntimeError("_execute_via_a2a called with no peer_endpoint")
 
     # Build the A2A Message from the orchestrator request.
     # Spec §7.6.1 requires at least `parts` with one text entry.
@@ -217,7 +263,7 @@ async def _execute_local(
     request: TaskRequest,
     capability: AgentCapability,
     *,
-    timeout_s: float = _DEFAULT_LOCAL_TIMEOUT_S,
+    timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
 ) -> ExecutionResult:
     """Execute task via the capability's in-process ``invoke`` coroutine.
 
@@ -242,9 +288,12 @@ async def _execute_local(
         )
 
     try:
+        effective_timeout = (
+            min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
+        )
         result = await asyncio.wait_for(
             capability.invoke(request),
-            timeout=min(timeout_s, request.deadline_s or 60.0),
+            timeout=effective_timeout,
         )
         if not isinstance(result, ExecutionResult):
             return ExecutionResult(
@@ -314,7 +363,7 @@ def _map_a2a_status(status: str) -> TaskStatus:
         "WORKING": TaskStatus.INFLIGHT,
         "INPUT_REQUIRED": TaskStatus.FAILED,
         "COMPLETED": TaskStatus.COMPLETED,
-        "CANCELED": TaskStatus.FAILED,
+        "CANCELED": TaskStatus.CANCELED,
         "FAILED": TaskStatus.FAILED,
     }
     return mapping.get(status, TaskStatus.FAILED)

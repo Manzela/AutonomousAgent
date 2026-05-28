@@ -1,55 +1,107 @@
 # Wraps the upstream NousResearch/hermes-agent build with our OTel SDK + config mount.
 # Built from the project root so the hermes-agent submodule is in build context.
 #
+# Multi-stage build (P2-25):
+#   builder  — installs all Python packages into /app/.venv; carries uv and
+#              build tools that must NOT appear in the final image.
+#   runtime  — lean python:3.11-slim with only runtime system packages; copies
+#              the pre-built virtualenv from builder.
+#
+# Target for a future distroless migration: once hermes no longer shells out to
+# git, curl, ripgrep, and ffmpeg at agent runtime, the runtime stage base can
+# switch to gcr.io/distroless/python3.11-debian12@sha256:... (no apt, no shell).
+#
 # Base image pinned by SHA digest for reproducibility + supply-chain safety
 # (see audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C3).
 # Digest resolved 2026-05-19 against python:3.11-slim on Docker Hub.
-# Updating: re-pull, copy `Digest:` from `docker pull python:3.11-slim` output,
-# replace below. PYTHON_VERSION arg kept for documentation only.
 ARG PYTHON_VERSION=3.11
+ARG BASE_IMAGE=python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834
 
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS base
+# ============================================================
+# Stage 1: builder
+# Installs all Python dependencies into an isolated virtualenv.
+# Carries uv, git, and apt build tools — none of which land in
+# the runtime stage.
+# ============================================================
+FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    UV_SYSTEM_PYTHON=1
+    PIP_NO_CACHE_DIR=1
 
+# Build-time system deps (git for any VCS-based pip deps; curl for misc fetches).
+# These are NOT carried into the runtime stage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl ca-certificates ripgrep ffmpeg \
+      git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh && \
-    mv /root/.local/bin/uv /usr/local/bin/uv
+# Install uv — build-time only; the runtime stage uses the venv directly.
+COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:d55f0133c94f06df529c2ea55ccfde75fb62c2f7dcba2a19777cae3dfcc9f4ea /uv /usr/local/bin/uv
 
-WORKDIR /app
+# Create an isolated virtualenv so the runtime stage can COPY just /app/.venv.
+RUN python -m venv /app/.venv
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
 
-# Install upstream Hermes from submodule
-COPY hermes-agent/pyproject.toml hermes-agent/uv.lock /app/
-RUN uv pip install --system --no-cache hermes-agent[all] || true   # best-effort; full install in next step
+WORKDIR /build
 
-COPY hermes-agent /app
-RUN uv pip install --system --no-cache -e ".[all]"
+# Cache-friendly: copy lockfile first so dependency resolution is cached
+# separately from the full source tree copy.
+COPY hermes-agent/pyproject.toml hermes-agent/uv.lock /build/hermes-agent/
+RUN uv pip install --no-cache "/build/hermes-agent[all]" || true   # best-effort; full install below
 
-# Add our OTel SDK on top
-RUN uv pip install --system --no-cache \
+# Copy full source and do the real non-editable install.
+# Non-editable (-e is not used here) so the source tree is NOT required in the
+# runtime stage — only the installed package is copied via the venv.
+COPY hermes-agent /build/hermes-agent
+RUN uv pip install --no-cache "/build/hermes-agent[all]"
+
+# OTel SDK: initializes the OTel SDK (env vars alone aren't enough; Hermes
+# ships an uninitialized ProxyTracerProvider by default) and emits app-level
+# spans the Phase 1 acceptance runbook step 4 expects.
+RUN uv pip install --no-cache \
       "opentelemetry-api>=1.27" \
       "opentelemetry-sdk>=1.27" \
       "opentelemetry-exporter-otlp>=1.27" \
       "opentelemetry-instrumentation-httpx>=0.48" \
       "opentelemetry-instrumentation-sqlite3>=0.48"
 
-# Postgres client for the budget-watchdog sidecar (P1-1): queries
-# LiteLLM_SpendLogs directly because the /spend/total endpoint returns 404.
+# Postgres client for the budget-watchdog sidecar: queries LiteLLM_SpendLogs
+# directly because the /spend/total endpoint returns 404.
 # psycopg[binary] avoids the libpq build dependency.
-RUN uv pip install --system --no-cache "psycopg[binary]>=3.1"
+RUN uv pip install --no-cache "psycopg[binary]>=3.1"
 
-# GCS client for the snapshot-watchdog sidecar (P1-1b): uploads daily
-# /home/hermes/.hermes tarballs to gs://${GCS_SNAPSHOT_BUCKET}/. The loop
-# is a no-op when the env var is unset, so this dep is only exercised
-# when the operator provisions a bucket per docs/runbooks/snapshots.md.
-RUN uv pip install --system --no-cache "google-cloud-storage>=2.10"
+# GCS client for the snapshot-watchdog sidecar: uploads daily tarballs.
+# No-op when GCS_SNAPSHOT_BUCKET is unset.
+RUN uv pip install --no-cache "google-cloud-storage>=2.10"
+
+# ============================================================
+# Stage 2: runtime
+# Lean image — only runtime system packages + the pre-built venv.
+# No uv, no build tooling, no source trees.
+# ============================================================
+FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS runtime
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Runtime system tools required by the hermes agent at execution time.
+# NOTE: git, curl, ripgrep, ffmpeg are called by the agent as subprocess tools
+# (code search, file fetches, voice). Once hermes no longer shells out to these,
+# this block can be removed and the base switched to distroless.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      git curl ca-certificates ripgrep ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the pre-built virtualenv from the builder stage.
+# This is the only artifact from builder — no uv, no source, no apt caches.
+COPY --from=builder /app/.venv /app/.venv
+
+# Activate the virtualenv for all subsequent layers and runtime.
+ENV VIRTUAL_ENV=/app/.venv \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
 
 # Non-root user for sandbox safety (audit C3). Created BEFORE the mkdir so
 # /home/hermes/.hermes can be made hermes-owned in a single step.
@@ -61,16 +113,10 @@ RUN groupadd --gid 1000 hermes \
 # Mount points (created here so volume mounts behave predictably).
 # IMPORTANT: Hermes' runtime state dir is `Path.home() / ".hermes"`. With
 # USER hermes + HOME=/home/hermes that resolves to /home/hermes/.hermes.
-# We previously baked /root/.hermes here, which was unreachable to
-# non-root and caused the silent-write regression caught in PR #60 review.
 RUN mkdir -p /data /app/config /app/skills /app/secrets \
               /home/hermes/.hermes /home/hermes/.hermes/plugins /home/hermes/.hermes/kanban \
  && chown -R hermes:hermes /data /app /home/hermes
-# Note: the Dockerfile-baked /home/hermes/.hermes contents are overlaid at
-# runtime by the compose hermes-data named-volume mount. The chown here
-# covers the empty first-run case; the deploy/docker-compose.yml `volume-init`
-# sidecar re-asserts uid:gid 1000:1000 on the volume at every stack-up so a
-# fresh hermes-data volume created as 0700 root:root doesn't lock us out.
+
 USER hermes
 ENV HOME=/home/hermes
 

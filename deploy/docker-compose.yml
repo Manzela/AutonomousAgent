@@ -71,14 +71,14 @@ services:
   # LITELLM_SALT_KEY + DATABASE_URL — same env file is consumed by
   # litellm-proxy below for DATABASE_URL/LITELLM_SALT_KEY).
   litellm-db:
-    # Pinned by digest (audit C3 pattern). Resolved 2026-05-19 via
+    # Pinned by digest. Resolved 2026-05-19 via
     # `docker pull postgres:16-alpine`. 16-alpine is the smallest current
     # postgres LTS image and matches what LiteLLM's docs reference for
     # the proxy.
     image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     <<: [*restart_policy, *json_logging]
     env_file:
-      - ../secrets/litellm-db.env   # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+      - ${SECRETS_DIR:-../secrets}/litellm-db.env   # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
     volumes:
       - litellm-db-data:/var/lib/postgresql/data
     networks: [internal]            # proxy reaches it via service-name DNS, no egress
@@ -94,7 +94,7 @@ services:
   # ---- LiteLLM proxy ----
 
   litellm-proxy:
-    # Tag + digest pin (audit C3). v1.84.0 is the most recent non-prerelease
+    # Tag + digest pin. v1.84.0 is the most recent non-prerelease
     # tag on the BerriAI/litellm GHCR registry as of 2026-05-15; digest
     # captured 2026-05-19 for reproducibility.
     #
@@ -106,11 +106,19 @@ services:
     # the DB-backed admin UI.
     image: ghcr.io/berriai/litellm:v1.84.0@sha256:29252f25ed1b538d44f6b76ec97412c5537a180b39ede744b9f3e86ffdd278f5
     <<: [*restart_policy, *json_logging]
+    # HIGH-6: capability hardening. read_only: true is intentionally omitted
+    # because Prisma writes migration files to /app/.prisma at startup — making
+    # the root FS immutable requires additional tmpfs mounts not yet mapped.
+    # cap_drop + no-new-privileges closes the privilege-escalation vector.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec docker/prod_entrypoint.sh \"$$@\"", "--"]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY_FILE: /run/secrets/litellm_master_key
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      GOOGLE_APPLICATION_CREDENTIALS: /root/.config/gcloud/application_default_credentials.json
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
       # Models live in config.yaml; don't shadow them with a DB-managed list.
       STORE_MODEL_IN_DB: "False"
       LITELLM_LOCAL_MODEL_COST_MAP: "True"
@@ -120,7 +128,7 @@ services:
       # os.environ/DATABASE_URL) and LITELLM_SALT_KEY (required when DB
       # is on; encrypts any model credentials prisma would write). The
       # same file is mounted on litellm-db above as the Postgres-init source.
-      - ../secrets/litellm-db.env
+      - ${SECRETS_DIR:-../secrets}/litellm-db.env
       # Wave-4 #35: OPENROUTER_API_KEY for fallback providers. File is
       # OPTIONAL — Compose treats a missing env_file as fatal, so this
       # entry has `required: false` so the stack still boots when the
@@ -129,13 +137,13 @@ services:
       # immediately (fail-loud, NOT silent). Provision via:
       #   sops decrypt secrets/openrouter.env.sops > secrets/openrouter.env
       # See docs/runbooks/openrouter-fallback.md.
-      - path: ../secrets/openrouter.env
+      - path: ${SECRETS_DIR:-../secrets}/openrouter.env
         required: false
     secrets:
       - litellm_master_key
     volumes:
       - ./litellm/config.yaml:/app/config.yaml:ro
-      - ${HOME}/.config/gcloud:/root/.config/gcloud:ro
+      - ${SECRETS_DIR:-../secrets}/sa-keys/litellm-proxy.json:/secrets/sa-key.json:ro
       # Audit C1: wire lib/scrubber.py as a LiteLLM CustomLogger so prompts
       # and responses are scanned for secrets before they reach OTel/Phoenix.
       # `scrubber_callback.py` must sit next to config.yaml (same directory
@@ -166,14 +174,33 @@ services:
   # ---- OTel collector ----
 
   otel-collector:
-    # Pinned by digest (audit C3). Resolved 2026-05-19. Re-pin via:
+    # Pinned by digest. Resolved 2026-05-19. Re-pin via:
     # `docker pull otel/opentelemetry-collector-contrib:latest | grep Digest`
-    image: otel/opentelemetry-collector-contrib:latest@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d
+    image: otel/opentelemetry-collector-contrib@sha256:f41d7995565df3733b7568702073a9c490792f9c6ac60684fe6a4da21a313f8d
     <<: [*restart_policy, *json_logging]
     command: ["--config", "/etc/otelcol-contrib/config.yaml"]
+    # HIGH-7: capability hardening — the collector receives all traces (full
+    # prompt/response content) so a container escape is high-value.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     volumes:
-      - ./otel/collector.dev.yaml:/etc/otelcol-contrib/config.yaml:ro
+      # P2-11: default is prod YAML so any `docker compose up` (smoke, panic,
+      # snapshot scripts) routes telemetry through the production pipeline.
+      # Override for local dev: OTEL_CONFIG=./otel/collector.dev.yaml docker compose up
+      - ${OTEL_CONFIG:-./otel/collector.prod.yaml}:/etc/otelcol-contrib/config.yaml:ro
     networks: [internal, egress]
+    # Resource limits.
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 100
+    # Healthcheck via the health extension (port 13133).
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     # The opentelemetry-collector-contrib distroless image ships no probe
     # binaries (no wget, curl, sh, nc, python). With nothing to exec, the
     # only signal we have is the container's own restart-on-failure policy
@@ -189,9 +216,21 @@ services:
   # the human to open localhost:6006 in a browser).
 
   phoenix:
-    # Pinned by digest (audit C3). Resolved 2026-05-19.
-    image: arizephoenix/phoenix:latest@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489
+    # Pinned by digest. Resolved 2026-05-19.
+    image: arizephoenix/phoenix@sha256:732f178b4fa1c4b9719f66a717be9f99970c84f30d61f92c4c63cf65bffce489
     <<: [*restart_policy, *json_logging]
+    # P2-12: Phoenix UI has no built-in auth. Ports are loopback-only, but any
+    # operator who port-forwards localhost:6006 during incident triage exposes
+    # the full LLM trace history (including prompts and tool outputs) with zero
+    # authentication to their local machine. Enable Phoenix auth before
+    # port-forwarding to untrusted networks. Required env vars when auth is on:
+    #   PHOENIX_ENABLE_AUTH=true
+    #   PHOENIX_SECRET=<long random string: openssl rand -hex 32>
+    #   PHOENIX_ADMIN_SECRET=<admin password>
+    # See https://docs.arize.com/phoenix/deployment/security
+    environment:
+      PHOENIX_ENABLE_AUTH: "${PHOENIX_ENABLE_AUTH:-false}"
+      PHOENIX_SECRET: "${PHOENIX_SECRET:-}"
     ports:
       - "127.0.0.1:4317:4317"   # OTLP gRPC receiver
       - "127.0.0.1:6006:6006"   # Phoenix UI + OTLP HTTP receiver
@@ -199,6 +238,17 @@ services:
       - phoenix-data:/mnt/data
     # egress only to satisfy Docker port-publishing constraint (internal: true networks block published ports), not for Phoenix runtime traffic
     networks: [internal, egress]
+    # Resource limits.
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 200
+    # Healthcheck via the Phoenix /healthz endpoint.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:6006/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   # ---- Sandboxes ----
 
@@ -210,6 +260,11 @@ services:
     <<: [*restart_policy, *json_logging]
     network_mode: none
     cap_drop: [ALL]
+    # LOW-1: prevent setuid escalation from any Debian base-image binaries.
+    # SB-4: seccomp profile enforces syscall allowlist (deny-by-default).
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:sandboxes/seccomp-sandbox.json
     read_only: true
     tmpfs:
       - /tmp:size=100M
@@ -230,10 +285,14 @@ services:
   # Required PAT scopes: repo, workflow, read:org, security_events.
 
   github-mcp:
-    # Pinned by digest (audit C3). Resolved 2026-05-19.
-    image: ghcr.io/github/github-mcp-server:latest@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
+    # Pinned by digest. Resolved 2026-05-19.
+    image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
     command: ["http", "--port", "8003", "--toolsets", "all"]
+    # HIGH-7: capability hardening for GitHub MCP (holds a live GitHub PAT).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     environment:
       # PAT injected via env_file (decrypted at bootstrap from sops). The
       # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
@@ -290,7 +349,7 @@ services:
   # Idempotent — runs at every stack-up, cheap. The escalation-watcher
   # sidecar also mounts hermes-data and depends on volume-init too.
   volume-init:
-    # busybox 1.36 pinned by digest (audit C3 follow-up). Resolved 2026-05-19.
+    # busybox 1.36 pinned by digest. Resolved 2026-05-19.
     image: busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
     command: ["sh", "-c", "chown -R 1000:1000 /data /hermes-home && echo 'volume-init: chowned /data + /hermes-home to 1000:1000'"]
     user: "0:0"           # explicit: must be root to chown
@@ -375,10 +434,10 @@ services:
       # /app on PYTHONPATH so `lib.<submodule>` is importable.
       PYTHONPATH: /app
     env_file:
-      - ../secrets/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
-      - ../secrets/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
-      - ../secrets/hermes-provider.env  # OPENAI_API_KEY, OPENAI_BASE_URL, HERMES_*_MODEL
-      - ../secrets/honcho.env           # HONCHO_API_KEY — hosted persistent memory (#54)
+      - ${SECRETS_DIR:-../secrets}/telegram.env         # TELEGRAM_BOT_TOKEN, TELEGRAM_ALLOWED_USERS
+      - ${SECRETS_DIR:-../secrets}/chroma-cloud.env     # CHROMA_CLOUD_API_KEY/HOST/TENANT/DATABASE
+      - ${SECRETS_DIR:-../secrets}/hermes-provider.env  # OPENAI_API_KEY, OPENAI_BASE_URL, HERMES_*_MODEL
+      - ${SECRETS_DIR:-../secrets}/honcho.env           # HONCHO_API_KEY — hosted persistent memory (#54)
     secrets:
       - litellm_master_key
     # Egress: needs to reach Telegram (api.telegram.org), Chroma Cloud
@@ -387,7 +446,7 @@ services:
     networks: [internal, egress]
     volumes:
       - hermes-data:/data
-      # P1-5: Kanban SQLite DB persistence. Hermes writes the DB under
+      # Kanban SQLite DB persistence. Hermes writes the DB under
       # `Path.home() / ".hermes" / "kanban" / "kanban.db"` — which inside
       # this container resolves to /home/hermes/.hermes/kanban/kanban.db
       # because the security-hardening PR set HOME=/home/hermes (uid 1000
@@ -451,6 +510,10 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+    # Resource limits — prevent runaway agent from consuming all host resources.
+    mem_limit: 8g
+    cpus: 4.0
+    pids_limit: 500
     depends_on:
       # Block on volume-init so /data + /home/hermes/.hermes are owned by
       # uid 1000 before hermes (uid 1000) tries to touch them. Compose v2.x
@@ -462,11 +525,11 @@ services:
       github-mcp: {condition: service_started}    # distroless image has no probe binaries
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
-      # P-2: Cloud SQL Auth Proxy must be healthy before hermes starts so
+      # Cloud SQL Auth Proxy must be healthy before hermes starts so
       # CloudSqlPgvectorStore can connect to 127.0.0.1:5432.
       cloud-sql-proxy: {condition: service_healthy}
 
-  # ---- Cloud SQL Auth Proxy (P-2) ----
+  # ---- Cloud SQL Auth Proxy  ----
   #
   # Runs as a sidecar that IAM-authenticates to Cloud SQL Postgres 16
   # (autonomousagent-postgres-vector) and proxies TCP on 127.0.0.1:5432.
@@ -478,7 +541,7 @@ services:
   cloud-sql-proxy:
     # Google's official Cloud SQL Auth Proxy v2 image.
     # Pinned to 2.15.x — latest stable at time of writing.
-    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0
+    image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0@sha256:b9dbf4aa34a514f0c38021686928a99f8d778925b2f330e46487cc708c0e61d2
     <<: [*restart_policy, *json_logging]
     container_name: autonomous-agent-cloud-sql-proxy-1
     command:
@@ -487,10 +550,10 @@ services:
       - --port=5432
       - ${CLOUD_SQL_CONNECTION_NAME:-autonomous-agent-2026:us-central1:autonomousagent-postgres-vector}
     environment:
-      # ADC chain — same gcloud config mount as snapshot-watchdog.
-      GOOGLE_APPLICATION_CREDENTIALS: /credentials/application_default_credentials.json
+      # ADC chain — per-service SA key mount
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     volumes:
-      - ${HOME}/.config/gcloud:/credentials:ro
+      - ${SECRETS_DIR:-../secrets}/sa-keys/cloud-sql-proxy.json:/secrets/sa-key.json:ro
     networks: [internal]
     healthcheck:
       test:
@@ -501,7 +564,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # ---- Escalation watcher (P1-6) ----
+  # ---- Escalation watcher ----
   #
   # Periodic 24h Telegram-silence watcher. Scans the Hermes Kanban DB for
   # cards stuck in `blocked` longer than `agent.telegram_escalation_timeout_h`
@@ -521,8 +584,16 @@ services:
     entrypoint: []
     command: ["python", "/app/scripts/escalation_loop.py"]
     working_dir: /app
+    # HIGH-5: capability hardening for sidecar services (mirrors hermes hardening).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       PYTHONPATH: /app
+      # Sidecars use sentinel file for halt signaling, not SIGTERM.
+      HALT_ALERT_SENDS_SIGTERM: "false"
     volumes:
       - ../config/limits.yaml:/config/limits.yaml:ro
       - hermes-data:/home/hermes/.hermes
@@ -534,8 +605,12 @@ services:
       # service mounts hermes-data:/home/hermes/.hermes directly.
       volume-init: {condition: service_completed_successfully}
       hermes: {condition: service_started}
+    # Resource limits.
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 100
 
-  # GCS snapshot watchdog (P1-1b). Polls every interval_s; once per UTC
+  # GCS snapshot watchdog . Polls every interval_s; once per UTC
   # day after `snapshots.gcs_snapshot_cron` (hour-field only) tars
   # /home/hermes/.hermes and uploads to ${GCS_SNAPSHOT_BUCKET}. Behind a
   # feature flag — when GCS_SNAPSHOT_BUCKET is unset (the default until
@@ -546,38 +621,46 @@ services:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
     container_name: autonomous-agent-snapshot-watchdog-1
-    entrypoint: []
-    command: ["python", "/app/scripts/snapshot_loop.py"]
+    entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec python /app/scripts/snapshot_loop.py"]
+    command: []
     working_dir: /app
+    # HIGH-5: capability hardening for sidecar services.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=256m,mode=1777   # tar staging for GCS snapshots
     environment:
       PYTHONPATH: /app
       # Feature flag. Empty string evaluates falsy in Python so run_once
       # short-circuits on the first line. Set in the operator's shell or
       # in a top-level .env file at the compose root.
       GCS_SNAPSHOT_BUCKET: ${GCS_SNAPSHOT_BUCKET:-}
+      # Sidecars use sentinel file for halt signaling, not SIGTERM.
+      HALT_ALERT_SENDS_SIGTERM: "false"
       # ADC chain. The mount below maps host gcloud config to a path the
-      # hermes uid (1000) can read. When the bucket env is empty, the
-      # SDK is never invoked so the path doesn't need to exist.
-      GOOGLE_APPLICATION_CREDENTIALS: /home/hermes/.config/gcloud/application_default_credentials.json
+      # google-cloud-storage Python client discovers automatically via ADC.
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa-key.json
     env_file:
-      - ../secrets/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
+      - ${SECRETS_DIR:-../secrets}/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
     volumes:
       - ../config/limits.yaml:/config/limits.yaml:ro
       - hermes-data:/home/hermes/.hermes       # tar source
       - ../lib:/app/lib:ro
       - ../scripts:/app/scripts:ro
-      # Same gcloud ADC mount that litellm-proxy uses; gives the sidecar
-      # access to the operator's Application Default Credentials without
-      # baking a service-account key into the image.
-      - ${HOME}/.config/gcloud:/home/hermes/.config/gcloud:ro
+      # Service Account key for GCS write access.
+      - ${SECRETS_DIR:-../secrets}/sa-keys/snapshot-watchdog.json:/secrets/sa-key.json:ro
     networks: [internal, egress]   # egress for GCS API + Telegram
     depends_on:
       volume-init: {condition: service_completed_successfully}
       hermes: {condition: service_started}
-
-  # F21 daily budget watchdog (P1-1). Polls LiteLLM_SpendLogs every
+    # Resource limits.
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 100
+  # F21 daily budget watchdog . Polls LiteLLM_SpendLogs every
   # interval_s, alerts Telegram at alert_at_pct, dispatches F21 at 100%.
-  # Direct Postgres because LiteLLM's /spend/total returns 404 (audit R5).
+  # Direct Postgres because LiteLLM's /spend/total returns 404.
   # Needs `internal` for litellm-db reachability and `egress` for Telegram.
   budget-watchdog:
     image: autonomousagent/hermes:0.1.0
@@ -586,11 +669,19 @@ services:
     entrypoint: []
     command: ["python", "/app/scripts/budget_watchdog_loop.py"]
     working_dir: /app
+    # HIGH-5: capability hardening for sidecar services.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     environment:
       PYTHONPATH: /app
+      # Sidecars use sentinel file for halt signaling, not SIGTERM.
+      HALT_ALERT_SENDS_SIGTERM: "false"
     env_file:
-      - ../secrets/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
-      - ../secrets/litellm-db.env     # LITELLM_DB_URL / DATABASE_URL
+      - ${SECRETS_DIR:-../secrets}/telegram.env       # send_alert needs TELEGRAM_BOT_TOKEN
+      - ${SECRETS_DIR:-../secrets}/litellm-db.env     # LITELLM_DB_URL / DATABASE_URL
     volumes:
       - ../config/limits.yaml:/config/limits.yaml:ro
       - hermes-data:/home/hermes/.hermes
@@ -601,11 +692,15 @@ services:
       volume-init: {condition: service_completed_successfully}
       litellm-db: {condition: service_healthy}
       hermes: {condition: service_started}
+    # Resource limits.
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 100
 
 secrets:
   # honcho_db_password: removed (Phase 1 — Honcho disabled)
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
   litellm_master_key:
-    file: ../secrets/litellm-master-key
+    file: ${SECRETS_DIR:-../secrets}/litellm-master-key
   github_pat:
-    file: ../secrets/github-pat
+    file: ${SECRETS_DIR:-../secrets}/github-pat

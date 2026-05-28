@@ -141,10 +141,21 @@ def rehydrate_latest_for_session(
         return None
 
     root = Path(root_dir) if root_dir is not None else DEFAULT_ROOT
-    session_id = _most_recent_incomplete_session(root)
-    if session_id is None:
+    try:
+        session_id = _most_recent_incomplete_session(root)
+        if session_id is None:
+            return None
+        return rehydrate_for_session(session_id, root_dir=root)
+    except Exception:  # noqa: BLE001 — per docstring: IO/parse errors must not block startup
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "resume.rehydrate_latest_for_session: unexpected error scanning %s — "
+            "starting fresh session",
+            root,
+            exc_info=True,
+        )
         return None
-    return rehydrate_for_session(session_id, root_dir=root)
 
 
 def _autoresume_enabled_from_config() -> bool:

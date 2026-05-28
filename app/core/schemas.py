@@ -62,6 +62,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     REFUSED = "refused"
+    CANCELED = "canceled"
 
 
 class MetaAction(str, Enum):

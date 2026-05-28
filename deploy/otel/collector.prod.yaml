@@ -1,3 +1,7 @@
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 receivers:
   otlp:
     protocols:
@@ -11,9 +15,12 @@ processors:
     timeout: 5s
     send_batch_size: 512
   memory_limiter:
+    # Absolute MiB caps (not percentage) — prevents O-9: percentage-based
+    # thresholds are unpredictable when the container has no hard mem_limit.
+    # 400 MiB soft + 80 MiB spike headroom = 480 MiB total before OOM.
     check_interval: 5s
-    limit_percentage: 80
-    spike_limit_percentage: 25
+    limit_mib: 400
+    spike_limit_mib: 80
   resource:
     attributes:
       - key: deployment.environment
@@ -24,9 +31,23 @@ processors:
     num_traces: 100000
     expected_new_traces_per_sec: 100
     policies:
+      # Primary error policy: OTel span status explicitly set to ERROR.
       - name: errors
         type: status_code
         status_code: {status_codes: [ERROR]}
+      # P3-7: Secondary error policy catches traces where the error is signalled
+      # via a span attribute (error=true / error=1) rather than via the OTel
+      # span status code — e.g., LiteLLM proxy spans that set the attribute but
+      # don't call span.set_status(StatusCode.ERROR). Prevents the status_code
+      # policy from silently dropping such traces.
+      - name: error-attribute
+        type: string_attribute
+        string_attribute:
+          key: error
+          values: ["true", "1"]
+          enabled_regex_matching: false
+          cache_max_size: 1000
+          invert_match: false
       - name: slow
         type: latency
         latency: {threshold_ms: 5000}
@@ -40,14 +61,33 @@ exporters:
     log:
       default_log_name: "opentelemetry.io/collector-exported-log"
 
+# O-2: spanmetrics connector derives p50/p99 latency histograms from trace spans.
+# These feed the metrics pipeline so SLO burn-rate alerts have histogram data.
+connectors:
+  spanmetrics:
+    histogram:
+      explicit:
+        buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1000ms, 2500ms, 5000ms, 10000ms]
+    dimensions:
+      - name: service.name
+      - name: deployment.environment
+      - name: span.kind
+    exemplars:
+      enabled: true
+    metrics_flush_interval: 15s
+    namespace: "autonomousagent"
+
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, resource, tail_sampling, batch]
-      exporters: [googlecloud]
+      # Export to Cloud Monitoring AND feed into spanmetrics connector.
+      exporters: [googlecloud, spanmetrics]
     metrics:
-      receivers: [otlp]
+      # Both native OTLP metrics AND spanmetrics-derived latency histograms.
+      receivers: [otlp, spanmetrics]
       processors: [memory_limiter, resource, batch]
       exporters: [googlecloud]
     logs:

@@ -1,0 +1,24 @@
+# Anti-hallucination exclusion list for Claude Code / Antigravity Claude sessions.
+#
+# Authority: audit/2026-05-27-ground-truth/decisions.md D-5.b (user-confirmed option (b)).
+# Purpose:   prevent LLM context pollution from stale or out-of-scope content while
+#            keeping all paths tracked in git and available to the runtime.
+#
+# These paths remain on disk, in git, and in deploys — they are excluded ONLY from
+# Claude's codebase-context loader. Human operators and the running agent are
+# unaffected. To re-include for a session, comment out the relevant line.
+
+# Hermes-agent runtime submodule — out of scope per decisions.md D-5.a.
+# DO NOT physically move or remove — it is a runtime-active import.
+hermes-agent/**
+
+# Operator / architecture docs — out of scope per decisions.md D-5.a.
+# Excluded to prevent stale architectural assertions from biasing LLM-driven
+# code changes during the W0/W1 remediation pass.
+docs/**
+
+# Editor / scratchpad swapfiles inside the audit tree (keep audit/ visible
+# overall — only swapfiles and backups are noise).
+audit/**/*.bak
+audit/**/*.swp
+audit/**/.DS_Store

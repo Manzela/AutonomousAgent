@@ -13,7 +13,7 @@ x-gcplogs: &gcplogs
   options:
     gcp-log-cmd: "true"
 
-x-ar-hermes: &ar-hermes us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes:latest
+x-ar-hermes: &ar-hermes us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes:${IMAGE_TAG:?IMAGE_TAG must be set — refusing to deploy :latest}
 
 services:
   hermes:
@@ -44,7 +44,7 @@ services:
     logging: *gcplogs
 
   shell-sandbox:
-    image: us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/shell-sandbox:latest
+    image: us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/shell-sandbox:${IMAGE_TAG:?IMAGE_TAG must be set — refusing to deploy :latest}
     logging: *gcplogs
 
   otel-collector:
@@ -68,6 +68,15 @@ services:
 
   phoenix:
     logging: *gcplogs
+    # HIGH-3 fix: enable Phoenix auth in production so LLM traces (which
+    # contain full prompt/response text) are not accessible without auth
+    # via port-forward or internal network access.
+    # Provision PHOENIX_SECRET + PHOENIX_ADMIN_SECRET in secrets/phoenix.env.sops
+    # and add them to the SOPS recipient list before terraform apply.
+    environment:
+      PHOENIX_ENABLE_AUTH: "true"
+      PHOENIX_SECRET: "${PHOENIX_SECRET}"
+      PHOENIX_ADMIN_SECRET: "${PHOENIX_ADMIN_SECRET}"
 
   github-mcp:
     logging: *gcplogs

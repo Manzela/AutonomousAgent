@@ -42,6 +42,7 @@ import fnmatch
 import hashlib
 import json
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -170,6 +171,20 @@ def _parse_all_entries(text: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Atomic write helper
+# ---------------------------------------------------------------------------
+def _atomic_write(target: Path, text: str) -> None:
+    """Write ``text`` to ``target`` atomically via a sibling tmp file + os.replace.
+
+    Prevents partial-write corruption of REJECTED.md if the process is
+    killed mid-write. Uses the same pattern as SpecStore.save().
+    """
+    tmp = target.with_suffix(".md.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, target)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 def append_entry(
@@ -209,7 +224,7 @@ def append_entry(
             # Refresh expires_at so the entry "stays warm" with repeated rejection.
             e["expires_at"] = expires_dt.isoformat()
             new_text = "".join(_serialize_entry(x) for x in entries)
-            target.write_text(new_text, encoding="utf-8")
+            _atomic_write(target, new_text)
             return
 
     new_entry = {
@@ -226,7 +241,7 @@ def append_entry(
     }
     entries.append(new_entry)
     new_text = "".join(_serialize_entry(e) for e in entries)
-    target.write_text(new_text, encoding="utf-8")
+    _atomic_write(target, new_text)
 
 
 def load_active_entries(
@@ -303,7 +318,7 @@ def forget(pattern_or_id: str, *, path: Path | None = None) -> int:
     keep = [e for e in entries if not match(e)]
     removed = len(entries) - len(keep)
     if removed:
-        target.write_text("".join(_serialize_entry(e) for e in keep), encoding="utf-8")
+        _atomic_write(target, "".join(_serialize_entry(e) for e in keep))
     return removed
 
 

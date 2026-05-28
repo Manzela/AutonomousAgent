@@ -36,7 +36,9 @@ from lib.evaluators.judge import JudgeResult
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 1
-DEFAULT_PATH = Path("trajectories/judge-events.jsonl")
+# Anchor to repo root, not CWD (CWD varies by launch context).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_PATH = _REPO_ROOT / "trajectories" / "judge-events.jsonl"
 WORKER_SUMMARY_MAX_CHARS = 500
 JUDGE_REASONING_MAX_CHARS = 1000
 
@@ -119,19 +121,12 @@ def _append_line(path: Path, line: str) -> None:
     # Use os.open + O_APPEND for atomic append semantics on POSIX, then wrap
     # in a Python file object so we can fcntl-lock it.
     fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-    try:
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            with _file_lock(fh):
-                fh.write(line + "\n")
-                fh.flush()
-    except Exception:
-        # os.fdopen already closed the fd on success; only manually close on
-        # failures before fdopen returned (rare). Best-effort.
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        raise
+    # os.fdopen takes ownership of fd and closes it when the file object is
+    # closed — do NOT call os.close(fd) separately or we get EBADF.
+    with os.fdopen(fd, "a", encoding="utf-8") as fh:
+        with _file_lock(fh):
+            fh.write(line + "\n")
+            fh.flush()
 
 
 def _config_enabled() -> bool:

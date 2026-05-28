@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import time
-from typing import Iterable, Optional
+from typing import Optional
 
 import numpy as np
 
@@ -11,7 +11,7 @@ from app.core.schemas import (
     MemoryTier,
     ProjectID,
 )
-from app.core.memory import AbstractMemoryStore, EmptyScope
+from app.core.memory import AbstractMemoryStore
 
 
 class InMemoryStore(AbstractMemoryStore):
@@ -42,18 +42,17 @@ class InMemoryStore(AbstractMemoryStore):
             if record.content_hash is not None:
                 self._content_hashes[record.content_hash] = record.record_id
 
-    async def search(
+    async def _search(
         self,
         *,
         query_embedding: np.ndarray,
         tier: MemoryTier,
-        project_scopes: Iterable[Optional[ProjectID]],
+        project_scopes: list[Optional[ProjectID]],
         k: int = 10,
     ) -> list[tuple[MemoryRecord, float]]:
-        scopes = list(project_scopes)
-        if not scopes:
-            # Layer-3 defence: reject empty scopes — refuses ambient authority.
-            raise EmptyScope("search() requires at least one project_scope (None for CONSENSUS)")
+        # Note: EmptyScope guard is enforced by AbstractMemoryStore.search() before
+        # this method is called; project_scopes is always non-empty here.
+        scopes = project_scopes
         if query_embedding.shape[0] != self._dim:
             raise ValueError(f"query dim {query_embedding.shape[0]} != store dim {self._dim}")
         scope_set: set[Optional[ProjectID]] = set(scopes)

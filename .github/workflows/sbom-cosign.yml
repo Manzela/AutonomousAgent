@@ -1,29 +1,33 @@
 # SBOM + cosign — SLSA Provenance L2/L3.
 #
-# On every release tag:
+# On every release tag and every main push:
 #   1. Build the Hermes image locally.
 #   2. Generate an SPDX-JSON SBOM with anchore/sbom-action (NIST 800-218 PW.4).
-#   3. Sign the SBOM with cosign keyless OIDC (no key management — uses
-#      Sigstore's Fulcio CA + Rekor transparency log).
-#   4. Attach both as release assets via softprops/action-gh-release.
+#   3. Sign the image and attest the SBOM with cosign keyless OIDC (no key
+#      management — uses Sigstore's Fulcio CA + Rekor transparency log).
+#   4. On release tags only: attach SBOM + signature as release assets.
 #
 # Keyless flow rationale: managing a long-lived cosign key in
 # Actions secrets is the #1 supply-chain-compromise vector for signed
 # releases (see SolarWinds, Codecov). OIDC short-lived tokens are
 # strictly safer and need zero secret rotation.
+#
+# Permission split (P2-22):
+#   sbom-and-sign : contents: read  — build, push, sign, attest; no write needed
+#   attach-release: contents: write — only attaches release assets, only on tags
 
 name: SBOM + Cosign
 
 on:
   push:
     tags: ['v*']
+    branches: ['main']
   # Allow dry-runs from a release branch — skips the release-asset step.
   workflow_dispatch:
 
+# Minimal workflow-level permissions — each job specifies what it needs.
 permissions:
-  contents: write          # attach SBOM to GitHub Release
-  id-token: write          # required for cosign keyless OIDC
-  packages: read
+  contents: read
 
 concurrency:
   group: sbom-cosign-${{ github.ref }}
@@ -31,9 +35,21 @@ concurrency:
 
 jobs:
   sbom-and-sign:
-    name: Generate SBOM + cosign attest
+    name: Generate SBOM + cosign sign + attest
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # contents: read  — does not write to releases; attach-release job does that
+    # id-token: write — required for cosign keyless OIDC
+    # packages: write — required for GHCR push
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+
+    outputs:
+      sbom_file: ${{ steps.sbom_name.outputs.name }}
+
     steps:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
@@ -55,26 +71,99 @@ jobs:
           format: 'spdx-json'
           output-file: 'sbom-hermes-${{ github.ref_name }}.spdx.json'
 
+      - name: Resolve SBOM filename
+        id: sbom_name
+        run: echo "name=sbom-hermes-${{ github.ref_name }}.spdx.json" >> "$GITHUB_OUTPUT"
+
       # Install cosign — keyless OIDC, no secret needed.
       - name: Install cosign
-        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9  # v3
+        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14 # v3.5.0
 
-      # Sign the SBOM itself (the image hash is embedded in the SBOM).
-      # This produces a `.sig` and `.pem` next to the SBOM and a Rekor
-      # transparency-log entry consumers can verify with
-      # `cosign verify-blob --certificate-identity ...`.
-      - name: Sign SBOM with cosign (keyless OIDC)
-        env:
-          COSIGN_EXPERIMENTAL: "1"
+      - name: Log in to GHCR
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and Push to GHCR
         run: |
+          set -euo pipefail
+          # Use the branch name for main or the tag name
+          TAG_NAME=${{ github.ref_name }}
+          if [ "$TAG_NAME" = "main" ]; then
+            TAG_NAME="latest"
+          fi
+          IMAGE_URI="ghcr.io/${{ github.repository_owner }}/hermes:$TAG_NAME"
+          # Convert to lowercase to satisfy Docker registry rules
+          IMAGE_URI=$(echo "$IMAGE_URI" | tr '[:upper:]' '[:lower:]')
+
+          docker tag autonomousagent/hermes:${{ github.ref_name }} $IMAGE_URI
+          docker push $IMAGE_URI
+
+          # Get the digest for signing — use @sha256: reference to prevent
+          # tag-mutable signing (SC-SBOM-2: RepoDigests may be empty on failure).
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $IMAGE_URI)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "<no value>" ]; then
+            echo "::error::Failed to resolve image digest after push — aborting sign step"
+            exit 1
+          fi
+          echo "IMAGE_DIGEST=$DIGEST" >> $GITHUB_ENV
+
+      # Sign the image itself and attest the SBOM.
+      # COSIGN_EXPERIMENTAL is removed — keyless OIDC is the default in cosign v2+;
+      # the env var was deprecated and is a no-op (SC-COSIGN-1).
+      - name: Sign image and attest SBOM with cosign
+        run: |
+          set -euo pipefail
+          # Sign the image
+          cosign sign --yes $IMAGE_DIGEST
+
+          # Attest the SBOM
+          cosign attest --yes \
+            --predicate "sbom-hermes-${{ github.ref_name }}.spdx.json" \
+            --type spdxjson \
+            $IMAGE_DIGEST
+
+          # Also sign the blob for the release asset
           cosign sign-blob \
             --yes \
             --output-signature "sbom-hermes-${{ github.ref_name }}.spdx.json.sig" \
             --output-certificate "sbom-hermes-${{ github.ref_name }}.spdx.json.pem" \
             "sbom-hermes-${{ github.ref_name }}.spdx.json"
 
-      - name: Attach SBOM + signature to GitHub Release
+      # Upload SBOM artifacts for the attach-release job (tags only).
+      - name: Upload SBOM artifacts
         if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
+        with:
+          name: sbom-release-assets
+          path: |
+            sbom-hermes-${{ github.ref_name }}.spdx.json
+            sbom-hermes-${{ github.ref_name }}.spdx.json.sig
+            sbom-hermes-${{ github.ref_name }}.spdx.json.pem
+          retention-days: 1
+
+  # Separate job with contents: write so the main signing job stays read-only.
+  # Runs only on release tags; the artifact download provides SBOM files from
+  # the sbom-and-sign job above (which ran with contents: read).
+  attach-release:
+    name: Attach SBOM to GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: sbom-and-sign
+    if: startsWith(github.ref, 'refs/tags/')
+
+    permissions:
+      contents: write   # minimum scope — only this job writes to releases
+
+    steps:
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@fa0a91b85d4f404e444306234e3e3b4c78b43bb0  # v4.1.8
+        with:
+          name: sbom-release-assets
+
+      - name: Attach SBOM + signature to GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda  # v3
         with:
           files: |

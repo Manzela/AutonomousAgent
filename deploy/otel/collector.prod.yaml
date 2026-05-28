@@ -96,9 +96,7 @@ connectors:
       explicit:
         buckets: [10ms, 50ms, 100ms, 250ms, 500ms, 1000ms, 2500ms, 5000ms, 10000ms]
     dimensions:
-      - name: service.name
       - name: deployment.environment
-      - name: span.kind
     exemplars:
       enabled: true
     metrics_flush_interval: 15s

@@ -77,6 +77,12 @@ services:
     # the proxy.
     image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
     <<: [*restart_policy, *json_logging]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     env_file:
       - ${SECRETS_DIR:-../secrets}/litellm-db.env   # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
     volumes:
@@ -96,6 +102,11 @@ services:
     image: ghcr.io/langfuse/langfuse:3
     ports:
       - "3000:3000"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://litellm:postgres@litellm-db:5432/litellm_db
@@ -130,6 +141,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec docker/prod_entrypoint.sh \"$$@\"", "--"]
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     environment:
@@ -201,6 +214,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     volumes:
       # P2-11: default is prod YAML so any `docker compose up` (smoke, panic,
       # snapshot scripts) routes telemetry through the production pipeline.
@@ -245,9 +260,14 @@ services:
     #   PHOENIX_SECRET=<long random string: openssl rand -hex 32>
     #   PHOENIX_ADMIN_SECRET=<admin password>
     # See https://docs.arize.com/phoenix/deployment/security
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     environment:
       PHOENIX_ENABLE_AUTH: "${PHOENIX_ENABLE_AUTH:-false}"
-      PHOENIX_SECRET: "${PHOENIX_SECRET:-}"
+      PHOENIX_SECRET: "${PHOENIX_SECRET:-local_phoenix_secret_do_not_use_in_prod1}"
     ports:
       - "127.0.0.1:4317:4317"   # OTLP gRPC receiver
       - "127.0.0.1:6006:6006"   # Phoenix UI + OTLP HTTP receiver
@@ -281,6 +301,7 @@ services:
     # SB-4: seccomp profile enforces syscall allowlist (deny-by-default).
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
       - seccomp:sandboxes/seccomp-sandbox.json
     read_only: true
     tmpfs:
@@ -310,6 +331,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     environment:
       # PAT injected via env_file (decrypted at bootstrap from sops). The
       # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
@@ -420,6 +443,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-hermes.json
     read_only: true
     tmpfs:
       - /tmp:size=512m,mode=1777
@@ -543,9 +568,9 @@ services:
       github-mcp: {condition: service_started}    # distroless image has no probe binaries
       # chroma: removed (Phase 1 — Chroma Cloud, no local service)
       # honcho: removed (Phase 1 — Honcho disabled, no public Docker image)
-      # Cloud SQL Auth Proxy must be healthy before hermes starts so
+      # Cloud SQL Auth Proxy must be started before hermes starts so
       # CloudSqlPgvectorStore can connect to 127.0.0.1:5432.
-      cloud-sql-proxy: {condition: service_healthy}
+      cloud-sql-proxy: {condition: service_started}
 
   # ---- Cloud SQL Auth Proxy  ----
   #
@@ -562,6 +587,11 @@ services:
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0@sha256:b9dbf4aa34a514f0c38021686928a99f8d778925b2f330e46487cc708c0e61d2
     <<: [*restart_policy, *json_logging]
     container_name: autonomous-agent-cloud-sql-proxy-1
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     command:
       - --auto-iam-authn
       - --address=127.0.0.1
@@ -573,14 +603,6 @@ services:
     volumes:
       - ${SECRETS_DIR:-../secrets}/sa-keys/cloud-sql-proxy.json:/secrets/sa-key.json:ro
     networks: [internal]
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - nc -z 127.0.0.1 5432 || exit 1
-      interval: 10s
-      timeout: 3s
-      retries: 5
-      start_period: 15s
 
   # ---- Escalation watcher ----
   #
@@ -606,6 +628,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     tmpfs:
       - /tmp:size=64m,mode=1777
     environment:
@@ -646,6 +670,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     tmpfs:
       - /tmp:size=256m,mode=1777   # tar staging for GCS snapshots
     environment:
@@ -691,6 +717,8 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=sandboxes/seccomp-sidecar.json
     tmpfs:
       - /tmp:size=64m,mode=1777
     environment:

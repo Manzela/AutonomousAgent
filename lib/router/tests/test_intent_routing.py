@@ -21,8 +21,14 @@ def test_resolve_model_missing_intent_fails_closed():
 
 
 def test_resolve_model_stubbed_raises_w1j():
-    with pytest.raises(NotImplementedError, match="W1.J pending"):
-        resolve_model("deep-math")
-
+    # 'privacy' tier is still stub-until-w1j (Qwen vLLM not yet provisioned)
     with pytest.raises(NotImplementedError, match="W1.J pending"):
         resolve_model("privacy")
+
+
+def test_resolve_model_deep_math_falls_to_orchestrator():
+    # deep-math tier REMOVED 2026-05-28 per user directive: "We won't use
+    # DeepSeek R1 at the moment."  Intent now falls through to orchestrator.
+    spec = resolve_model("deep-math")
+    assert spec.model == "vertex_ai/gemini-3-1-pro-preview"
+    assert spec.daily_cost_cap_usd == 200.0

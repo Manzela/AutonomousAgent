@@ -20,16 +20,9 @@ tiers:
     endpoint: global
     max_tokens: 16384
     daily_cost_cap_usd: 100
-  deep-math:
-    # CORRECTED 2026-05-27: LiteLLM canonical id is `deepseek/deepseek-reasoner`
-    # (DeepSeek R1 reasoning model). The audit-plan draft incorrectly listed
-    # `deepseek-r1` which is not a valid LiteLLM provider/model identifier.
-    # Reference: https://docs.litellm.ai/docs/providers/deepseek (verified 2026-05-27)
-    model: deepseek/deepseek-reasoner
-    api_base: https://api.deepseek.com
-    provider: deepseek
-    status: stub-until-w1j
-    fallback_tier: orchestrator
+  # deep-math tier REMOVED 2026-05-28 per user directive:
+  # "We won't use DeepSeek R1 at the moment."
+  # Intent 'deep-math' now falls through to orchestrator (fail-closed).
   privacy:
     # Default: Qwen3-Coder-30B-A3B-Instruct (user decision 2026-05-28).
     # Purpose-built for agentic coding — purpose-tuned tool-call format

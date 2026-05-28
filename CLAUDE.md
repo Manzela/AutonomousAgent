@@ -106,3 +106,9 @@ are FORBIDDEN in this repository and are blocked by `.pre-commit-config.yaml`.
 
 If a rubric must be revised, the change lands in a SEPARATE dated commit by a DIFFERENT
 actor (4-eyes principle). No in-session rubric edits.
+
+## Commit signing
+
+All commits to `main` MUST be signed (Sigstore gitsign OR GPG). Verify:
+  git log --show-signature -1
+Pre-commit hook `verify-signed-commits` enforces locally. Branch protection enforces remotely.

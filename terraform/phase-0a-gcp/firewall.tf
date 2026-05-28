@@ -38,6 +38,10 @@ resource "google_compute_firewall" "allow_egress_https" {
   # Domain-based restriction requires Cloud Armor (L7), not VPC firewall (L3/4).
   destination_ranges = ["0.0.0.0/0"]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_egress_http" {
@@ -52,6 +56,10 @@ resource "google_compute_firewall" "allow_egress_http" {
   }
   destination_ranges = ["0.0.0.0/0"]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_egress_dns" {
@@ -66,6 +74,10 @@ resource "google_compute_firewall" "allow_egress_dns" {
   }
   destination_ranges = ["0.0.0.0/0"]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_egress_dns_tcp" {
@@ -80,6 +92,10 @@ resource "google_compute_firewall" "allow_egress_dns_tcp" {
   }
   destination_ranges = ["0.0.0.0/0"]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_egress_cloudsql" {
@@ -97,6 +113,10 @@ resource "google_compute_firewall" "allow_egress_cloudsql" {
   # 34.0.0.0/8 covers the primary GCP IP ranges used for Cloud SQL.
   destination_ranges = ["34.0.0.0/8", "35.0.0.0/8"]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 resource "google_compute_firewall" "allow_egress_redis" {
@@ -113,6 +133,10 @@ resource "google_compute_firewall" "allow_egress_redis" {
   # rather than allowing Redis port to the entire internet.
   destination_ranges = [google_compute_subnetwork.autonomousagent.ip_cidr_range]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }
 
 # Default-deny all remaining egress.
@@ -129,4 +153,8 @@ resource "google_compute_firewall" "deny_egress_all" {
   deny { protocol = "all" }
   destination_ranges = ["0.0.0.0/0"]
   target_tags        = ["autonomousagent-vm"]
+
+  log_config {
+    metadata = "INCLUDE_ALL_METADATA"
+  }
 }

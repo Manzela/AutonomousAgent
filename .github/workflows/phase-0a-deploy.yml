@@ -253,6 +253,20 @@ jobs:
           gcloud config set compute/region "$GCP_REGION"
           gcloud auth list
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14  # v3.5.0
+
+      - name: Verify SLSA provenance
+        env:
+          IMAGE: ${{ env.AR_REPO }}/hermes:${{ env.IMAGE_TAG }}
+        run: |
+          cosign verify-attestation \
+            --type slsaprovenance \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/.+@refs/heads/main$' \
+            "${IMAGE}" \
+            | jq -e '.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1"'
+
       # ------------------------------------------------------------------
       # Deploy script executed on the VM via stdin redirect (avoids copying
       # a file to the VM). Steps:

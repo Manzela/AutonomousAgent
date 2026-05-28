@@ -255,3 +255,83 @@ class TrajectoryShipper:
                     },
                 )
                 raise
+
+    def ship_trajectory(self, session_id: str, trajectory: list[dict]) -> None:
+        """MALT logging (Phase 1.3): Ship a full structured trajectory for evaluation.
+
+        A trajectory is a chronological list of turns (inputs -> tool calls -> reasoning -> outputs).
+        """
+        payload = {"session_id": session_id, "trajectory": trajectory, "type": "malt_trajectory_v1"}
+        record_payload = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+
+        try:
+            response = self.sanitize_client.sanitize(
+                template=self.template,
+                content=record_payload,
+            )
+        except ModelArmorSanitizeUnavailable as exc:
+            from lib.durability.handlers import dispatch
+
+            dispatch(
+                "F37",
+                error=exc,
+                tool_call_id=None,
+                payload={
+                    "shipper": "trajectory",
+                    "session_id": session_id,
+                },
+            )
+            raise
+        except Exception as exc:
+            wrapped_exc = ModelArmorSanitizeUnavailable(
+                f"templates.sanitize failed for MALT trajectory session_id={session_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            from lib.durability.handlers import dispatch
+
+            dispatch(
+                "F37",
+                error=wrapped_exc,
+                tool_call_id=None,
+                payload={
+                    "shipper": "trajectory",
+                    "session_id": session_id,
+                },
+            )
+            raise wrapped_exc from exc
+
+        sanitized_payload = _extract_sanitized_payload(response)
+
+        # CI artifact integration (Phase 1.3)
+        import os
+
+        local_dir = os.environ.get("MALT_LOCAL_DIR")
+        if local_dir:
+            import pathlib
+
+            path = pathlib.Path(local_dir)
+            path.mkdir(parents=True, exist_ok=True)
+            (path / f"{session_id}.json").write_text(sanitized_payload)
+
+        object_name = f"malt/trajectory/{session_id}.json"
+        bucket_handle = self.gcs_client.bucket(self.bucket)
+        blob = bucket_handle.blob(object_name)
+        blob.upload_from_string(sanitized_payload, content_type="application/json")
+
+    def replay_trajectory(self, session_id: str) -> list[dict]:
+        """MALT replay (Phase 1.3): Reload exact state from a failed trajectory.
+
+        Fetches the trajectory from GCS and parses it back into a list of structured turns
+        so the orchestrator can re-hydrate memory and retry deterministically.
+        """
+        object_name = f"malt/trajectory/{session_id}.json"
+        bucket_handle = self.gcs_client.bucket(self.bucket)
+        blob = bucket_handle.blob(object_name)
+
+        if not blob.exists():
+            raise FileNotFoundError(f"No MALT trajectory found for session_id={session_id}")
+
+        payload_bytes = blob.download_as_string()
+        data = json.loads(payload_bytes)
+
+        return data.get("trajectory", [])

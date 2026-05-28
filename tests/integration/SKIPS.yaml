@@ -1,0 +1,85 @@
+# Manifest of legitimately-skipped integration tests. Each entry MUST justify
+# why a test runs collected-but-skipped in CI. Anything not listed here will
+# fail the CI gate added in P0-18.
+skips:
+  - test: tests/integration/test_budget_cap.py::test_budget_cap_enforced
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack with /v1/admin/limits endpoint implemented
+    issue: P1-6-REVISED
+  - test: tests/integration/test_chroma_outage.py::test_chroma_outage_degrades_gracefully
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_deepeval_trajectory.py::test_trajectory_7_dim_rubric
+    reason: Requires INTEGRATION_LIVE_STACK=1 for LLM judge evaluation
+    issue: P1-6-REVISED
+  - test: tests/integration/test_deepeval_trajectory.py::test_trajectory_hallucination
+    reason: Requires INTEGRATION_LIVE_STACK=1 for LLM judge evaluation
+    issue: P1-6-REVISED
+  - test: tests/integration/test_full_turn.py::test_health_endpoint_responds
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_full_turn.py::test_full_turn_via_admin_api
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_hermes_plugin_loader_smoke.py::test_disk_cleanup_plugin_loads_in_real_hermes_container
+    reason: docker daemon and/or `docker compose` CLI not available on this host
+    issue: P1-6-REVISED
+  - test: tests/integration/test_hermes_plugin_loader_smoke.py::test_disk_cleanup_appears_in_hermes_plugins_list
+    reason: docker daemon and/or `docker compose` CLI not available on this host
+    issue: P1-6-REVISED
+  - test: tests/integration/test_p1_2_judge_panel.py::test_judge_panel_rejects_destructive_action
+    reason: LiteLLM proxy not reachable on http://localhost:4000
+    issue: P1-6-REVISED
+  - test: tests/integration/test_p1_6_failure_matrix.py::test_F1_rate_limit_classifies_as_self_heal
+    reason: LiteLLM proxy not running
+    issue: P1-6-REVISED
+  - test: tests/integration/test_p1_6_failure_matrix.py::test_F2_timeout_classifies_as_self_heal
+    reason: LiteLLM proxy not running
+    issue: P1-6-REVISED
+  - test: tests/integration/test_p1_6_failure_matrix.py::test_F22_secret_leak_classifies_as_fail_loud
+    reason: LiteLLM proxy not running
+    issue: P1-6-REVISED
+  - test: tests/integration/test_p1_6_failure_matrix.py::test_F11_gemini_thinking_truncation_classifies_as_self_heal
+    reason: LiteLLM proxy not running
+    issue: P1-6-REVISED
+  - test: tests/integration/test_p1_6_failure_matrix.py::test_F33_unclassified_exception_falls_through_to_fail_loud
+    reason: LiteLLM proxy not running
+    issue: P1-6-REVISED
+  - test: tests/integration/test_property_llm_invariants.py::test_invariant_no_env_var_leak
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_property_llm_invariants.py::test_invariant_destructive_tool_confirmation
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_property_llm_invariants.py::test_invariant_valid_json_output
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_docker_skip_guard_fires_when_docker_absent
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_no_network
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_no_root_fs_write
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_fork_bomb_limited
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_mem_bomb_limited
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_no_cap_sys_admin
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_seccomp_blocks_kexec
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sandbox_isolation.py::test_shell_sandbox_rlimit_nproc_enforced
+    reason: docker daemon or `docker compose` CLI not available
+    issue: P1-6-REVISED
+  - test: tests/integration/test_secret_leak.py::test_secret_in_model_output_is_redacted
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack with live lib/scrubber.py wiring + _test_inject_response hook
+    issue: P1-6-REVISED
+  - test: tests/integration/test_skill_creation.py::test_complex_session_creates_skill
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack with /v1/nudges/skill_extractor/run endpoint
+    issue: P1-6-REVISED

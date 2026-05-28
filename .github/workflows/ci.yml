@@ -736,3 +736,32 @@ jobs:
             hermes-failure-logs.txt
           retention-days: 14
           if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # P0-18: CI gate for collected-but-skipped tests
+  # ------------------------------------------------------------------
+  no-undocumented-skips:
+    name: Enforce Skip Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python
+        run: uv venv .venv --python 3.11
+
+      - name: Install dev dependencies
+        run: |
+          source .venv/bin/activate
+          uv sync --frozen --extra dev --extra gcp --extra a2a
+
+      - name: Run skip verification script
+        run: |
+          source .venv/bin/activate
+          python scripts/check_skips.py

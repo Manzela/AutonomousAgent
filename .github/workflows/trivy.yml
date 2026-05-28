@@ -8,8 +8,12 @@
 name: Trivy
 
 on:
+  pull_request:
+    branches: [main]
+    paths: ['deploy/**', 'pyproject.toml', 'uv.lock']
   push:
     tags: ['v*']
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -63,7 +67,7 @@ jobs:
             autonomousagent/hermes:scan-${{ github.sha }}
 
       - name: Upload Trivy scan results to Security tab
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa  # v3
         with:
           sarif_file: 'trivy-results.sarif'

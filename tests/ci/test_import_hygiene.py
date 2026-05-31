@@ -35,12 +35,17 @@ def test_classify_module_not_found_is_fail():
     assert ih.classify_import_error(ModuleNotFoundError("No module named 'x'")) == "fail"
 
 
-def test_classify_plain_import_error_is_warn():
-    # a non-MNFE ImportError (e.g., cannot import name) is env/code-dependent, not a missing dep
-    assert ih.classify_import_error(ImportError("cannot import name 'Y'")) == "warn"
+def test_classify_plain_import_error_is_fail():
+    # a non-MNFE ImportError (e.g., cannot import name) is a DEFINITIVE code breakage, not env-dependent
+    assert ih.classify_import_error(ImportError("cannot import name 'Y'")) == "fail"
+
+
+def test_classify_syntax_error_is_fail():
+    assert ih.classify_import_error(SyntaxError("invalid syntax")) == "fail"
 
 
 def test_classify_runtime_error_is_warn():
+    # a RuntimeError at import (e.g., needs a live service / env var) CAN be env-dependent -> warn
     assert ih.classify_import_error(RuntimeError("needs a live service")) == "warn"
 
 

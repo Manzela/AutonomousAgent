@@ -51,16 +51,27 @@ def discover_modules(roots: list[str], base: str) -> list[str]:
 def _is_test_path(rel: pathlib.Path) -> bool:
     """Tests are NOT runtime modules: they need the dev group + pytest/conftest context, and
     importing them standalone is meaningless to C5 (which targets the runtime import path).
-    Excludes any module under a `tests/` dir, or named test_*/*_test/conftest."""
-    if "tests" in rel.parts:
+    Excludes any module under a `tests`/`test` dir, or named test_*/*_test/conftest.
+    (`testing` is intentionally NOT excluded — it could be a legitimate runtime utility
+    package, and over-excluding would create a hygiene blind spot.)"""
+    if any(p in {"tests", "test"} for p in rel.parts):
         return True
     stem = rel.stem
     return stem.startswith("test_") or stem.endswith("_test") or stem == "conftest"
 
 
 def classify_import_error(exc: BaseException) -> str:
-    """'fail' for a missing module (the C5 signal), 'warn' for anything else."""
-    if isinstance(exc, ModuleNotFoundError):
+    """'fail' for a DEFINITIVE code/import breakage — a missing module/dep
+    (ModuleNotFoundError), a bad/relative import name (other ImportError), or a SyntaxError.
+    None of those are environment-dependent, so they always block.
+
+    'warn' for anything else (e.g., a RuntimeError/KeyError raised by import-time code that
+    needs a live service or an env var) — those CAN be environment-dependent and would
+    false-positive a per-PR gate, so they are reported but never fail (faithful to C5's
+    "any ModuleNotFoundError fails", extended to the equally-definitive ImportError/SyntaxError).
+    Note: ModuleNotFoundError is a subclass of ImportError, so the ImportError check covers it.
+    """
+    if isinstance(exc, (ImportError, SyntaxError)):
         return "fail"
     return "warn"
 

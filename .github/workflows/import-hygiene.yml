@@ -4,8 +4,11 @@
 # Any ModuleNotFoundError fails the PR (framework-cosplay / deleted-dep / garak-removal-breaks-
 # import signal). Other import-time exceptions are env-dependent → WARN (never fail).
 #
-# DEFERRED to a C5 follow-up (tracked issue): the `import-declared-deps` check + the
-# "no `uv pip install`" rule (ci.yml has 3 pre-existing uses to migrate first).
+# Scope: app/ + lib/ runtime packages, tests excluded. DEFERRED to a C5 follow-up:
+#   - `import-declared-deps` (a new pyproject dep must be imported from a reachable path);
+#   - the "no `uv pip install`" rule (ci.yml has 3 pre-existing uses to migrate first);
+#   - extending scope to scripts/ runtime entry points — they may pull dev/optional deps and
+#     run top-level work, so adding them needs its own clean-container validation (tracked).
 #
 # CODEOWNERS guards .github/, so this gate-config is reviewed by the operator + Gemini (C9).
 name: import-hygiene

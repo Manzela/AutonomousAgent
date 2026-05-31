@@ -1,0 +1,3 @@
+== SP-00e.3 GREEN: real first-party tree (app + lib) imports clean ==
+== import-hygiene: 111 modules | ok=111 ModuleNotFoundError=0 warn=0 => PASS ==
+exit=0

@@ -358,6 +358,125 @@ assertions:
       echo "OK: gate correctly treats !=only spec as unpinned"
     expect_exit: 0
 
+  - id: pep508-nested-quote-marker-not-false-positive
+    description: >
+      3rd-pass Bug 1 (PEP-508 nested-quote false positive): a double-quoted dep spec
+      containing an inner single-quoted PEP-508 environment marker must be parsed as
+      ONE spec and must NOT hard-fail when the dep name is allowlisted.  The old
+      mixed-quote regex split on the inner quote, turning one valid spec into two
+      broken fragments.  Exits 0 only if the gate exits 0 (no hard failure).
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/marker_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "pyyaml>=6.0; python_version < '3.12'",
+       ]
+      DIFF
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/marker_diff.txt" \
+        --added-files /dev/null
+      rc=$?; rm -rf "$tmp"
+      if [ "$rc" -ne 0 ]; then
+        echo "FAIL: PEP-508 marker spec false-positive (3rd-pass Bug 1)"; exit 1
+      fi
+      echo "OK: gate correctly accepts allowlisted dep with PEP-508 environment marker"
+    expect_exit: 0
+
+  - id: git-url-hash-fragment-not-truncated
+    description: >
+      3rd-pass Bug 2 ('#' inside quoted string truncated): a dep using a git+url
+      with '#egg=...' must pass through intact — the '#' inside quotes must NOT be
+      treated as a TOML comment delimiter.  Uses httpx (in allowlist) with a git URL.
+      Exits 0 only if the gate exits 0 (allowlisted dep, fully pinned via '@').
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/url_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "httpx @ git+https://github.com/encode/httpx.git#egg=httpx",
+       ]
+      DIFF
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/url_diff.txt" \
+        --added-files /dev/null
+      rc=$?; rm -rf "$tmp"
+      if [ "$rc" -ne 0 ]; then
+        echo "FAIL: git+url with #egg= was truncated or rejected (3rd-pass Bug 2)"; exit 1
+      fi
+      echo "OK: gate preserved '#egg=' fragment in git+url dep specifier"
+    expect_exit: 0
+
+  - id: own-source-mit-spdx-early-exit
+    description: >
+      3rd-pass Bug 3 (own-source SPDX early-exit): the gate's own source file now
+      carries a '# SPDX-License-Identifier: MIT' header.  When scanned, disallowed_
+      license_in must return None immediately on MIT without consulting prose patterns.
+      This makes the own-source pass independent of comment position (no 50-line
+      fragility).  Exits 0 only if the gate exits 0 when scanning its own source.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '' > "$tmp/empty_diff.txt"
+      printf 'scripts/ci/license_dep_gate.py\n' > "$tmp/added_files.txt"
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/empty_diff.txt" \
+        --added-files "$tmp/added_files.txt"
+      rc=$?; rm -rf "$tmp"
+      if [ "$rc" -ne 0 ]; then
+        echo "FAIL: gate falsely flagged its own source (MIT SPDX early-exit not working)"; exit 1
+      fi
+      echo "OK: gate's own source passes via MIT SPDX early-exit"
+    expect_exit: 0
+
+  - id: bare-proprietary-confidential-no-spdx-caught
+    description: >
+      3rd-pass Bug 3b: a file with NO SPDX header but a comment line carrying both
+      'Proprietary' and 'Confidential' (the canonical dual-keyword notice) must be
+      rejected by the prose pattern, regardless of line position.  Exits 0 only if
+      the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '' > "$tmp/empty_diff.txt"
+      printf '# Proprietary and Confidential\nimport os\n' > "$tmp/prop_conf_no_spdx.py"
+      printf '%s\n' "$tmp/prop_conf_no_spdx.py" > "$tmp/added_files.txt"
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/empty_diff.txt" \
+           --added-files "$tmp/added_files.txt" >/dev/null 2>&1; then
+        echo "FAIL: bare Proprietary+Confidential (no SPDX) was not caught (3rd-pass Bug 3b)"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected bare Proprietary+Confidential notice (no SPDX)"
+    expect_exit: 0
+
+  - id: triple-quote-in-dep-array-is-hard-error
+    description: >
+      3rd-pass Bug 4 (triple-quote guard): a TOML triple-quoted string inside a dep
+      array must cause a hard failure rather than silently extracting zero deps.
+      This is a defense-in-depth guard — triple-quoted values are not valid PEP-508
+      specifiers.  Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/triple_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  """bad multiline dep""",
+       ]
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/triple_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: triple-quote in dep array was not caught (3rd-pass Bug 4)"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate hard-failed on triple-quoted string in dep array"
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/license-dep-gate.yml
   artifact: license-dep-gate (unit tests + acceptance re-run + advisory pip-licenses scan)

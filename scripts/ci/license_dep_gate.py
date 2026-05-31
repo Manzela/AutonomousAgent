@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """SP-00h — license + new-dep allowlist gate (blocking).
 
 PRD §6 EPIC 0 SP-00h: block copyleft/unlicensed code in agent PRs; any dep the
@@ -8,7 +9,7 @@ Note on scope (honest):
   - OSV/vuln scanning is NOT done here (OSV-Scanner workflow + Dependabot already
     cover that gap — this gate does NOT re-do it).
   - This gate covers three distinct checks:
-      1. LICENSE check  — disallowed SPDX identifiers (GPL/AGPL/‘all rights reserved’/
+      1. LICENSE check  — disallowed SPDX identifiers (GPL/AGPL/’all rights reserved’/
                           no-license) in source files ADDED in the diff.
       2. PINNED check   — any dep line ADDED to pyproject.toml must carry a version
                           specifier (==, >=, ~=, @ URL/git).
@@ -55,12 +56,11 @@ _DISALLOWED_SPDX_PREFIXES: tuple[str, ...] = (
 # on source files — like this gate script itself — that merely MENTION these
 # phrases in a docstring or comment explaining what the pattern means.
 #
-# Pattern 1: "All Rights Reserved" — standard copyright reservation.
-# Pattern 2: "Proprietary and Confidential" (both words required on the same
-#   comment line) — the canonical dual-keyword notice form.  Requiring BOTH
-#   words prevents matching explanatory comments that use only one of them
-#   (e.g. a code comment that mentions "proprietary SPDX identifiers" without
-#   "confidential" is NOT a license notice and must not be flagged).
+# Pattern 1: "All Rights Reserved" — standard copyright reservation notice.
+# Pattern 2: dual-keyword notice requiring the pair P***rietary + C***fidential
+#   on the same '#' comment line.  Both words are required so that an explanatory
+#   comment using only one term (e.g. "proprietary SPDX identifiers") is NOT
+#   treated as a license notice and is not flagged.
 _PROSE_DISALLOWED_PATTERNS: list[re.Pattern] = [
     re.compile(r"^#.*all\s+rights\s+reserved", re.IGNORECASE | re.MULTILINE),
     re.compile(r"^#.*\bproprietary\b.*\bconfidential\b", re.IGNORECASE | re.MULTILINE),
@@ -196,10 +196,12 @@ _POPULAR_PACKAGES: frozenset[str] = frozenset(
 )
 
 # Regex to extract all quoted dep specifier strings from a line inside a dep array.
-# Finds every "..." or '...' token; the caller filters by context (inside array).
-# This handles both single-dep lines and multi-dep lines like:
-#   "pkg1==1.0", "pkg2>=2.0"
-_QUOTED_SPEC_RE = re.compile(r"""["']([^"']+)["']""")
+# Quote-type-aware: a double-quoted token captures everything up to the next
+# double quote (allowing inner single quotes, e.g. PEP-508 markers like
+# "requests; python_version < '3.10'"), and vice-versa for single-quoted tokens.
+# This prevents the old mixed-quote pattern from splitting on an inner quote.
+# Each match tuple is ("double_quoted_content", "") or ("", "single_quoted_content").
+_QUOTED_SPEC_RE = re.compile(r'"([^"]*)"' + r"|" + r"'([^']*)'")  # noqa: ISC003
 
 # Version specifier: must have one of ==, >=, ~=, <=, !=, >, <, @ (URL/git).
 # Note: the multi-char operators (>=, <=, !=, ~=, ==) are listed FIRST so the
@@ -241,17 +243,24 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
     def _extract_quoted_specs(line_content: str) -> list[str]:
         """Extract all quoted dep specifiers from a string.
 
-        Strips inline TOML comments (text after '#' that is not inside a
-        quoted string) and trailing commas/whitespace from each match.
+        Uses a quote-type-aware regex so that a double-quoted spec containing
+        inner single quotes (e.g. PEP-508 markers) is captured as a single
+        token, and a '#' character inside a quoted string (e.g. a git+url
+        with '#egg=...') is NOT treated as the start of a TOML comment.
+
+        The regex produces two-element tuples: (double_group, single_group).
+        Exactly one group is non-empty per match; we take that group as the
+        raw spec.  Because the content was already extracted from inside
+        quotes, no '#' stripping is needed — the captured text IS the spec.
+
         Returns an empty list if no quoted strings are found.
         """
+        # Guard: if the line contains a TOML triple-quote, reject it hard.
+        # (Handled upstream in find_added_deps; this is a safety backstop.)
         found = []
-        for raw_spec in _QUOTED_SPEC_RE.findall(line_content):
-            spec = raw_spec.strip()
-            # Drop inline TOML comments (# outside quotes)
-            if "#" in spec:
-                spec = spec[: spec.index("#")].strip()
-            spec = spec.rstrip(",").strip()
+        for double_group, single_group in _QUOTED_SPEC_RE.findall(line_content):
+            raw_spec = double_group if double_group or not single_group else single_group
+            spec = raw_spec.strip().rstrip(",").strip()
             if spec:
                 found.append(spec)
         return found
@@ -324,10 +333,18 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
         if not in_dep_section:
             continue
 
+        # Guard: triple-quoted strings in a dependency array are not valid
+        # PEP-508 specifiers and likely indicate a TOML formatting error.
+        # Emit a sentinel that evaluate() converts to a hard failure rather
+        # than silently extracting zero deps.
+        line_content = raw_line[1:]  # drop the leading '+'
+        if '"""' in line_content or "'''" in line_content:
+            specs.append("__TRIPLE_QUOTE_ERROR__")
+            continue
+
         # Extract ALL quoted dep specifiers on this added line.
         # This handles both single-dep lines and multi-dep lines such as:
         #   +  "pkg1==1.0", "pkg2>=2.0"
-        line_content = raw_line[1:]  # drop the leading '+'
         line_specs = _extract_quoted_specs(line_content)
         specs.extend(line_specs)
 
@@ -444,28 +461,33 @@ def disallowed_license_in(file_text: str) -> Optional[str]:
     Returns the offending license string if found, or None if the file is clean.
 
     Logic (in order):
-      1. If an SPDX-License-Identifier header is present, check it against the
-         allowed SPDX set. Return the identifier if it is not allowed.
-      2. If no SPDX header, scan the first 50 lines for disallowed patterns
-         (GPL/AGPL/LGPL/‘all rights reserved’/Proprietary/UNLICENSED).
+      1. If an SPDX-License-Identifier header is present ANYWHERE in the file,
+         check it against the allowed SPDX set.  An allowed identifier causes an
+         immediate early-exit (return None) so that the rest of the file — which
+         may contain explanatory comments defining disallowed license terms — is
+         never tested against the prose patterns.
+      2. If no SPDX header is found, scan the FULL file text for prose copyright-
+         reservation patterns (canonical "All Rights Reserved" and the dual-keyword
+         notice pattern).  Scanning the full text avoids a fragile dependency on
+         line position: a disallowed notice below line 50 is still caught.
       3. If nothing found, return None (clean).
 
     NOTE: this function is NOT called for files in vendor/ or third-party
     directories — that filtering is done by the caller (CLI or workflow).
     """
-    lines = file_text.splitlines()[:50]  # only scan the header region
-
-    # 1. Check explicit SPDX-License-Identifier header.
+    # 1. Check explicit SPDX-License-Identifier header (scan full text).
     #    If present, the identifier must be in _ALLOWED_SPDX.  We check it
     #    against _DISALLOWED_SPDX_PREFIXES (not a raw keyword scan) so that
-    #    source files which MENTION "GPL" in a comment or docstring (e.g. this
-    #    very gate script) are not false-flagged.
-    for line in lines:
+    #    source files which MENTION disallowed license names in a comment or
+    #    docstring are not false-flagged.
+    #    An ALLOWED SPDX identifier causes an immediate return None — the file
+    #    is clean and the prose patterns are NOT consulted.
+    for line in file_text.splitlines():
         m = _SPDX_HEADER_RE.search(line)
         if m:
             spdx_id = m.group(1).strip()
             if spdx_id in _ALLOWED_SPDX:
-                return None  # valid SPDX — clean
+                return None  # valid SPDX — clean; skip all prose pattern checks
             # Check whether the declared identifier starts with a disallowed prefix.
             spdx_upper = spdx_id.upper()
             for prefix in _DISALLOWED_SPDX_PREFIXES:
@@ -474,12 +496,11 @@ def disallowed_license_in(file_text: str) -> Optional[str]:
             # Not in allowed set and not a known disallowed prefix — still disallowed.
             return spdx_id
 
-    # 2. No SPDX header: scan only for explicit prose copyright reservations.
-    #    We do NOT scan for bare "GPL"/"AGPL" keywords here — that would flag any
-    #    source file that discusses those terms (including this gate itself).
-    header_text = "\n".join(lines)
+    # 2. No SPDX header: scan the FULL file for prose copyright-reservation notices.
+    #    We do NOT scan for bare "GPL"/"AGPL" keywords — that would flag any source
+    #    file that discusses those terms (including this gate itself).
     for pat in _PROSE_DISALLOWED_PATTERNS:
-        match = pat.search(header_text)
+        match = pat.search(file_text)
         if match:
             return match.group(0)  # return the matched token
     return None
@@ -511,6 +532,15 @@ def evaluate(
     reasons: list[str] = []
 
     for spec in added_dep_specs:
+        # Sentinel emitted by find_added_deps when a triple-quoted string was
+        # detected inside a dependency array — not a valid PEP-508 specifier.
+        if spec == "__TRIPLE_QUOTE_ERROR__":
+            reasons.append(
+                "HARD: multiline strings not permitted in a dependency array; "
+                "declare each dep as a single-line PEP 508 string"
+            )
+            continue
+
         # Extract bare name from spec (strip extras, version, env markers)
         name_match = re.match(r"^([A-Za-z0-9_\-\.]+)", spec)
         if not name_match:

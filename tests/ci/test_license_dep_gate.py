@@ -485,3 +485,122 @@ def test_is_pinned_dep_rejects_not_equal_only():
 def test_is_pinned_dep_accepts_not_equal_combined_with_gte():
     """NIT: `>=1,!=1.5` carries a bounding operator — it IS pinned."""
     assert ldg.is_pinned_dep("pkg>=1,!=1.5") is True, ">=1,!=1.5 must be treated as pinned"
+
+
+# ---------------------------------------------------------------------------
+# 3rd-pass cross-vendor review findings (2026-05-31)
+# ---------------------------------------------------------------------------
+
+
+def test_find_added_deps_pep508_nested_quote_marker():
+    """Bug 1 (PEP-508 nested-quote false positive): a double-quoted dep spec
+    containing an inner single-quoted PEP-508 marker must be parsed as ONE spec,
+    not split at the inner quote.
+
+    `"requests; python_version < '3.10'"` must be returned as the single
+    specifier `requests; python_version < '3.10'`.
+    """
+    diff = (
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        " [project.dependencies]\n"
+        "+  \"requests; python_version < '3.10'\",\n"
+    )
+    specs = ldg.find_added_deps(diff)
+    assert len(specs) == 1, f"Expected exactly 1 spec, got {specs}"
+    assert "python_version" in specs[0], f"Marker was truncated: {specs[0]!r}"
+    assert specs[0] == "requests; python_version < '3.10'", f"Spec mismatch: {specs[0]!r}"
+
+
+def test_find_added_deps_pep508_marker_dep_not_hard_fails():
+    """Bug 1 (follow-through): a valid PEP-508 spec with an environment marker
+    must be treated by evaluate() as a regular dep — only the dep NAME is looked
+    up in the allowlist, the marker text is ignored.  Uses pyyaml (in the builtin
+    allowlist) with a python_version marker to confirm no hard failure.
+    """
+    diff = (
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        " [project.dependencies]\n"
+        "+  \"pyyaml>=6.0; python_version < '3.12'\",\n"
+    )
+    specs = ldg.find_added_deps(diff)
+    assert len(specs) == 1, f"Expected 1 spec, got {specs}"
+    # 'pyyaml' is in _BUILTIN_ALLOWLIST — evaluate must pass (no hard failures)
+    ok, reasons = ldg.evaluate(
+        added_dep_specs=specs,
+        added_file_texts={},
+    )
+    hard = [r for r in reasons if r.startswith("HARD:")]
+    assert ok is True, f"Valid marker spec should not hard-fail; hard reasons: {hard}"
+
+
+def test_find_added_deps_git_url_with_egg_fragment():
+    """Bug 2 ('#' inside quoted string truncated): a git+url dep with '#egg=...'
+    must be preserved intact — the '#' must NOT be treated as a TOML comment
+    start when it appears inside a quoted string.
+    """
+    diff = (
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        " [project.dependencies]\n"
+        '+  "pkg @ git+https://example.com/p.git#egg=pkg",\n'
+    )
+    specs = ldg.find_added_deps(diff)
+    assert len(specs) == 1, f"Expected exactly 1 spec, got {specs}"
+    assert "#egg=pkg" in specs[0], f"URL fragment was stripped: {specs[0]!r}"
+
+
+def test_disallowed_license_in_own_source_with_spdx_header():
+    """Bug 3 (own-source SPDX early-exit): the gate's own source now has an MIT
+    SPDX header, so disallowed_license_in must return None (early-exit on MIT)
+    even though the file contains explanatory comments that include the word
+    'proprietary' — the prose patterns are never consulted after an allowed SPDX.
+    """
+    import os
+
+    gate_path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "scripts", "ci", "license_dep_gate.py"
+    )
+    with open(gate_path) as fh:
+        content = fh.read()
+    # Confirm the SPDX header is present
+    assert (
+        "SPDX-License-Identifier: MIT" in content
+    ), "Gate script is missing '# SPDX-License-Identifier: MIT' header"
+    result = ldg.disallowed_license_in(content)
+    assert result is None, f"Gate's own source flagged despite MIT SPDX header: {result!r}"
+
+
+def test_disallowed_license_in_bare_proprietary_confidential_no_spdx_caught():
+    """Bug 3b (bare notice without SPDX): a file with no SPDX header but a
+    comment line `# Proprietary and Confidential` must be flagged.
+    """
+    text = "# Proprietary and Confidential\nimport os\n"
+    result = ldg.disallowed_license_in(text)
+    assert result is not None, "Bare Proprietary+Confidential notice (no SPDX) must be caught"
+
+
+def test_find_added_deps_triple_quote_in_dep_array_is_hard_error():
+    """Bug 4 (triple-quote guard): a TOML triple-quoted string inside a dep array
+    must produce a hard-failure sentinel rather than silently extracting zero deps.
+    """
+    diff = (
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        " [project.dependencies]\n"
+        '+  """bad multiline dep""",\n'
+    )
+    specs = ldg.find_added_deps(diff)
+    assert (
+        "__TRIPLE_QUOTE_ERROR__" in specs
+    ), f"Triple-quote in dep array must produce TRIPLE_QUOTE_ERROR sentinel; got {specs}"
+    ok, reasons = ldg.evaluate(
+        added_dep_specs=specs,
+        added_file_texts={},
+    )
+    assert ok is False, "Triple-quote sentinel must cause a hard failure in evaluate()"
+    hard = [r for r in reasons if r.startswith("HARD:")]
+    assert any(
+        "multiline" in r.lower() for r in hard
+    ), f"Hard reason must mention 'multiline'; got: {hard}"

@@ -33,32 +33,41 @@ import sys
 sys.path.insert(0, os.path.dirname(__file__))
 from pr_meta_checks import extract_section  # noqa: E402  (sibling CI helper, reused)
 
-_DEF_RE = re.compile(r"^([+-])\s*(?:async\s+)?def\s+(test_\w+)\s*\(")
+_DEL_DEF_RE = re.compile(r"^-\s*(?:async\s+)?def\s+(test_\w+)\s*\(")
+_ADD_DEF_RE = re.compile(r"^\+\s*(?:async\s+)?def\s+(test_\w+)\s*\(")
+_DEL_CLASS_RE = re.compile(r"^-\s*class\s+(Test\w+)\b")
+_ADD_CLASS_RE = re.compile(r"^\+\s*class\s+(Test\w+)\b")
 _REMOVED_ASSERT_RE = re.compile(r"^-\s*assert\b")
-_ADDED_ASSERT_RE = re.compile(r"^\+\s*assert\b")
+_REMOVED_PARAMETRIZE_RE = re.compile(r"^-.*parametrize\s*\(")
 
 
-def find_deleted_test_funcs(diff: str) -> list[str]:
-    """Return test functions removed and NOT re-added in the same diff (net deletions)."""
+def find_deleted_tests(diff: str) -> list[str]:
+    """Test functions/classes removed and NOT re-added in the same diff (net deletions).
+    `\\s*` after the sign handles indented test methods inside a removed class."""
     removed: set[str] = set()
     added: set[str] = set()
     for line in diff.splitlines():
-        m = _DEF_RE.match(line)
-        if not m:
-            continue
-        (removed if m.group(1) == "-" else added).add(m.group(2))
+        for rm_re, add_re in ((_DEL_DEF_RE, _ADD_DEF_RE), (_DEL_CLASS_RE, _ADD_CLASS_RE)):
+            mr = rm_re.match(line)
+            if mr:
+                removed.add(mr.group(1))
+            ma = add_re.match(line)
+            if ma:
+                added.add(ma.group(1))
     return sorted(removed - added)
 
 
-def count_net_removed_asserts(diff: str) -> int:
-    """Net removed `assert` lines (removed - added), floored at 0."""
-    removed = added = 0
-    for line in diff.splitlines():
-        if _REMOVED_ASSERT_RE.match(line):
-            removed += 1
-        elif _ADDED_ASSERT_RE.match(line):
-            added += 1
-    return max(0, removed - added)
+def count_removed_asserts(diff: str) -> int:
+    """Count REMOVED `assert` lines. ANY removal counts (a modification removes the old line),
+    so weakening by EDIT (e.g. `== 200` -> `>= 200`) is caught, not just net deletions —
+    the C9-found bypass. A net-new test removes nothing, so it stays at 0."""
+    return sum(1 for line in diff.splitlines() if _REMOVED_ASSERT_RE.match(line))
+
+
+def count_removed_parametrize(diff: str) -> int:
+    """Count REMOVED `parametrize(...)` lines — dropping a param case (a common way to 'fix' a
+    failing case) removes/modifies the decorator line (C9-found bypass)."""
+    return sum(1 for line in diff.splitlines() if _REMOVED_PARAMETRIZE_RE.match(line))
 
 
 def has_test_changes_block(pr_body: str) -> bool:
@@ -71,14 +80,21 @@ def has_test_changes_block(pr_body: str) -> bool:
 
 
 def evaluate(diff: str, pr_body: str) -> tuple[bool, list[str]]:
-    """(ok, reasons). Fails if a deletion/weakening is unexplained by a `## Test Changes` block."""
-    deleted = find_deleted_test_funcs(diff)
-    net_removed = count_net_removed_asserts(diff)
+    """(ok, reasons). Fails if a deletion/weakening is unexplained by a `## Test Changes` block.
+
+    Conservative by design: ANY removed assert / parametrize line (not just net deletions)
+    triggers the block requirement, so edit-weakening and case-dropping are caught. The block
+    is the escape hatch for deliberate, reviewer-approved test changes (C6)."""
+    deleted = find_deleted_tests(diff)
+    removed_asserts = count_removed_asserts(diff)
+    removed_param = count_removed_parametrize(diff)
     reasons: list[str] = []
     if deleted:
-        reasons.append(f"deletes test function(s): {', '.join(deleted)}")
-    if net_removed > 0:
-        reasons.append(f"net-removes {net_removed} assertion(s)")
+        reasons.append(f"deletes test function/class(es): {', '.join(deleted)}")
+    if removed_asserts:
+        reasons.append(f"removes/weakens {removed_asserts} assertion line(s)")
+    if removed_param:
+        reasons.append(f"removes/modifies {removed_param} parametrize line(s)")
     if reasons and not has_test_changes_block(pr_body):
         return False, [r + " without an approved '## Test Changes' block (C6)" for r in reasons]
     return True, []

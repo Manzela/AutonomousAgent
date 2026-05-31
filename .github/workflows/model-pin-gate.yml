@@ -56,40 +56,20 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
 
-      - name: Scan all config files for unpinned model refs
+      - name: Scan config for unpinned model refs + stamp harness-config sha (single call)
         id: model-pin-scan
+        # ONE invocation does BOTH the pin scan and the harness-config sha stamp, so the
+        # GHA step summary is written exactly once (C9 #178: was duplicated by two calls).
+        # system_prompt_sha = the integrity.soul_md_sha256 pin already in limits.yaml.
         run: |
           set -uo pipefail
-          python3 scripts/ci/model_pin_check.py \
-            --paths config/hermes/model-tiers.yaml,config/limits.yaml,deploy/litellm/config.yaml \
-            | tee model-pin-gate-evidence.txt
-          exit ${PIPESTATUS[0]}
-
-      - name: Stamp harness-config sha into step summary
-        # Reads the harness-config fields from config/limits.yaml and the hermes
-        # cli-config SOUL.md sha, then stamps the sha into the step summary.
-        # The sha changes when reasoning_effort / system_prompt_sha / thinking /
-        # compaction changes — making harness-config drift visible in PR diffs.
-        #
-        # Currently reads static fields from limits.yaml (no secret required);
-        # system_prompt_sha is the integrity.soul_md_sha256 pin already present
-        # in limits.yaml. This is purely informational — the gate does not
-        # block on harness-config sha drift (that gate belongs to SP-G1).
-        if: always()
-        run: |
-          set -uo pipefail
-          # Extract the soul_md sha from limits.yaml (already integrity-pinned).
           SOUL_SHA="$(grep 'soul_md_sha256' config/limits.yaml | awk '{print $2}' | tr -d '# ')"
-          # Extract reasoning_effort (not yet in limits.yaml; use sentinel for now).
-          # When the field is added to limits.yaml or cli-config, update this extraction.
-          REASONING_EFFORT="high"
+          REASONING_EFFORT="high"   # harness-config field (also in the change-detect set below)
           python3 scripts/ci/model_pin_check.py \
             --paths config/hermes/model-tiers.yaml,config/limits.yaml,deploy/litellm/config.yaml \
             --harness-config "reasoning_effort=${REASONING_EFFORT},system_prompt_sha=${SOUL_SHA}" \
-            >> model-pin-gate-evidence.txt 2>&1 || true
-          echo '---' >> model-pin-gate-evidence.txt
-          echo 'harness-config sha stamped (informational; SP-G1 regression gate is advisory)' \
-            >> model-pin-gate-evidence.txt
+            | tee model-pin-gate-evidence.txt
+          exit ${PIPESTATUS[0]}
 
       - name: Detect model/harness-config change in PR diff (advisory SP-G1 trigger)
         # ADVISORY: emits a warning if a model or config file changed, noting that SP-G1
@@ -106,6 +86,7 @@ jobs:
             "config/hermes/model-tiers.yaml"
             "config/limits.yaml"
             "deploy/litellm/config.yaml"
+            ".github/workflows/model-pin-gate.yml"
           )
           TRIGGERED=false
           for f in "${CONFIG_FILES[@]}"; do

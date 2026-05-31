@@ -195,3 +195,66 @@ def test_evaluate_empty_config_is_ok():
     ok, reasons = mpc.evaluate(["# no models here\n"])
     assert ok is True
     assert reasons == []
+
+
+# ---------------------------------------------------------------------------
+# Broadening (C9 review of #178): catch refs under non-model keys + fallbacks;
+# ignore comments; do not false-positive on non-model file paths.
+# ---------------------------------------------------------------------------
+
+
+def test_find_refs_catches_provider_prefix_under_non_model_key():
+    # the #178 gap: a ref under a NON-model key (per_axis_model child) must still be found
+    text = "per_axis_model:\n  code-correctness: vertex_ai/some-model:latest\n"
+    refs = mpc.find_model_refs(text)
+    assert "vertex_ai/some-model:latest" in refs
+    ok, _ = mpc.evaluate([text])
+    assert ok is False
+
+
+def test_find_refs_catches_fallbacks_list_items():
+    text = "fallbacks:\n  - vertex_ai/claude-opus-4-7: [openrouter/anthropic/foo:latest]\n"
+    refs = mpc.find_model_refs(text)
+    assert "vertex_ai/claude-opus-4-7" in refs
+    assert "openrouter/anthropic/foo:latest" in refs
+    ok, _ = mpc.evaluate([text])
+    assert ok is False  # the :latest fallback is unpinned
+
+
+def test_find_refs_ignores_commented_out_ref():
+    # the #178 gap #2: a commented-out unpinned ref must NOT trigger the gate
+    text = "# model: badregistry/x:latest\nmodel: vertex_ai/claude-opus-4-7\n"
+    refs = mpc.find_model_refs(text)
+    assert "badregistry/x:latest" not in refs
+    ok, _ = mpc.evaluate([text])
+    assert ok is True
+
+
+def test_find_refs_ignores_non_model_filepath():
+    # a file-path value (has '/', NOT provider-prefixed, NOT under a model key) is not a ref
+    text = "config_path: config/limits.yaml\nsoul_path: docs/soul.md\n"
+    assert mpc.find_model_refs(text) == []
+
+
+# ---------------------------------------------------------------------------
+# False-positive fix (C9 cross-vendor review): provider name mid-path must NOT match
+# ---------------------------------------------------------------------------
+
+
+def test_provider_name_mid_path_is_not_a_model_ref():
+    """A provider name that appears as a PATH SEGMENT (not a value-position token)
+    must NOT be captured as a model ref.  E.g. /var/google/models/foo.txt should
+    produce no refs even though 'google' is in _PROVIDERS.
+    """
+    text = "cache_dir: /var/google/models/foo.txt\n"
+    refs = mpc.find_model_refs(text)
+    assert refs == [], f"expected no refs, got {refs!r}"
+
+
+def test_provider_prefix_in_value_position_is_still_found():
+    """Regression: a real value-position provider ref (list item) must still be captured
+    after the lookbehind fix.
+    """
+    text = "  - vertex_ai/claude-opus-4-7\n"
+    refs = mpc.find_model_refs(text)
+    assert "vertex_ai/claude-opus-4-7" in refs, f"expected ref in {refs!r}"

@@ -56,36 +56,75 @@ from typing import Iterable
 # The pattern is deliberately conservative: anything with a '/' that looks
 # like provider/model is a candidate; is_pinned_model() then adjudicates.
 # ---------------------------------------------------------------------------
-_MODEL_REF_RE = re.compile(
-    r"(?:model|model_name|default)\s*:\s*[\"']?([a-zA-Z0-9_][a-zA-Z0-9_.\-/@:]*\/[a-zA-Z0-9_.\-/@:]+)[\"']?"
+# Detection is TWO-PRONGED (broadened per the C9 review of #178, which found the
+# key-anchored-only regex MISSED refs under per_axis_model and litellm fallbacks):
+#   (a) a value under a model-ish key (model:, model_name:, *model*:, default:), and
+#   (b) ANY provider-prefixed token (vertex_ai/..., openrouter/..., etc.) appearing
+#       ANYWHERE — catches per_axis_model children, fallbacks keys AND list items,
+#       regardless of the surrounding key.
+# YAML comments are stripped first so a commented-out ref never false-FAILs.
+_MODEL_KEY_RE = re.compile(
+    r"(?:[A-Za-z0-9_]*model[A-Za-z0-9_]*|default)\s*:\s*[\"']?"
+    r"([a-zA-Z0-9_][a-zA-Z0-9_.\-/@:]*\/[a-zA-Z0-9_.\-/@:]+)[\"']?",
+    re.IGNORECASE,
 )
+
+# litellm/vertex provider prefixes used in this repo + common ones (future-proofing).
+_PROVIDERS = (
+    "vertex_ai",
+    "openrouter",
+    "hosted_vllm",
+    "anthropic",
+    "google",
+    "openai",
+    "azure",
+    "bedrock",
+    "gemini",
+    "mistral",
+    "cohere",
+    "groq",
+    "together_ai",
+    "replicate",
+    "ollama",
+    "huggingface",
+    "fireworks_ai",
+    "deepseek",
+    "xai",
+)
+_PROVIDER_PREFIX_RE = re.compile(r"\b(?:" + "|".join(_PROVIDERS) + r")/[A-Za-z0-9_.\-/@:]+")
+
+# Trailing YAML separators stripped off a provider-prefix match (a fallbacks KEY
+# 'vertex_ai/x: [...]' captures 'vertex_ai/x:' — the bare ':' is a separator, not a tag).
+_TRAILING_SEP_RE = re.compile(r"[:,\]\}\s\"']+$")
 
 # A ref ending in ':latest' (case-insensitive) is unpinned.
 _LATEST_RE = re.compile(r":latest\s*$", re.IGNORECASE)
-
-# Known pinned-version suffixes/patterns. A ref is pinned if it:
-#   (a) does NOT end in :latest, AND
-#   (b) its last path segment contains a digit (i.e., is versioned), OR
-#   (c) it contains @sha256: (digest-pinned), OR
-#   (d) it matches a known-pinned set pattern (== or == prefix).
-#
-# Bare names with no version component (e.g., "openai/gpt") are considered
-# UNPINNED because there is no specific version to diff against.
 _DIGEST_RE = re.compile(r"@sha256:[a-fA-F0-9]{8,}")
 _VERSION_COMPONENT_RE = re.compile(r"[0-9]")
 
 
-def find_model_refs(text: str) -> list[str]:
-    """Extract all model ID strings from YAML/config text.
+def _strip_comments(text: str) -> str:
+    """Drop YAML comments (a '#' at line start or preceded by whitespace) so a
+    commented-out model ref does not trigger the gate (C9 finding #2)."""
+    out: list[str] = []
+    for line in text.splitlines():
+        m = re.search(r"(?:^|\s)#", line)
+        out.append(line[: m.start()] if m else line)
+    return "\n".join(out)
 
-    Returns the raw captured strings (e.g. 'vertex_ai/claude-opus-4-7').
-    Deduplicates while preserving first-occurrence order.
+
+def find_model_refs(text: str) -> list[str]:
+    """Extract model ID strings via (a) model-ish keys + (b) provider-prefixed tokens
+    appearing anywhere. Strips comments first; dedups preserving first-occurrence order.
     """
+    text = _strip_comments(text)
     seen: dict[str, None] = {}
-    for m in _MODEL_REF_RE.finditer(text):
-        ref = m.group(1).strip()
-        if ref not in seen:
-            seen[ref] = None
+    for m in _MODEL_KEY_RE.finditer(text):
+        seen.setdefault(m.group(1).strip(), None)
+    for m in _PROVIDER_PREFIX_RE.finditer(text):
+        ref = _TRAILING_SEP_RE.sub("", m.group(0))
+        if "/" in ref:
+            seen.setdefault(ref, None)
     return list(seen.keys())
 
 

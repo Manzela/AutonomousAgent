@@ -127,6 +127,30 @@ assertions:
       echo "OK: sha changed from $sha_before to $sha_after"
     expect_exit: 0
 
+  - id: detects-latest-under-non-model-key
+    description: >
+      C9 (#178 gap): a ':latest' ref under a NON-model key (per_axis_model child) MUST fail —
+      detection is provider-prefix-based, not just model-key-based. Exits 0 only if the gate failed.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'per_axis_model:\n  code-correctness: vertex_ai/some-model:latest\n' > "$tmp"
+      if python3 scripts/ci/model_pin_check.py --paths "$tmp" >/dev/null 2>&1; then
+        echo "FAIL: ':latest' under a non-model key not caught"; rm -f "$tmp"; exit 1
+      fi
+      rm -f "$tmp"; echo "OK: non-model-key :latest rejected (gate failed as required)"
+    expect_exit: 0
+
+  - id: ignores-commented-out-ref
+    description: >
+      C9 (#178 gap): a commented-out unpinned ref MUST NOT trigger the gate (YAML comments are
+      stripped). A file with only a commented ':latest' plus a pinned ref passes (green).
+    cmd: |
+      tmp="$(mktemp)"
+      printf '# model: badregistry/x:latest\nmodel: vertex_ai/claude-opus-4-7\n' > "$tmp"
+      python3 scripts/ci/model_pin_check.py --paths "$tmp"
+      rc=$?; rm -f "$tmp"; exit $rc
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/model-pin-gate.yml
   artifact: model-pin-gate-evidence (CI-produced, re-runs this via run_acceptance.py)

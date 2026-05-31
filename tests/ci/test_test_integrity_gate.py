@@ -47,8 +47,8 @@ RELAX_DIFF = """diff --git a/tests/unit/test_y.py b/tests/unit/test_y.py
 """
 
 
-def test_find_deleted_test_funcs():
-    assert tig.find_deleted_test_funcs(DELETE_DIFF) == [
+def test_find_deleted_tests():
+    assert tig.find_deleted_tests(DELETE_DIFF) == [
         "test_deleted_one",
         "test_deleted_two",
     ]
@@ -56,14 +56,42 @@ def test_find_deleted_test_funcs():
 
 def test_find_deleted_ignores_renames_kept_in_diff():
     # a function present on both - and + sides is not a net deletion
-    assert tig.find_deleted_test_funcs(RENAME_DIFF) == []
+    assert tig.find_deleted_tests(RENAME_DIFF) == []
 
 
-def test_count_net_removed_asserts():
-    # DELETE_DIFF removes 2 asserts (in deleted fns), adds 0
-    assert tig.count_net_removed_asserts(DELETE_DIFF) == 2
-    # RELAX_DIFF removes 2 asserts, adds 1 -> net 1
-    assert tig.count_net_removed_asserts(RELAX_DIFF) == 1
+def test_find_deleted_includes_test_classes():
+    diff = (
+        "--- a/tests/unit/test_c.py\n+++ b/tests/unit/test_c.py\n@@ -1,3 +0,0 @@\n"
+        "-class TestThing:\n-    def test_a(self):\n-        assert 1\n"
+    )
+    got = tig.find_deleted_tests(diff)
+    assert "TestThing" in got and "test_a" in got
+
+
+def test_count_removed_asserts_counts_any_removal():
+    # ANY removed assert counts (NOT net) so edit-weakening is caught
+    assert tig.count_removed_asserts(DELETE_DIFF) == 2
+    assert tig.count_removed_asserts(RELAX_DIFF) == 2
+
+
+def test_count_removed_parametrize():
+    diff = (
+        "--- a/tests/t.py\n@@ -1,1 +1,1 @@\n"
+        "-@pytest.mark.parametrize('x', [1, 2, 3])\n"
+        "+@pytest.mark.parametrize('x', [1, 2])\n"
+    )
+    assert tig.count_removed_parametrize(diff) == 1
+
+
+def test_evaluate_assertion_weakening_by_edit_fails():
+    # `== 200` -> `>= 200`: net assert count unchanged, but the old line is removed -> caught
+    weaken = (
+        "--- a/tests/unit/test_w.py\n+++ b/tests/unit/test_w.py\n@@ -1,2 +1,2 @@\n"
+        " def test_status():\n-    assert status == 200\n+    assert status >= 200\n"
+    )
+    ok, reasons = tig.evaluate(weaken, "## Summary\nno block\n")
+    assert ok is False
+    assert any("assertion" in r for r in reasons)
 
 
 def test_has_test_changes_block_none_is_false():

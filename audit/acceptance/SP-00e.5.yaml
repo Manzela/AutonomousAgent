@@ -666,6 +666,56 @@ assertions:
       PYEOF
     expect_exit: 0
 
+  - id: accepts-first-party-decorator-factory
+    description: >
+      Reviewer-raised scenario (permanent guard): a first-party decorator FACTORY
+      used as @my_tool() (called with parentheses) in a reachable entrypoint → my_tool
+      must NOT be flagged dead. A truly-dead sibling def orphan() in the same module
+      MUST be flagged. Both halves are asserted so this is a real red-green: a regression
+      that removes the decorator-factory call-site edge would break the first assertion;
+      removing dead-code detection would break the second.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      tools_code = (
+          "def my_tool():\n"
+          "    def deco(fn):\n"
+          "        return fn\n"
+          "    return deco\n\n"
+          "def orphan():\n"
+          "    return 99\n"
+      )
+      main_code = (
+          "from app.tools import my_tool\n\n"
+          "@my_tool()\n"
+          "def handler():\n"
+          "    return 1\n\n"
+          "if __name__ == '__main__':\n"
+          "    handler()\n"
+      )
+      files = {"app/tools.py": tools_code, "app/main.py": main_code}
+      lines = tools_code.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/app/tools.py b/app/tools.py\n"
+          "--- a/app/tools.py\n+++ b/app/tools.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n" + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      combined = " ".join(r.hard_failures)
+      if "my_tool" in combined:
+          print("FAIL: my_tool() used as @my_tool() decorator factory must NOT be flagged dead:", r.hard_failures)
+          sys.exit(1)
+      if "orphan" not in combined:
+          print("FAIL: orphan() has no call site and MUST be flagged dead:", r.hard_failures)
+          sys.exit(1)
+      print("OK: my_tool() wired via @my_tool() usage; orphan() correctly flagged")
+      PYEOF
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/dead-code-gate.yml
   artifact: dead-code reachability gate (diff-vs-callgraph) + acceptance re-run + gate unit tests

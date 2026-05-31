@@ -1520,3 +1520,77 @@ def test_fixc_from_dot_mod_import_in_init_resolves_correctly() -> None:
         f"from .utils import x in __init__.py must resolve to app.core.utils. "
         f"app.core:<module> edges: {core_edges}"
     )
+
+
+# ===========================================================================
+# 21. First-party decorator FACTORY called with parentheses must be WIRED
+# ===========================================================================
+
+
+def test_first_party_decorator_factory_call_is_wired() -> None:
+    """Reviewer-raised scenario: a first-party decorator FACTORY used as @my_tool()
+    (called with parentheses) must NOT be flagged as dead code; only the truly-dead
+    sibling orphan() in the same module must be flagged.
+
+    The scenario:
+      - app/tools.py defines public `def my_tool()` (returns a decorator) AND a
+        truly-dead `def orphan()` (negative control).
+      - app/main.py imports my_tool and applies it as @my_tool() on handler().
+        The if __name__ block calls handler(), making handler() reachable, and
+        the @my_tool() usage creates a call-site edge for my_tool itself.
+
+    Both halves are asserted so this is a real red-green: a future regression that
+    removes the decorator-factory call-site edge would flip the my_tool assertion;
+    removing orphan's dead-code detection would flip the orphan assertion.
+    """
+    tools_code = textwrap.dedent("""\
+        def my_tool():
+            def deco(fn):
+                return fn
+            return deco
+
+        def orphan():
+            return 99
+    """)
+    main_code = textwrap.dedent("""\
+        from app.tools import my_tool
+
+        @my_tool()
+        def handler():
+            return 1
+
+        if __name__ == "__main__":
+            handler()
+    """)
+    files = {
+        "app/tools.py": tools_code,
+        "app/main.py": main_code,
+    }
+    reader = make_reader(files)
+    # The diff adds both my_tool and orphan as new public symbols in app/tools.py
+    lines = tools_code.splitlines()
+    added = "\n".join("+" + line for line in lines)
+    diff = (
+        f"diff --git a/app/tools.py b/app/tools.py\n"
+        f"--- a/app/tools.py\n+++ b/app/tools.py\n"
+        f"@@ -0,0 +1,{len(lines)} @@\n"
+        f"{added}\n"
+    )
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    combined = " ".join(result.hard_failures)
+    # my_tool is wired via @my_tool() in main.py — must NOT be flagged
+    assert "my_tool" not in combined, (
+        "my_tool() used as @my_tool() decorator factory must NOT be flagged dead: "
+        + str(result.hard_failures)
+    )
+    # orphan() has no call site — must be flagged (negative control)
+    assert "orphan" in combined, "orphan() has no call site and MUST be flagged dead: " + str(
+        result.hard_failures
+    )

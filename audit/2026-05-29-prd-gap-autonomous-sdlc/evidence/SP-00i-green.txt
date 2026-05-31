@@ -1,0 +1,3 @@
+== SP-00i GREEN: the real repo configs (all pinned) ==
+== model-pin-gate: scanned 3 config file(s), 14 model ref(s), 0 unpinned => PASS ==
+exit=0

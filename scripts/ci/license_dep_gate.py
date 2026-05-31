@@ -50,13 +50,20 @@ _DISALLOWED_SPDX_PREFIXES: tuple[str, ...] = (
 )
 
 # Prose patterns that are checked ONLY when there is NO SPDX header.
-# Intentionally narrow: only match "All Rights Reserved" when it appears on a
-# comment line (starts with `#`), which is the canonical form of a copyright
-# reservation notice in source files.  This avoids false positives on source
-# files — like this gate script itself — that merely MENTION the phrase in a
-# docstring or comment explaining what the pattern means.
+# Intentionally narrow: only match canonical copyright-reservation notices when
+# they appear on a comment line (starts with `#`).  This avoids false positives
+# on source files — like this gate script itself — that merely MENTION these
+# phrases in a docstring or comment explaining what the pattern means.
+#
+# Pattern 1: "All Rights Reserved" — standard copyright reservation.
+# Pattern 2: "Proprietary and Confidential" (both words required on the same
+#   comment line) — the canonical dual-keyword notice form.  Requiring BOTH
+#   words prevents matching explanatory comments that use only one of them
+#   (e.g. a code comment that mentions "proprietary SPDX identifiers" without
+#   "confidential" is NOT a license notice and must not be flagged).
 _PROSE_DISALLOWED_PATTERNS: list[re.Pattern] = [
     re.compile(r"^#.*all\s+rights\s+reserved", re.IGNORECASE | re.MULTILINE),
+    re.compile(r"^#.*\bproprietary\b.*\bconfidential\b", re.IGNORECASE | re.MULTILINE),
 ]
 
 # Permissive safe list for SPDX identifiers found in file headers.
@@ -188,13 +195,11 @@ _POPULAR_PACKAGES: frozenset[str] = frozenset(
     }
 )
 
-# Regex: a dep specifier line inside pyproject.toml [dependencies] or extras.
-# Matches lines like: `  "httpx>=0.27",` or `  'numpy==1.26',` or `  "bare-name",`
-_DEP_LINE_RE = re.compile(
-    r'^\+\s*[\'"]'
-    r"([A-Za-z0-9_\-\.]+)"  # package name (group 1)
-    r"([\s,;\[><=!@~'\"]|$)",  # version specifier, closing quote, or end-of-name
-)
+# Regex to extract all quoted dep specifier strings from a line inside a dep array.
+# Finds every "..." or '...' token; the caller filters by context (inside array).
+# This handles both single-dep lines and multi-dep lines like:
+#   "pkg1==1.0", "pkg2>=2.0"
+_QUOTED_SPEC_RE = re.compile(r"""["']([^"']+)["']""")
 
 # Version specifier: must have one of ==, >=, ~=, <=, !=, >, <, @ (URL/git).
 # Note: the multi-char operators (>=, <=, !=, ~=, ==) are listed FIRST so the
@@ -216,12 +221,45 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
 
     Only lines inside a [project.dependencies] or [project.optional-dependencies]
     section are considered (not e.g. tool.ruff or build-system sections).
+
+    Handles both multi-line arrays::
+
+        dependencies = [
+          "pkg>=1.0",
+        ]
+
+    and single-line (inline) arrays::
+
+        dependencies = ["pkg>=1.0"]
+        dependencies = ["pkg1==1.0", "pkg2>=2.0"]
+
+    as well as multiple dep specs on one added diff line.
     """
     in_dep_section = False
     specs: list[str] = []
 
+    def _extract_quoted_specs(line_content: str) -> list[str]:
+        """Extract all quoted dep specifiers from a string.
+
+        Strips inline TOML comments (text after '#' that is not inside a
+        quoted string) and trailing commas/whitespace from each match.
+        Returns an empty list if no quoted strings are found.
+        """
+        found = []
+        for raw_spec in _QUOTED_SPEC_RE.findall(line_content):
+            spec = raw_spec.strip()
+            # Drop inline TOML comments (# outside quotes)
+            if "#" in spec:
+                spec = spec[: spec.index("#")].strip()
+            spec = spec.rstrip(",").strip()
+            if spec:
+                found.append(spec)
+        return found
+
     for raw_line in pyproject_diff_text.splitlines():
-        # Track section boundaries (diff context lines start with ' ' or '-')
+        # Normalise the diff prefix: strip exactly one leading '+' or ' ' (context)
+        # so we can reason about the content regardless of diff prefix.
+        # We keep raw_line intact for the "is this an added line?" check below.
         stripped = raw_line.lstrip("+ ")
 
         if stripped.startswith("["):
@@ -246,15 +284,28 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
         #   gcp = [
         # These do NOT produce a section header line, so we detect them by
         # matching the key name on a context (space-prefixed) or added ('+')
-        # diff line.  We treat the assignment line itself as entering a dep
-        # section; the section ends when we hit the next TOML key or section.
-        if re.match(
+        # diff line.  We enter the dep section here and also extract any dep
+        # specs that appear on the SAME opener line (inline single-line arrays
+        # like `dependencies = ["bare-dep"]` or `dev = ["a==1", "b>=2"]`).
+        opener_match = re.match(
             r"^[+ ]?\s*(dependencies|optional-dependencies" r"|dev|gcp|a2a|test|extras)\s*=\s*\[",
             raw_line,
             re.IGNORECASE,
-        ):
+        )
+        if opener_match:
             in_dep_section = True
-            # The opening `[` line itself is not a dep spec — continue.
+            # If this is an ADDED line, extract any inline deps on the same line.
+            # E.g.: +dependencies = ["bare-dep"] or +dev = ["a==1", "b>=2"]
+            if raw_line.startswith("+"):
+                # Content after the opening `[`
+                after_bracket = raw_line[raw_line.index("[") + 1 :]
+                # If the array closes on the same line, limit to the content before `]`
+                if "]" in after_bracket:
+                    after_bracket = after_bracket[: after_bracket.index("]")]
+                    # Array also ends here — exit dep section after extracting
+                    in_dep_section = False
+                inline_specs = _extract_quoted_specs(after_bracket)
+                specs.extend(inline_specs)
             continue
 
         # A closing bracket on its own line exits the current dep array.
@@ -267,29 +318,18 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
         if re.match(r"^[+ ]?\s*[a-zA-Z_][a-zA-Z0-9_\-]*\s*=\s*[^\[]", raw_line):
             in_dep_section = False
 
-        # Only inspect ADDED lines ('+') inside a dep section
+        # Only inspect ADDED lines ('+') inside a dep section.
         if not raw_line.startswith("+"):
             continue
         if not in_dep_section:
             continue
 
-        m = _DEP_LINE_RE.match(raw_line)
-        if not m:
-            continue
-
-        # Extract the full specifier: everything from the opening quote to the
-        # closing quote (or end of line).
-        # Raw line looks like: +  "httpx>=0.27",   or +  'numpy',
-        inner = raw_line[1:].strip()  # drop the leading '+'
-        # Strip surrounding quote + trailing comma/whitespace
-        inner = inner.strip("'\"")
-        inner = inner.rstrip(",").strip()
-        # Drop inline TOML comments
-        if "#" in inner:
-            inner = inner[: inner.index("#")].strip()
-        inner = inner.strip("'\"")
-        if inner:
-            specs.append(inner)
+        # Extract ALL quoted dep specifiers on this added line.
+        # This handles both single-dep lines and multi-dep lines such as:
+        #   +  "pkg1==1.0", "pkg2>=2.0"
+        line_content = raw_line[1:]  # drop the leading '+'
+        line_specs = _extract_quoted_specs(line_content)
+        specs.extend(line_specs)
 
     return specs
 
@@ -297,14 +337,21 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
 def is_pinned_dep(spec: str) -> bool:
     """Return True if the dep specifier carries a version constraint.
 
-    Accepts: ==, >=, ~=, <=, !=, @ (URL / git ref).
-    Rejects: bare name ('requests') or extras-only ('requests[security]').
+    Accepts: ==, >=, ~=, <=, >, <, @ (URL / git ref).
+    Also accepts != when combined with a bounding operator (e.g. '>=1,!=1.5').
+    Rejects: bare name ('requests'), extras-only ('requests[security]'), or
+    a specifier where != is the ONLY operator (it is an exclusion that still
+    allows any other version — it is not a pin).
 
     >>> is_pinned_dep('httpx>=0.27')
     True
     >>> is_pinned_dep('httpx==0.27.0')
     True
     >>> is_pinned_dep('httpx @ git+https://...')
+    True
+    >>> is_pinned_dep('httpx!=1.0')
+    False
+    >>> is_pinned_dep('httpx>=1,!=1.5')
     True
     >>> is_pinned_dep('httpx')
     False
@@ -314,7 +361,14 @@ def is_pinned_dep(spec: str) -> bool:
     # Strip inline comments (text after '#') before checking for version specifiers,
     # so that a comment like "# >=2.28" is not mistaken for a real pin.
     spec_no_comment = spec.split("#")[0]
-    return bool(_VERSION_SPEC_RE.search(spec_no_comment))
+    # Find all version operators present in this spec.
+    operators = _VERSION_SPEC_RE.findall(spec_no_comment)
+    if not operators:
+        return False  # no operators at all — bare name or extras-only
+    # != alone is an exclusion, not a pin: reject if it is the only operator found.
+    if operators == ["!="]:
+        return False
+    return True
 
 
 def _levenshtein(a: str, b: str) -> int:

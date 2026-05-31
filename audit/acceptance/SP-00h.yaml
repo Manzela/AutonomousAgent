@@ -264,6 +264,100 @@ assertions:
       echo "OK: gate correctly hard-failed on unknown not-allowlisted dep"
     expect_exit: 0
 
+  - id: detects-inline-single-line-array-bare-dep
+    description: >
+      FINDING 1 (CRITICAL bypass): a dep added in a fully-inline single-line PEP-621
+      array (`+dependencies = ["bare-dep"]`) must NOT bypass the gate.  The opener-line
+      `continue` previously swallowed the inline content; this assertion is the hard
+      red-green that proves the fix holds.  Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/inline_array_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       name = "myapp"
+      +dependencies = ["bare-dep"]
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/inline_array_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: inline single-line array bypass NOT caught (Finding 1 critical)"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate caught bare dep in inline single-line PEP-621 array"
+    expect_exit: 0
+
+  - id: detects-two-deps-on-one-added-line
+    description: >
+      FINDING 1 (CRITICAL bypass): when two deps appear on one added diff line
+      (`"pkg1==1.0", "pkg2"`) the gate must extract BOTH as separate specifiers
+      and flag the unpinned/unknown one (pkg2).  Previously the whole line was
+      treated as one garbled specifier.  Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/two_deps_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "pyyaml==6.0", "bare-dep",
+       ]
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/two_deps_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: two-deps-on-one-line bypass NOT caught (Finding 1 critical)"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate caught the unpinned dep from a two-deps-on-one-line added diff line"
+    expect_exit: 0
+
+  - id: detects-proprietary-confidential-prose
+    description: >
+      FINDING 2 (prose regression): a source file with a comment line carrying
+      both 'Proprietary' and 'Confidential' (the canonical dual-keyword notice,
+      no SPDX header) must be rejected.  The pattern requires BOTH words on the
+      same '#'-comment line to avoid false-positives on explanatory comments.
+      Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '' > "$tmp/empty_diff.txt"
+      printf '# Proprietary and Confidential\nimport os\n' > "$tmp/prop_conf.py"
+      printf '%s\n' "$tmp/prop_conf.py" > "$tmp/added_files.txt"
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/empty_diff.txt" \
+           --added-files "$tmp/added_files.txt" >/dev/null 2>&1; then
+        echo "FAIL: Proprietary+Confidential prose not caught (Finding 2 regression)"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected Proprietary+Confidential prose notice"
+    expect_exit: 0
+
+  - id: not-equal-only-spec-is-unpinned
+    description: >
+      NIT: a dep specifier with only '!=' (e.g. 'pyyaml!=6.0') is an exclusion,
+      not a pin — it still allows any other version.  The gate must treat it as
+      unpinned and produce a hard failure.  Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/ne_only_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "pyyaml!=6.0",
+       ]
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/ne_only_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: !=only spec was not flagged as unpinned (NIT regression)"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly treats !=only spec as unpinned"
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/license-dep-gate.yml
   artifact: license-dep-gate (unit tests + acceptance re-run + advisory pip-licenses scan)

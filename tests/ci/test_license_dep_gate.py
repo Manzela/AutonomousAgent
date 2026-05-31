@@ -206,15 +206,29 @@ def test_disallowed_license_in_apache_is_clean():
     assert ldg.disallowed_license_in(text) is None
 
 
-def test_disallowed_license_in_proprietary_prose():
-    # Bare "Proprietary" in a comment is NOT caught by the prose scanner —
-    # the gate only flags copyleft when declared via SPDX-License-Identifier.
-    # A file that wants to mark itself proprietary should use an SPDX header;
-    # prose scanning for "Proprietary" would false-flag comments that merely
-    # discuss the concept (see docs, scripts, etc.).
+def test_disallowed_license_in_proprietary_confidential_prose():
+    # A comment line carrying BOTH "proprietary" AND "confidential" is the
+    # canonical dual-keyword license notice form and MUST be flagged (Finding 2).
+    # Requiring both words avoids false-positives on explanatory comments that
+    # use only one of the words (e.g. "proprietary SPDX identifiers").
     text = "# This software is Proprietary and confidential.\nimport os\n"
     result = ldg.disallowed_license_in(text)
-    assert result is None  # prose-only "Proprietary" is not flagged; SPDX header required
+    assert result is not None, "Proprietary+Confidential prose notice must be caught"
+
+
+def test_disallowed_license_in_proprietary_confidential_standalone():
+    # Bare '# Proprietary and Confidential' header (no SPDX) is flagged.
+    text = "# Proprietary and Confidential\nimport os\n"
+    result = ldg.disallowed_license_in(text)
+    assert result is not None, "Standalone Proprietary+Confidential notice must be caught"
+
+
+def test_disallowed_license_in_proprietary_alone_not_flagged():
+    # A comment that mentions only 'proprietary' (without 'confidential') is NOT
+    # flagged — it is likely an explanatory code comment, not a license notice.
+    text = "# Copyleft / proprietary SPDX identifiers are handled here.\nimport os\n"
+    result = ldg.disallowed_license_in(text)
+    assert result is None, "Single-word 'proprietary' in explanatory comment must not be flagged"
 
 
 def test_disallowed_license_in_lgpl_spdx():
@@ -391,3 +405,83 @@ def test_evaluate_unknown_non_typosquat_dep_hard_fails_with_allowlist_message():
     assert any(
         "allowlist" in r.lower() for r in hard
     ), f"Hard reason must mention 'allowlist' but got: {hard}"
+
+
+# ---------------------------------------------------------------------------
+# Cross-vendor review findings (2026-05-31)
+# ---------------------------------------------------------------------------
+
+
+def test_find_added_deps_inline_single_line_array_bare_dep_is_caught():
+    """FINDING 1 (CRITICAL): `dependencies = ["bare-dep"]` on a single added line
+    must NOT bypass the gate.  Previously the opener-line `continue` swallowed the
+    inline content, so this dep was silently ignored.
+    """
+    diff = '--- a/pyproject.toml\n+++ b/pyproject.toml\n [project]\n+dependencies = ["bare-dep"]\n'
+    specs = ldg.find_added_deps(diff)
+    assert any(
+        "bare-dep" in s for s in specs
+    ), f"Inline single-line array bypass: expected bare-dep in {specs}"
+    # The unpinned dep must be caught by the full evaluate path too
+    ok, reasons = ldg.evaluate(
+        added_dep_specs=specs,
+        added_file_texts={},
+        allowlist=frozenset(),
+        popular=frozenset({"requests"}),
+    )
+    assert ok is False, "Bare dep from inline single-line array must fail evaluate()"
+
+
+def test_find_added_deps_two_deps_on_one_added_line():
+    """FINDING 1 (CRITICAL): `"pkg1==1.0", "pkg2"` on a single `+` line must
+    produce TWO separate specifiers, not one garbled concatenation.
+    pkg2 (unpinned and unknown) must be caught; pkg1 must not be the cause.
+    """
+    diff = (
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        " [project]\n"
+        " dependencies = [\n"
+        '+  "pkg1==1.0", "pkg2",\n'
+        " ]\n"
+    )
+    specs = ldg.find_added_deps(diff)
+    assert any("pkg1" in s for s in specs), f"pkg1 missing from {specs}"
+    assert any("pkg2" in s for s in specs), f"pkg2 missing from {specs}"
+    # pkg1 is pinned; pkg2 is not — evaluate must flag pkg2 (not pkg1) as unpinned
+    pkg2_specs = [s for s in specs if s.startswith("pkg2")]
+    assert pkg2_specs, "pkg2 spec must be present separately"
+    assert not ldg.is_pinned_dep(pkg2_specs[0]), "pkg2 (bare) must be detected as unpinned"
+    pkg1_specs = [s for s in specs if s.startswith("pkg1")]
+    assert pkg1_specs and ldg.is_pinned_dep(pkg1_specs[0]), "pkg1==1.0 must be detected as pinned"
+
+
+def test_disallowed_license_in_gate_passes_on_own_source_strengthened():
+    """FINDING 2 (own-source constraint): after adding proprietary+confidential
+    prose detection, the gate must still return None for its own source file.
+    Both the original SPDX-based and the new prose patterns are exercised.
+    """
+    import os
+
+    gate_path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "scripts", "ci", "license_dep_gate.py"
+    )
+    with open(gate_path) as fh:
+        content = fh.read()
+    result = ldg.disallowed_license_in(content)
+    assert result is None, (
+        f"disallowed_license_in must return None for the gate's own source; got {result!r}. "
+        "The proprietary+confidential pattern must not match explanatory code comments."
+    )
+
+
+def test_is_pinned_dep_rejects_not_equal_only():
+    """NIT: `!=` as the sole operator is an exclusion, not a pin.
+    `pkg!=1.5` still allows any other version — it is NOT pinned.
+    """
+    assert ldg.is_pinned_dep("pkg!=1.5") is False, "!=only must be treated as unpinned"
+
+
+def test_is_pinned_dep_accepts_not_equal_combined_with_gte():
+    """NIT: `>=1,!=1.5` carries a bounding operator — it IS pinned."""
+    assert ldg.is_pinned_dep("pkg>=1,!=1.5") is True, ">=1,!=1.5 must be treated as pinned"

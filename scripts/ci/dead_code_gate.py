@@ -404,32 +404,51 @@ def _detect_self_waivers_in_diff(diff_text: str) -> list[str]:
     waiver added in file B.
 
     BUG 2 FIX (removed-line state corruption): only context and ADDED ('+') lines update
-    the in-string state; REMOVED ('-') lines and diff metadata ('---', '+++', '@@',
-    ``diff --git``) do not, so an attacker cannot remove a delimiter line to flip the
-    toggle and slip a waiver past on the next added line.
+    the in-string state; REMOVED ('-') lines and diff preamble metadata ('---', the
+    '+++ ' file header, ``diff --git``, and '@@' hunk headers) do not, so an attacker
+    cannot remove a delimiter line to flip the toggle and slip a waiver past on the next
+    added line.
+
+    EVASION GUARD (C9): the '+++ b/<path>' file header is recognised only in the per-file
+    preamble (``not in_hunk``); inside a hunk a '+++...' line is ADDED CONTENT (an added
+    line whose text starts with '++'), so it cannot be abused to flip the file path /
+    exclusion mid-file. ``in_hunk`` is set at the first '@@' and reset per ``diff --git``.
     """
     found: list[str] = []
     in_triple_string = False  # whether we're inside a triple-quoted block
     file_excluded = False  # whether the current file's added lines are out of scope
+    in_hunk = False  # whether we are past the first '@@' hunk header of the current file
 
     for raw_line in diff_text.splitlines():
         # BUG 1 FIX: reset per-file state at every new-file boundary.
         if raw_line.startswith("diff --git "):
             in_triple_string = False
             file_excluded = False
+            in_hunk = False
             continue
 
         # Capture the NEW-side path from the '+++ b/<path>' header to PATH-SCOPE the scan.
-        # This line is also diff metadata (skipped for state + marker purposes).
-        if raw_line.startswith("+++"):
+        # The file header lives in the per-file PREAMBLE, BEFORE the first '@@' hunk.
+        # EVASION GUARD (C9): once inside a hunk, a line starting with '+++' is ADDED
+        # CONTENT — an added line whose own text starts with '++' (e.g. '++x' -> diff line
+        # '+++x', or '++ x' -> '+++ x'), NOT a header. Treating it as a header would let an
+        # attacker flip file_excluded mid-file and skip a real waiver on the lines that
+        # follow. Gate on `not in_hunk` AND the literal '+++ ' header spacing so only the
+        # genuine preamble header matches; a space-only check is insufficient ('++ x').
+        if not in_hunk and raw_line.startswith("+++ "):
             file_excluded = _is_self_scan_excluded(_diff_new_path(raw_line))
             continue
 
-        # BUG 2 FIX: skip remaining metadata ('---', '@@') and REMOVED lines — they are
-        # not part of the new file and must not affect new-side string state.
-        is_added = raw_line.startswith("+")  # '+++' already handled above
+        # Hunk header: the body that follows (until the next 'diff --git') is content.
+        if raw_line.startswith("@@"):
+            in_hunk = True
+            continue
+
+        # BUG 2 FIX: skip remaining metadata ('---') and REMOVED lines — they are not part
+        # of the new file and must not affect new-side string state.
+        is_added = raw_line.startswith("+")  # '+++ ' preamble header already handled above
         is_removed = raw_line.startswith("-") and not raw_line.startswith("---")
-        is_metadata = raw_line.startswith("---") or raw_line.startswith("@@")
+        is_metadata = raw_line.startswith("---")
         if is_removed or is_metadata:
             continue
 

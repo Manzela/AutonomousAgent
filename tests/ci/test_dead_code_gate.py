@@ -1837,3 +1837,24 @@ def test_self_waiver_scan_flags_headerless_fragment() -> None:
     found = _detect_self_waivers_in_diff(f"+{MANUAL}\n+def fn():\n+    pass\n")
     assert found, "header-less fragment must remain in scope"
     assert any(MANUAL in s for s in found), found
+
+
+def test_self_waiver_scan_rejects_plusplus_header_evasion() -> None:
+    """C9 BLOCKER fix: an added CONTENT line whose own text starts with '++' becomes a
+    diff line starting with '+++'. It must NOT be parsed as a '+++ b/<path>' header — that
+    would flip file_excluded mid-hunk and skip a real waiver on the following lines. The
+    genuine manual-waiver decorator that follows in app/ runtime code MUST still be flagged.
+    Covers both the no-space ('++evil') and space ('++ evil') content forms; a space-only
+    header check would miss the latter."""
+    for evil_content in ("+++evil", "+++ evil"):  # added lines '++evil' / '++ evil'
+        diff = (
+            "diff --git a/app/evil.py b/app/evil.py\n"
+            "--- a/app/evil.py\n+++ b/app/evil.py\n"
+            "@@ -0,0 +1,4 @@\n"
+            f"{evil_content}\n"
+            f"+{MANUAL}\n"
+            "+def waived():\n+    return 1\n"
+        )
+        found = _detect_self_waivers_in_diff(diff)
+        assert found, f"in-hunk '+++' content {evil_content!r} must not evade the waiver scan"
+        assert any(MANUAL in s for s in found), found

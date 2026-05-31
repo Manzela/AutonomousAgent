@@ -825,6 +825,32 @@ assertions:
       PYEOF
     expect_exit: 0
 
+  - id: self-waiver-scan-rejects-plusplus-header-evasion
+    description: >
+      C9 BLOCKER regression: an added CONTENT line starting with '++' yields a diff line
+      starting with '+++'. It must NOT be parsed as a '+++ b/<path>' file header mid-hunk
+      (which would flip the path-exclusion and skip a real waiver). The marker that follows
+      in app/ runtime code MUST still be flagged. Covers no-space and space content forms.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import _detect_self_waivers_in_diff as scan
+      MK = "@" + "manual"
+      for evil in ("+++evil", "+++ evil"):
+          diff = (
+              "diff --git a/app/evil.py b/app/evil.py\n"
+              "--- a/app/evil.py\n+++ b/app/evil.py\n"
+              "@@ -0,0 +1,4 @@\n"
+              f"{evil}\n"
+              f"+{MK}\n+def waived():\n+    return 1\n"
+          )
+          if not scan(diff):
+              print(f"FAIL: in-hunk '+++' content {evil!r} evaded the self-waiver scan"); sys.exit(1)
+      print("OK: in-hunk '+++' content cannot evade the self-waiver scan")
+      PYEOF
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/dead-code-gate.yml
   artifact: dead-code reachability gate (diff-vs-callgraph) + acceptance re-run + gate unit tests

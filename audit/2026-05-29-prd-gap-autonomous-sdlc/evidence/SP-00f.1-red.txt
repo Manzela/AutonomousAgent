@@ -1,0 +1,3 @@
+== SP-00f.1 RED: pre-change github-mcp command (origin base) ==
+308:    command: ["http", "--port", "8003", "--toolsets", "all"]
+-> 'grep -rni toolsets.*all deploy/' would MATCH (hole open)

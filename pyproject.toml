@@ -8,6 +8,14 @@ dependencies = [
   "jsonschema>=4.20",
   "httpx>=0.27",
   "pydantic>=2.6",
+  # LangGraph spine (SP-00) — the durable orchestration graph + checkpointer.
+  # Promoted to DIRECT, version-pinned deps so the spine survives SP-22's garak
+  # deletion (previously langgraph reached the env ONLY via garak->langchain->
+  # langgraph — the sole path, verified by scripts/ci/sp00_garak_removal_probe.sh).
+  # SP-01 adds the AsyncPostgres checkpointer (langgraph-checkpoint-postgres +
+  # psycopg) under the prod path; the base graph + InMemorySaver live here.
+  "langgraph>=1.2.2,<2",
+  "langgraph-checkpoint>=4.1.1,<5",
   # Google Cloud SDKs — lazy-imported inside lib/trajectory/shipper.py and
   # scripts/run_trajectory_shipper.py. The lazy import keeps unit tests
   # mockable without the SDK installed, but production execution on the VM

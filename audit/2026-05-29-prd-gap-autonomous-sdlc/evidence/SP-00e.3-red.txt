@@ -1,0 +1,4 @@
+== SP-00e.3 RED: a first-party module importing a NONEXISTENT module ==
+::error::import-hygiene: pkg.bad -> ModuleNotFoundError: No module named '__nonexistent_module_xyz__'
+== import-hygiene: 1 modules | ok=0 failures=1 (ModuleNotFoundError/ImportError/SyntaxError) warn=0 => FAIL ==
+exit=1

@@ -1,0 +1,60 @@
+# SP-00e.3 — import-hygiene gate (Executor Contract C5, the import half).
+#
+# Clean-container `uv sync --frozen`, then import EVERY first-party module under app/ + lib/.
+# Any ModuleNotFoundError fails the PR (framework-cosplay / deleted-dep / garak-removal-breaks-
+# import signal). Other import-time exceptions are env-dependent → WARN (never fail).
+#
+# Scope: app/ + lib/ runtime packages, tests excluded. DEFERRED to a C5 follow-up:
+#   - `import-declared-deps` (a new pyproject dep must be imported from a reachable path);
+#   - the "no `uv pip install`" rule (ci.yml has 3 pre-existing uses to migrate first);
+#   - extending scope to scripts/ runtime entry points — they may pull dev/optional deps and
+#     run top-level work, so adding them needs its own clean-container validation (tracked).
+#
+# CODEOWNERS guards .github/, so this gate-config is reviewed by the operator + Gemini (C9).
+name: import-hygiene
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  import-hygiene:
+    name: import every first-party module (C5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+
+      - name: uv sync --frozen (locked set + runtime extras a2a/gcp, NOT dev)
+        # a2a (fastapi/cachetools/pyjwt) + gcp (asyncpg/pgvector/aiplatform) are the
+        # RUNTIME extras some first-party modules top-level-import. The heavy `dev` extra
+        # (pytest/garak/pyrit/ml) is intentionally excluded — test modules are out of scope.
+        run: uv sync --frozen --extra a2a --extra gcp
+
+      - name: Import every first-party module (fail on ModuleNotFoundError, C5)
+        run: uv run --frozen python scripts/ci/import_hygiene.py --roots app,lib
+
+      - name: Re-run SP-00e.3 acceptance (C1)
+        run: |
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00e.3.yaml
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_import_hygiene.py -q

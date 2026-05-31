@@ -90,8 +90,16 @@ _PROVIDERS = (
     "fireworks_ai",
     "deepseek",
     "xai",
+    "perplexity",
+    "voyage",
+    "cloudflare",
+    "watsonx",
+    "ai21",
+    "nvidia",
 )
-_PROVIDER_PREFIX_RE = re.compile(r"\b(?:" + "|".join(_PROVIDERS) + r")/[A-Za-z0-9_.\-/@:]+")
+# Negative lookbehind: the provider name must NOT be preceded by a word-char or '/'
+# so it cannot be a mid-path segment (e.g. /var/google/models/foo.txt is excluded).
+_PROVIDER_PREFIX_RE = re.compile(r"(?<![\w/])(?:" + "|".join(_PROVIDERS) + r")/[A-Za-z0-9_.\-/@:]+")
 
 # Trailing YAML separators stripped off a provider-prefix match (a fallbacks KEY
 # 'vertex_ai/x: [...]' captures 'vertex_ai/x:' — the bare ':' is a separator, not a tag).
@@ -141,6 +149,20 @@ def is_pinned_model(ref: str) -> bool:
       - ends with ':<version>' where the version part contains a digit
       - the last path segment itself contains a digit (e.g. claude-opus-4-7,
         gemini-3-5-flash, Qwen3-Coder-30B-A3B-Instruct)
+
+    Known heuristic limitations (accepted for this repo):
+      (a) Slash-free model refs under a model key (e.g. ``model: latest``) are
+          not detected by _PROVIDER_PREFIX_RE — this repo's refs always use the
+          ``provider/model`` form, so bare names only come through _MODEL_KEY_RE
+          and are already evaluated here.
+      (b) Digit-bearing moving family heads such as ``openai/gpt-4`` or
+          ``anthropic/claude-3-opus`` are judged PINNED because they contain a
+          digit.  The repo pins specific point-versions (e.g. claude-opus-4-7);
+          adding a blocklist of known unpinned family heads is deferred until a
+          real case surfaces.
+      (c) ``_strip_comments`` is line-level and not quote-aware: a ``#`` after
+          whitespace inside a quoted value would be stripped prematurely.  This
+          is acceptable because the repo's config files contain no such values.
     """
     if not ref or ref.strip().lower() == "latest":
         return False

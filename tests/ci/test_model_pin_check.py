@@ -234,3 +234,27 @@ def test_find_refs_ignores_non_model_filepath():
     # a file-path value (has '/', NOT provider-prefixed, NOT under a model key) is not a ref
     text = "config_path: config/limits.yaml\nsoul_path: docs/soul.md\n"
     assert mpc.find_model_refs(text) == []
+
+
+# ---------------------------------------------------------------------------
+# False-positive fix (C9 cross-vendor review): provider name mid-path must NOT match
+# ---------------------------------------------------------------------------
+
+
+def test_provider_name_mid_path_is_not_a_model_ref():
+    """A provider name that appears as a PATH SEGMENT (not a value-position token)
+    must NOT be captured as a model ref.  E.g. /var/google/models/foo.txt should
+    produce no refs even though 'google' is in _PROVIDERS.
+    """
+    text = "cache_dir: /var/google/models/foo.txt\n"
+    refs = mpc.find_model_refs(text)
+    assert refs == [], f"expected no refs, got {refs!r}"
+
+
+def test_provider_prefix_in_value_position_is_still_found():
+    """Regression: a real value-position provider ref (list item) must still be captured
+    after the lookbehind fix.
+    """
+    text = "  - vertex_ai/claude-opus-4-7\n"
+    refs = mpc.find_model_refs(text)
+    assert "vertex_ai/claude-opus-4-7" in refs, f"expected ref in {refs!r}"

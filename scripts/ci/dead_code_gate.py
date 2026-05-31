@@ -9,7 +9,7 @@ config/dead_code_entrypoints.txt allowlist.
 
 Anti-pattern killed: dead code shipped as ticked boxes.
 
-Approximation note (documented per design):
+Approximation notes (documented per design):
   - Name resolution is approximate (match by symbol short-name within first-party
     symbols, preferring same-module). This means:
       (a) Two symbols with the same short name from different modules may create
@@ -19,7 +19,16 @@ Approximation note (documented per design):
   - These approximate false negatives are acceptable (conservative toward safety
     of shipping code) but are noted here for auditability.
   - False positives (code flagged as dead when it's actually used) are minimized
-    by including value-reference wiring (see build_callgraph).
+    by:
+      (a) Value-reference wiring — a symbol passed as a value is considered wired.
+      (b) Import→module edge — importing a first-party module makes its module-level
+          code (including decorator registrations) reachable.
+      (c) Decorator wiring — a decorated public symbol in a reachable module is
+          wired (the decorator is the call site that registers it).
+      (d) Class→public-method edge — public methods of a reachable class are wired
+          to handle polymorphic/override dispatch patterns (e.g. AbstractSandbox
+          subclasses). This is a granularity reduction: all public methods of a
+          reachable class are considered reachable. Documented here for auditability.
 
 STDLIB ONLY — no third-party imports.
 """
@@ -259,6 +268,10 @@ def _detect_self_waivers_in_diff(diff_text: str) -> list[str]:
         Python code, not inside a docstring or string literal context.
 
     We track triple-quoted string context across lines to exclude docstring content.
+
+    FIX 5: Before counting triple-quotes, strip comment portions (text after unquoted '#')
+    so that a line like `# \"\"\"` does NOT toggle the triple-string state — it's a comment,
+    not an actual triple-quoted string delimiter.
     """
     found: list[str] = []
     in_triple_string = False  # tracks whether we're inside a """...""" or '''...''' block
@@ -267,9 +280,11 @@ def _detect_self_waivers_in_diff(diff_text: str) -> list[str]:
         content = raw_line[1:] if raw_line.startswith("+") else raw_line
         stripped = content.strip()
 
-        # Track triple-quoted string context for all lines (+ and context)
-        # Count triple-quote occurrences; an odd count toggles the state
-        tq_count = stripped.count('"""') + stripped.count("'''")
+        # FIX 5: Strip the comment portion before counting triple-quotes.
+        # A `# """` is a comment line — the triple-quote is inside a comment, NOT
+        # an actual string delimiter. Count only triple-quotes in the code portion.
+        code_portion = stripped.split("#", 1)[0]
+        tq_count = code_portion.count('"""') + code_portion.count("'''")
         if tq_count % 2 == 1:
             in_triple_string = not in_triple_string
 
@@ -383,14 +398,45 @@ def build_callgraph(
       - "module:qualname" for each public/private function/class
       - "module:<module>" synthetic node for top-level code in that module
 
-    Edges (REFERENCES, NOT imports):
+    Edges:
+
+      Reference edges (from code execution):
       - Inside a function/method/class body or module-level code, every Name or
         Attribute that matches a known first-party symbol's short name creates an
         edge from the enclosing node to the referenced symbol.
       - Value references (passed as argument, decorator, list element, etc.) are
         included — a symbol passed as a value is considered wired.
-      - `import` / `from x import y` statements do NOT create edges (C4: bare
-        import/re-export excluded).
+      - `import` / `from x import y` statements do NOT create symbol edges (C4:
+        bare import/re-export excluded). However, importing a first-party module
+        DOES create a module-level edge (see FIX 2 below).
+
+      FIX 1 (trivial bypass removed):
+      - The old code added an UNCONDITIONAL edge `<module>` -> every top-level symbol.
+        This meant ANY def added to an entrypoint module auto-passed. That free edge
+        is REMOVED. A top-level symbol is now reachable ONLY via a real reference in
+        executed code. The reference walk DOES emit edges for names referenced in
+        module-level statements (including inside `if __name__ == "__main__":` blocks),
+        so `def main()` referenced as `main()` in the `if __name__` block is correctly
+        wired via the `<module>` -> `main` reference edge.
+
+      FIX 2 (import→module edge):
+      - `import mod` / `from mod import x` where mod is a first-party module adds an
+        edge from the importing scope's `<module>` node to `mod:<module>`. This makes
+        the imported module's module-level code reachable if the importing module is
+        reachable. CRITICAL: only the module node is wired, NOT the individual imported
+        symbols (bare import/re-export does NOT count per C4).
+
+      FIX 3 (decorator wiring):
+      - A decorated public function/class (any decorator) in a reachable module is
+        wired by adding an edge from its enclosing scope (`<module>` or parent class
+        node) to the decorated symbol's node. A decorated symbol is reachable IFF its
+        module is reachable.
+
+      FIX 4 (class→public-method edge):
+      - Public methods of a reachable class are wired via a class→method edge. This
+        handles polymorphic dispatch (overrides like `def run(self)` on AbstractSandbox
+        subclasses) where no explicit first-party ast.Name reference exists. Granularity
+        reduction: ALL public methods of a reachable class are considered reachable.
 
     Approximation: resolution is by short name (last component of qualname).
     Two symbols with the same short name may create spurious edges (false negatives
@@ -401,6 +447,8 @@ def build_callgraph(
     # First pass: collect all known symbols from all first-party files
     all_symbols: dict[str, list[Symbol]] = {}  # short_name -> list of symbols
     module_to_symbols: dict[str, list[Symbol]] = {}
+    # Set of known first-party modules (for import→module edge, FIX 2)
+    first_party_modules: set[str] = set()
 
     for file_path in source_files:
         if not file_path.endswith(".py"):
@@ -426,6 +474,7 @@ def build_callgraph(
         if not is_fp:
             continue
 
+        first_party_modules.add(module)
         syms = _collect_symbols_from_ast(tree, module)
         module_to_symbols[module] = syms
         for sym in syms:
@@ -452,23 +501,113 @@ def build_callgraph(
         syms_in_module = module_to_symbols.get(module, [])
         sym_qualnames_in_module = {s.qualname for s in syms_in_module}
 
-        # Add edges from <module> to each top-level symbol defined in this module.
-        # Rationale: a `def fn():` statement at module level IS executed by the module's
-        # top-level code (it defines the function in the module namespace). Any module
-        # that has `if __name__ == "__main__":` is an entrypoint root — its <module> node
-        # transitively reaches all its top-level definitions.
+        # FIX 1: Do NOT add unconditional <module>->top-level-symbol edges.
+        # Top-level symbols are reachable only via real references in executed code.
+        # The reference walk below handles module-level Name/Attribute nodes including
+        # those inside `if __name__ == "__main__":` blocks.
+
+        # FIX 3 + FIX 4: Add decorator wiring and class->method edges.
+        # These are added here (not in the reference walk) since they depend on the
+        # structure of the definitions, not on explicit Name references.
         module_node = f"{module}:<module>"
         if module_node not in graph:
             graph[module_node] = set()
-        for sym in syms_in_module:
-            # Only wire top-level symbols (not nested class methods etc.)
-            if "." not in sym.qualname:
-                graph[module_node].add(sym.node_id)
 
-        # Walk the tree to resolve references
-        _add_reference_edges(tree, module, graph, all_symbols, sym_qualnames_in_module)
+        for sym in syms_in_module:
+            # FIX 3: Decorator wiring — if a top-level public symbol has ANY decorator,
+            # wire it from the enclosing scope (<module>) to the symbol node.
+            # A decorated symbol (e.g. @app.get, @tool, @pytest.fixture) is registered
+            # by the decorator call site; the decorator IS the wiring mechanism.
+            if "." not in sym.qualname:
+                # Top-level symbol — check if it has decorators in the AST
+                if _has_decorators(tree, sym.qualname):
+                    graph[module_node].add(sym.node_id)
+            else:
+                # Nested symbol (method of a class) — decorator wiring from class node
+                parent_qualname = sym.qualname.rsplit(".", 1)[0]
+                parent_node = f"{module}:{parent_qualname}"
+                if parent_node not in graph:
+                    graph[parent_node] = set()
+                if _has_decorators(tree, sym.qualname):
+                    graph[parent_node].add(sym.node_id)
+
+            # FIX 4: Class->public-method edge — wire each public method of a class
+            # from the class node. This handles polymorphic dispatch (override pattern).
+            if "." in sym.qualname:
+                parent_qualname = sym.qualname.rsplit(".", 1)[0]
+                # Only wire if the parent is a class (not a nested function)
+                if _is_class_in_module(tree, parent_qualname):
+                    parent_node = f"{module}:{parent_qualname}"
+                    if parent_node not in graph:
+                        graph[parent_node] = set()
+                    graph[parent_node].add(sym.node_id)
+
+        # Walk the tree to resolve reference edges (Name, Attribute, imports)
+        _add_reference_edges(
+            tree, module, graph, all_symbols, sym_qualnames_in_module, first_party_modules
+        )
 
     return graph
+
+
+def _has_decorators(tree: ast.Module, qualname: str) -> bool:
+    """Return True if the def/class with the given qualname has any decorators."""
+    parts = qualname.split(".")
+
+    class Finder(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._scope: list[str] = []
+            self.found = False
+
+        def _visit_def(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+            self._scope.append(node.name)
+            if self._scope == parts and node.decorator_list:
+                self.found = True
+            self.generic_visit(node)
+            self._scope.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_def(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_def(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self._visit_def(node)
+
+    finder = Finder()
+    finder.visit(tree)
+    return finder.found
+
+
+def _is_class_in_module(tree: ast.Module, qualname: str) -> bool:
+    """Return True if the def with the given qualname is a ClassDef."""
+    parts = qualname.split(".")
+
+    class Finder(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self._scope: list[str] = []
+            self.found = False
+
+        def _visit_def(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
+            self._scope.append(node.name)
+            if self._scope == parts and isinstance(node, ast.ClassDef):
+                self.found = True
+            self.generic_visit(node)
+            self._scope.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._visit_def(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._visit_def(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self._visit_def(node)
+
+    finder = Finder()
+    finder.visit(tree)
+    return finder.found
 
 
 def _enclosing_qualname(scope_stack: list[str]) -> str:
@@ -482,12 +621,19 @@ def _add_reference_edges(
     graph: Graph,
     all_symbols: dict[str, list[Symbol]],
     sym_qualnames_in_module: set[str],
+    first_party_modules: set[str],
 ) -> None:
     """Walk an AST and add reference edges into `graph`.
 
     For each Name or Attribute node that resolves to a known first-party symbol,
     add an edge from the enclosing scope node to the referenced symbol's node.
-    Import statements are explicitly skipped.
+
+    FIX 2: Import statements add an edge from the importing scope's <module> node
+    to the imported first-party module's <module> node (so importing a module makes
+    its module-level code reachable). Individual imported symbols are NOT wired
+    (C4: bare import/re-export does NOT count).
+
+    Other import statements (non-first-party) are skipped entirely.
     """
 
     class EdgeBuilder(ast.NodeVisitor):
@@ -533,12 +679,44 @@ def _add_reference_edges(
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             self._enter_def(node)
 
-        # Skip import statements — they do NOT create reference edges (C4)
+        # FIX 2: Import statements add import→module edges (NOT symbol edges)
         def visit_Import(self, node: ast.Import) -> None:
-            pass  # intentionally skip
+            """Handle `import mod` — wire importing scope's <module> to imported <module>."""
+            src = f"{module}:<module>"  # always from the module-level node
+            self._ensure_node(src)
+            for alias in node.names:
+                imported_mod = alias.name
+                if imported_mod in first_party_modules:
+                    tgt = f"{imported_mod}:<module>"
+                    self._ensure_node(tgt)
+                    graph[src].add(tgt)
 
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            pass  # intentionally skip
+            """Handle `from mod import x` — wire importing scope's <module> to mod:<module>.
+
+            CRITICAL: do NOT wire individual imported symbols (x is NOT wired here).
+            Only the module's <module> node (its top-level code) becomes reachable.
+            """
+            if node.module is None:
+                return
+            src = f"{module}:<module>"  # always from the module-level node
+            self._ensure_node(src)
+            # Resolve relative imports: build the full module path
+            if node.level and node.level > 0:
+                # Relative import: reconstruct the target module from current module + level
+                parts = module.split(".")
+                # Go up `level` levels
+                base_parts = parts[: len(parts) - node.level]
+                if node.module:
+                    imported_mod = ".".join(base_parts + [node.module])
+                else:
+                    imported_mod = ".".join(base_parts)
+            else:
+                imported_mod = node.module
+            if imported_mod in first_party_modules:
+                tgt = f"{imported_mod}:<module>"
+                self._ensure_node(tgt)
+                graph[src].add(tgt)
 
         def visit_Name(self, node: ast.Name) -> None:
             if isinstance(node.ctx, ast.Load):
@@ -581,8 +759,23 @@ def find_entrypoints(
       (b) Any function named in pyproject [project.scripts] console-script targets.
       (c) Any module/symbol listed in config/dead_code_entrypoints.txt allowlist.
           pytest/tests are NOT entrypoints.
+
+    Note on allowlisted MODULES (c): when the allowlist contains a module (no `:` qualifier),
+    the operator is granting entry to the entire module. After FIX 1 removed the free
+    <module>->top-level-symbol edges, we explicitly add all top-level public symbols of
+    the allowlisted module as individual entrypoints. This preserves the escape-hatch
+    semantics: `app.tool_mod` in the allowlist means all public symbols in that module
+    are considered runtime-reachable by operator declaration.
     """
     entrypoints: set[str] = set()
+
+    # Build a module->path index for allowlist symbol resolution
+    module_to_path: dict[str, str] = {}
+    for file_path in source_files:
+        if not file_path.endswith(".py"):
+            continue
+        if _is_first_party(file_path):
+            module_to_path[_path_to_module(file_path)] = file_path
 
     # (a) __main__ guard
     for file_path in source_files:
@@ -627,7 +820,22 @@ def find_entrypoints(
         if ":" in normalized:
             entrypoints.add(normalized)
         else:
+            # Module-level allowlist entry: add <module> root AND all top-level public
+            # symbols (operator is granting entry to the whole module).
             entrypoints.add(f"{normalized}:<module>")
+            # Enumerate top-level public symbols from the module source
+            mod_path = module_to_path.get(normalized)
+            if mod_path:
+                try:
+                    source = file_reader(mod_path)
+                    tree = ast.parse(source, filename=mod_path)
+                    syms = _collect_symbols_from_ast(tree, normalized)
+                    for sym in syms:
+                        # Only top-level symbols (not nested methods)
+                        if "." not in sym.qualname:
+                            entrypoints.add(sym.node_id)
+                except (OSError, KeyError, FileNotFoundError, SyntaxError):
+                    pass  # best effort
 
     return entrypoints
 

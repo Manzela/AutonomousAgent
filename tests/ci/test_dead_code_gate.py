@@ -573,9 +573,17 @@ def test_gate_passes_on_own_source() -> None:
     """evaluate() on a diff that adds dead_code_gate.py's own functions → PASS.
 
     The gate script itself has `if __name__ == "__main__": sys.exit(main(...))`,
-    so all its public functions are reachable from that root.
+    and main() calls evaluate() which calls build_callgraph / find_entrypoints /
+    reachable / extract_changed_public_symbols. All public functions must be
+    transitively reachable from the main() call in the __main__ block.
+
+    After FIX 1, each function must be EXPLICITLY referenced (called or passed as
+    value) in the call chain — the free <module>->top-level edge is gone. This
+    fixture mirrors the real gate's structure where main calls evaluate, evaluate
+    calls build_callgraph / find_entrypoints / reachable / extract_changed_public_symbols.
     """
-    # Use minimal self-contained gate code with __main__
+    # Realistic fixture: main -> evaluate -> build_callgraph, find_entrypoints,
+    # reachable, extract_changed_public_symbols (all referenced by name in evaluate body)
     gate_code = textwrap.dedent("""\
         def extract_changed_public_symbols(diff_text, new_file_reader):
             return []
@@ -590,9 +598,14 @@ def test_gate_passes_on_own_source() -> None:
             return set()
 
         def evaluate(diff_text, file_reader, pyproject_text, allowlist_lines, source_files=None):
-            pass
+            graph = build_callgraph(source_files or [], file_reader)
+            eps = find_entrypoints(source_files or [], file_reader, pyproject_text, allowlist_lines)
+            r = reachable(graph, eps)
+            syms = extract_changed_public_symbols(diff_text, file_reader)
+            return syms
 
         def main(argv):
+            result = evaluate("", lambda p: "", "", [])
             return 0
 
         if __name__ == "__main__":
@@ -723,3 +736,420 @@ class TestReachable:
         result = reachable(graph, {"A"})
         assert "B" in result
         assert "A" in result
+
+
+# ===========================================================================
+# 13. FIX 1 — Trivial bypass closed: orphan in entrypoint module → HARD fail
+# ===========================================================================
+
+
+def test_fix1_orphan_in_entrypoint_module_still_fails() -> None:
+    """FIX 1: def orphan() added to an entrypoint module (has if __name__) but
+    never referenced → still HARD fails. The old free <module>->top-level edge
+    would have made this pass — verify the bypass is closed."""
+    # Entrypoint module containing BOTH a wired main() AND an unreferenced orphan().
+    entry_with_orphan = textwrap.dedent("""\
+        def orphan():
+            return 42
+
+        def main():
+            pass
+
+        if __name__ == "__main__":
+            main()
+    """)
+    files = {"scripts/ci/entry_with_orphan.py": entry_with_orphan}
+    reader = make_reader(files)
+    diff = diff_adding("scripts/ci/entry_with_orphan.py", entry_with_orphan)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "orphan() in entrypoint module must still fail"
+    assert any("orphan" in f for f in result.hard_failures), result.hard_failures
+    # main() IS referenced in the if __name__ block → must NOT be flagged
+    assert not any(
+        "main" in f for f in result.hard_failures
+    ), "main() is referenced in if __name__ block — must not be flagged"
+
+
+def test_fix1_main_referenced_in_dunder_main_passes() -> None:
+    """FIX 1 complement: def main() called in the if __name__ block → PASSES.
+    The reference walk emits a <module>->main edge from the Name node in the block."""
+    ep_code = textwrap.dedent("""\
+        def main():
+            return 0
+
+        if __name__ == "__main__":
+            main()
+    """)
+    files = {"scripts/ci/ep_main.py": ep_code}
+    reader = make_reader(files)
+    diff = diff_adding("scripts/ci/ep_main.py", ep_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert result.ok, result.hard_failures
+
+
+# ===========================================================================
+# 14. FIX 2 — Import→module edge: decorated handler in imported module → PASS
+# ===========================================================================
+
+
+def test_fix2_bare_from_import_does_not_wire_symbol() -> None:
+    """FIX 2 (bare import): `from mod import helper` does NOT wire `helper` directly.
+    Only the module's <module> node becomes reachable (C4: bare import/re-export excluded).
+    helper must still be unreachable unless explicitly referenced or decorated."""
+    helper_code = textwrap.dedent("""\
+        def helper():
+            return 1
+    """)
+    ep_code = textwrap.dedent("""\
+        from app.helper_bare import helper
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/helper_bare.py": helper_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/helper_bare.py", helper_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    # helper is imported but never called/decorated → must fail
+    assert not result.ok, "bare import without reference must still fail"
+    assert any("helper" in f for f in result.hard_failures), result.hard_failures
+
+
+def test_fix2_and_fix3_decorated_handler_in_imported_module_passes() -> None:
+    """FIX 2 + FIX 3: A module-level @app.get handler in a module that is imported
+    by a reachable module → handler PASSES (import wires module; decorator wires handler).
+    Same handler in a module imported by nobody → fails."""
+    routes_code = textwrap.dedent("""\
+        class app:
+            @staticmethod
+            def get(path):
+                def decorator(fn): return fn
+                return decorator
+
+        @app.get('/items')
+        def get_items():
+            return []
+    """)
+    # Entry imports routes → routes:<module> becomes reachable → decorator wires get_items
+    ep_code = textwrap.dedent("""\
+        import app.routes_mod
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/routes_mod.py": routes_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/routes_mod.py", routes_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert result.ok, "decorated handler in module imported by entrypoint must pass: " + str(
+        result.hard_failures
+    )
+
+
+def test_fix2_handler_in_unimported_module_fails() -> None:
+    """FIX 2 complement: same decorated handler in a module that nobody imports → fails."""
+    routes_code = textwrap.dedent("""\
+        class app:
+            @staticmethod
+            def get(path):
+                def decorator(fn): return fn
+                return decorator
+
+        @app.get('/items')
+        def get_items():
+            return []
+    """)
+    ep_code = textwrap.dedent("""\
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/routes_orphan.py": routes_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/routes_orphan.py", routes_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "decorated handler in unimported module must fail"
+    assert any("get_items" in f for f in result.hard_failures), result.hard_failures
+
+
+# ===========================================================================
+# 15. FIX 3 — Decorator wiring
+# ===========================================================================
+
+
+def test_fix3_decorated_public_fn_in_reachable_module_passes() -> None:
+    """FIX 3: A decorated public function (any decorator) in a reachable module → PASSES."""
+    # Module with a tool decorator pattern — the decorated fn is registered by the decorator
+    tool_code = textwrap.dedent("""\
+        class registry:
+            tools = []
+            @classmethod
+            def tool(cls, fn):
+                cls.tools.append(fn)
+                return fn
+
+        @registry.tool
+        def search_files():
+            return []
+    """)
+    ep_code = textwrap.dedent("""\
+        import app.tool_registry
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/tool_registry.py": tool_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/tool_registry.py", tool_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert result.ok, "decorated public fn in reachable module must pass: " + str(
+        result.hard_failures
+    )
+
+
+def test_fix3_undecorated_unreferenced_fn_in_reachable_module_fails() -> None:
+    """FIX 3 complement: undecorated, unreferenced public fn in a reachable module → FAILS."""
+    mod_code = textwrap.dedent("""\
+        def unreferenced_fn():
+            return 42
+    """)
+    ep_code = textwrap.dedent("""\
+        import app.bare_mod
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/bare_mod.py": mod_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/bare_mod.py", mod_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "undecorated unreferenced fn must fail"
+    assert any("unreferenced_fn" in f for f in result.hard_failures), result.hard_failures
+
+
+# ===========================================================================
+# 16. FIX 4 — Class→public-method edge
+# ===========================================================================
+
+
+def test_fix4_public_method_on_reachable_class_passes() -> None:
+    """FIX 4: A public method on a reachable class that is never explicitly called by
+    first-party name → PASSES. Handles polymorphic/override dispatch pattern."""
+    concrete_code = textwrap.dedent("""\
+        class GCPSandbox:
+            def run(self):
+                return "gcp"
+
+            def public_helper(self):
+                return "helper"
+    """)
+    ep_code = textwrap.dedent("""\
+        from app.gcp_sandbox import GCPSandbox
+
+        def main():
+            s = GCPSandbox()
+
+        if __name__ == "__main__":
+            main()
+    """)
+    files = {
+        "app/gcp_sandbox.py": concrete_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/gcp_sandbox.py", concrete_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert result.ok, "public method on reachable class must pass via class->method edge: " + str(
+        result.hard_failures
+    )
+
+
+def test_fix4_public_method_on_unreachable_class_fails() -> None:
+    """FIX 4 complement: a public method on an UNREACHABLE class → still fails."""
+    dead_code = textwrap.dedent("""\
+        class DeadSandbox:
+            def run(self):
+                return "dead"
+    """)
+    ep_code = textwrap.dedent("""\
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/dead_sandbox.py": dead_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/dead_sandbox.py", dead_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "public method on unreachable class must still fail"
+    # Both class and method should be flagged (or at least method)
+    failures_str = " ".join(result.hard_failures)
+    assert "DeadSandbox" in failures_str or "run" in failures_str, result.hard_failures
+
+
+# ===========================================================================
+# 17. FIX 5 — Self-waiver comment evasion: # """ decoy line
+# ===========================================================================
+
+
+def test_fix5_triple_quote_in_comment_decoy_does_not_bypass_waiver_ban() -> None:
+    """FIX 5: A `# \"\"\"` comment line must NOT toggle the triple-string tracker,
+    so a subsequent @manual on an added line is still caught as a HARD fail.
+
+    The bug: the old code counted triple-quotes INCLUDING those in comments,
+    so `# \"\"\"` flipped in_triple_string and the @manual line was treated
+    as 'inside a triple-string' and skipped — evading the ban."""
+    # All lines are added (+), including the # """ decoy
+    diff_lines = [
+        "diff --git a/app/evade_mod.py b/app/evade_mod.py",
+        "--- a/app/evade_mod.py",
+        "+++ b/app/evade_mod.py",
+        "@@ -0,0 +1,4 @@",
+        '+# """',
+        "+@manual",
+        "+def evaded_fn():",
+        '+    return "evaded"',
+    ]
+    diff = "\n".join(diff_lines) + "\n"
+    code_with_decoy = textwrap.dedent("""\
+        # \"\"\"
+        @manual
+        def evaded_fn():
+            return "evaded"
+    """)
+    ep_code = textwrap.dedent("""\
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {"app/evade_mod.py": code_with_decoy, "app/entry.py": ep_code}
+    reader = make_reader(files)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, '@manual must be caught even after # """ decoy line'
+    # Must mention self-waiver specifically (not just dead code)
+    combined = " ".join(result.hard_failures).lower()
+    assert "manual" in combined or "waiver" in combined, (
+        "failure must mention @manual/self-waiver: " + str(result.hard_failures)
+    )
+
+
+def test_fix5_triple_quote_comment_with_dead_code_ignore_also_caught() -> None:
+    """FIX 5: # dead-code: ignore on a line preceded by # \"\"\" decoy → still HARD fail."""
+    diff_lines = [
+        "diff --git a/app/evade2_mod.py b/app/evade2_mod.py",
+        "--- a/app/evade2_mod.py",
+        "+++ b/app/evade2_mod.py",
+        "@@ -0,0 +1,3 @@",
+        '+# """',
+        "+def evaded2():  # dead-code: ignore",
+        "+    return 0",
+    ]
+    diff = "\n".join(diff_lines) + "\n"
+    code = textwrap.dedent("""\
+        # \"\"\"
+        def evaded2():  # dead-code: ignore
+            return 0
+    """)
+    ep_code = textwrap.dedent("""\
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {"app/evade2_mod.py": code, "app/entry.py": ep_code}
+    reader = make_reader(files)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, '# dead-code: ignore must be caught even after # """ decoy'
+    combined = " ".join(result.hard_failures).lower()
+    assert "waiver" in combined or "ignore" in combined or "manual" in combined, (
+        "failure must mention self-waiver: " + str(result.hard_failures)
+    )

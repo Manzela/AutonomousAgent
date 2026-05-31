@@ -231,7 +231,11 @@ assertions:
   - id: gate-passes-on-own-source
     description: >
       Green: evaluate() on a diff adding dead_code_gate.py's own public functions
-      (with its __main__ block) → PASS. The gate must be self-rooted.
+      (with its __main__ block and realistic main->evaluate call chain) → PASS.
+      After FIX 1 the free <module>->top-level edge is gone; each public function
+      must be EXPLICITLY referenced in the call chain. This fixture mirrors the real
+      gate: main() calls evaluate(), evaluate() calls build_callgraph / find_entrypoints
+      / reachable / extract_changed_public_symbols.
     cmd: |
       python3 - <<'PYEOF'
       import sys
@@ -243,8 +247,15 @@ assertions:
           "def build_callgraph(source_files, file_reader):\n    return {}\n\n"
           "def find_entrypoints(source_files, file_reader, pyproject_text, allowlist_lines):\n    return set()\n\n"
           "def reachable(graph, roots):\n    return set()\n\n"
-          "def evaluate(diff_text, file_reader, pyproject_text, allowlist_lines, source_files=None):\n    pass\n\n"
-          "def main(argv):\n    return 0\n\n"
+          "def evaluate(diff_text, file_reader, pyproject_text, allowlist_lines, source_files=None):\n"
+          "    graph = build_callgraph(source_files or [], file_reader)\n"
+          "    eps = find_entrypoints(source_files or [], file_reader, pyproject_text, allowlist_lines)\n"
+          "    r = reachable(graph, eps)\n"
+          "    syms = extract_changed_public_symbols(diff_text, file_reader)\n"
+          "    return syms\n\n"
+          "def main(argv):\n"
+          "    result = evaluate('', lambda p: '', '', [])\n"
+          "    return 0\n\n"
           "if __name__ == '__main__':\n    import sys\n    sys.exit(main(sys.argv[1:]))\n"
       )
       files = {"scripts/ci/dead_code_gate.py": gate_code}
@@ -261,6 +272,228 @@ assertions:
       if not r.ok:
           print("FAIL: gate flagged its own functions as dead:", r.hard_failures); sys.exit(1)
       print("OK: gate passes on its own source")
+      PYEOF
+    expect_exit: 0
+
+  - id: fix1-orphan-in-entrypoint-module-still-fails
+    description: >
+      FIX 1 (trivial bypass closed): def orphan() added INSIDE an entrypoint module
+      (has if __name__) but never referenced → still HARD fails. The old free
+      <module>->top-level-symbol edge let any def added to an entrypoint module auto-pass.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      entry_with_orphan = (
+          "def orphan():\n    return 42\n\n"
+          "def main():\n    pass\n\n"
+          "if __name__ == '__main__':\n    main()\n"
+      )
+      files = {"scripts/ci/entry_with_orphan.py": entry_with_orphan}
+      lines = entry_with_orphan.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/scripts/ci/entry_with_orphan.py b/scripts/ci/entry_with_orphan.py\n"
+          "--- a/scripts/ci/entry_with_orphan.py\n"
+          "+++ b/scripts/ci/entry_with_orphan.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n"
+          + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: orphan() in entrypoint module must still fail"); sys.exit(1)
+      if not any("orphan" in f for f in r.hard_failures):
+          print("FAIL: failure must name orphan:", r.hard_failures); sys.exit(1)
+      if any("main" in f for f in r.hard_failures):
+          print("FAIL: main() referenced in __main__ block must not be flagged:", r.hard_failures); sys.exit(1)
+      print("OK: orphan() still fails; main() passes")
+      PYEOF
+    expect_exit: 0
+
+  - id: fix2-bare-import-does-not-wire-symbol
+    description: >
+      FIX 2 (import→module edge): `from mod import helper` adds mod:<module> edge
+      but does NOT wire helper directly. helper with no decorator/reference → fails.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      helper = "def helper():\n    return 1\n"
+      ep = "from app.helper_bare import helper\nif __name__ == '__main__':\n    pass\n"
+      files = {"app/helper_bare.py": helper, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/helper_bare.py b/app/helper_bare.py\n"
+          "--- a/app/helper_bare.py\n+++ b/app/helper_bare.py\n"
+          "@@ -0,0 +1,2 @@\n+def helper():\n+    return 1\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: bare-import-only helper must fail"); sys.exit(1)
+      if not any("helper" in f for f in r.hard_failures):
+          print("FAIL: failure must name helper:", r.hard_failures); sys.exit(1)
+      print("OK: bare-import helper correctly fails:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: fix2-fix3-decorated-handler-in-imported-module-passes
+    description: >
+      FIX 2 + FIX 3: A @-decorated handler in a module imported by the entrypoint → PASSES.
+      Import wires module; decorator wires the handler symbol.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      routes = (
+          "class app:\n"
+          "    @staticmethod\n"
+          "    def get(path):\n"
+          "        def decorator(fn): return fn\n"
+          "        return decorator\n\n"
+          "@app.get('/items')\n"
+          "def get_items():\n"
+          "    return []\n"
+      )
+      ep = "import app.routes_mod\nif __name__ == '__main__':\n    pass\n"
+      files = {"app/routes_mod.py": routes, "app/entry.py": ep}
+      lines = routes.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/app/routes_mod.py b/app/routes_mod.py\n"
+          "--- a/app/routes_mod.py\n+++ b/app/routes_mod.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n"
+          + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if not r.ok:
+          print("FAIL: decorated handler in imported module flagged as dead:", r.hard_failures); sys.exit(1)
+      print("OK: decorated handler in imported module passes")
+      PYEOF
+    expect_exit: 0
+
+  - id: fix3-undecorated-unreferenced-in-reachable-module-fails
+    description: >
+      FIX 3 complement: undecorated, unreferenced public fn in a reachable module → FAILS.
+      Decorator is the wiring mechanism; without it the symbol must be referenced.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      mod = "def unreferenced_fn():\n    return 42\n"
+      ep = "import app.bare_mod\nif __name__ == '__main__':\n    pass\n"
+      files = {"app/bare_mod.py": mod, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/bare_mod.py b/app/bare_mod.py\n"
+          "--- a/app/bare_mod.py\n+++ b/app/bare_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def unreferenced_fn():\n+    return 42\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: undecorated unreferenced fn must fail"); sys.exit(1)
+      if not any("unreferenced_fn" in f for f in r.hard_failures):
+          print("FAIL: failure must name unreferenced_fn:", r.hard_failures); sys.exit(1)
+      print("OK: undecorated unreferenced fn correctly fails:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: fix4-public-method-on-reachable-class-passes
+    description: >
+      FIX 4 (class→method edge): public method on reachable class never explicitly called
+      by first-party name → PASSES. Handles polymorphic/override dispatch (AbstractSandbox etc).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      concrete = "class GCPSandbox:\n    def run(self):\n        return 'gcp'\n\n    def public_helper(self):\n        return 'helper'\n"
+      ep = "from app.gcp_sandbox import GCPSandbox\ndef main():\n    s = GCPSandbox()\nif __name__ == '__main__':\n    main()\n"
+      files = {"app/gcp_sandbox.py": concrete, "app/entry.py": ep}
+      lines = concrete.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/app/gcp_sandbox.py b/app/gcp_sandbox.py\n"
+          "--- a/app/gcp_sandbox.py\n+++ b/app/gcp_sandbox.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n"
+          + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if not r.ok:
+          print("FAIL: public method on reachable class flagged as dead:", r.hard_failures); sys.exit(1)
+      print("OK: public method on reachable class passes via class->method edge")
+      PYEOF
+    expect_exit: 0
+
+  - id: fix4-public-method-on-unreachable-class-still-fails
+    description: >
+      FIX 4 complement: public method on unreachable class → still fails.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      dead = "class DeadSandbox:\n    def run(self):\n        return 'dead'\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/dead_sandbox.py": dead, "app/entry.py": ep}
+      lines = dead.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/app/dead_sandbox.py b/app/dead_sandbox.py\n"
+          "--- a/app/dead_sandbox.py\n+++ b/app/dead_sandbox.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n"
+          + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: public method on unreachable class must fail"); sys.exit(1)
+      failures_str = " ".join(r.hard_failures)
+      if "DeadSandbox" not in failures_str and "run" not in failures_str:
+          print("FAIL: failure must mention DeadSandbox or run:", r.hard_failures); sys.exit(1)
+      print("OK: public method on unreachable class correctly fails")
+      PYEOF
+    expect_exit: 0
+
+  - id: fix5-triple-quote-comment-decoy-does-not-bypass-waiver
+    description: >
+      FIX 5 (self-waiver comment evasion): a # \"\"\" comment line must NOT toggle the
+      triple-string tracker. A subsequent @manual on an added line → still HARD fail.
+      The bug: old code counted triple-quotes in comments, flipping the state and
+      treating the @manual line as inside a triple-string (skipped — waiver evaded).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      code = '# """\n@manual\ndef evaded_fn():\n    return "evaded"\n'
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/evade_mod.py": code, "app/entry.py": ep}
+      diff_lines = [
+          'diff --git a/app/evade_mod.py b/app/evade_mod.py',
+          '--- a/app/evade_mod.py',
+          '+++ b/app/evade_mod.py',
+          '@@ -0,0 +1,4 @@',
+          '+# """',
+          '+@manual',
+          '+def evaded_fn():',
+          '+    return "evaded"',
+      ]
+      diff = "\n".join(diff_lines) + "\n"
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: @manual must be caught even after # \"\"\" decoy"); sys.exit(1)
+      combined = " ".join(r.hard_failures).lower()
+      if "manual" not in combined and "waiver" not in combined:
+          print("FAIL: failure must mention @manual/self-waiver:", r.hard_failures); sys.exit(1)
+      print("OK: @manual correctly caught despite # \"\"\" decoy:", r.hard_failures[0])
       PYEOF
     expect_exit: 0
 

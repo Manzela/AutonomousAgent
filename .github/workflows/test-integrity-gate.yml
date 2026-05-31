@@ -59,9 +59,10 @@ jobs:
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
-          # Scope the diff to TEST paths so removing a runtime assert never false-positives.
+          # Test-scoped (never runtime files, so removing a runtime assert can't false-positive):
+          # everything under ANY tests/ dir (incl. conftest + support files) + any test_*/_test.py
+          # + top-level conftest.py. Submodule (hermes-agent) files don't appear in the parent diff.
           git diff "${BASE}...${HEAD}" -- \
-            'tests' 'lib/durability/tests' 'lib/evaluators/tests' 'lib/router/tests' \
-            'scripts/tests' 'app/tests' 'app/adapters/inmemory/tests' 'lib/a2a/tests' \
-            ':(glob)**/test_*.py' ':(glob)**/*_test.py' > test_diff.patch || true
+            ':(glob)**/tests/**' ':(glob)**/test_*.py' ':(glob)**/*_test.py' ':(glob)**/conftest.py' \
+            > test_diff.patch || true
           python3 scripts/ci/test_integrity_gate.py --diff-file test_diff.patch --pr-body pr_body.md

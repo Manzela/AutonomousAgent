@@ -1,0 +1,6 @@
+== SP-00e.2 RED: fabricated ## Test Truth (the meta-audit '541' move) ==
+[PASS] evidence-present (C1): evidence present (1 fenced block(s))
+[FAIL] test-truth (C7): `## Test Truth` does NOT match the junitxml artifact. Expected to contain: 'collected=2 passed=2 failed=0 skipped=0 errors=0'
+::error::test-truth (C7): `## Test Truth` does NOT match the junitxml artifact. Expected to contain: 'collected=2 passed=2 failed=0 skipped=0 errors=0'
+== pr-meta-checks: FAIL ==
+exit=1

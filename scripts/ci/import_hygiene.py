@@ -127,8 +127,8 @@ def main(argv: list[str]) -> int:
         print(f"::warning::import-hygiene (env-dependent, not failing): {m} -> {t}")
     print(
         f"== import-hygiene: {len(mods)} modules | ok={ok} "
-        f"ModuleNotFoundError={len(failed)} warn={len(warned)} "
-        f"=> {'FAIL' if failed else 'PASS'} =="
+        f"failures={len(failed)} (ModuleNotFoundError/ImportError/SyntaxError) "
+        f"warn={len(warned)} => {'FAIL' if failed else 'PASS'} =="
     )
     return 1 if failed else 0
 

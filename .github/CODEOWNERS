@@ -5,3 +5,6 @@ deploy/                      @Manzela
 secrets/                     @Manzela
 lib/durability/              @Manzela
 lib/observability/           @Manzela
+# SP-00e (C8/C10): the agent must not edit its own gates or acceptance.
+.github/                     @Manzela
+audit/acceptance/            @Manzela

@@ -1,0 +1,4 @@
+== acceptance-frozen RED: an acceptance file edited without a manifest update ==
+::error::acceptance-frozen: sha drift: SP-00.yaml content does not match the pinned manifest sha
+== acceptance-frozen: FAIL (1 error(s)) ==
+gate exit=1

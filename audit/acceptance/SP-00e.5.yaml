@@ -1,0 +1,269 @@
+# Acceptance — SP-00e.5 · dead-code reachability gate (C4)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Each assertion is a self-contained red-green that invokes the gate's pure
+# functions / evaluate() on inline fixtures via python -c.
+# Every assertion FAILS if the gate logic is wrong (real red-green — not "does it exist?").
+#
+# Source: PRD §6 EPIC 0 SP-00e (C4) — "a symbol with no runtime call site fails
+# dead-code-gate; an all-clean PR passes."
+
+task: SP-00e.5
+title: "dead-code reachability gate (C4) — block dead symbols; wired-call and wired-value pass"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: detects-dead-symbol
+    description: >
+      Red: a diff adding public `def orphan()` with no call site → HARD fail naming it.
+      If evaluate() returns ok=True the assertion FAILS (wrong logic).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      orphan = "def orphan():\n    return 42\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/orphan_mod.py": orphan, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/orphan_mod.py b/app/orphan_mod.py\n"
+          "--- a/app/orphan_mod.py\n+++ b/app/orphan_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def orphan():\n+    return 42\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: dead orphan() was not caught"); sys.exit(1)
+      if not any("orphan" in f for f in r.hard_failures):
+          print("FAIL: failure message does not name 'orphan':", r.hard_failures); sys.exit(1)
+      print("OK: orphan correctly flagged:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: accepts-wired-call
+    description: >
+      Green: def helper() added AND called by an entrypoint-reachable function → PASS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      helper = "def helper():\n    return 1\n"
+      ep = "from app.helper_mod import helper\ndef run():\n    return helper()\nif __name__ == '__main__':\n    run()\n"
+      files = {"app/helper_mod.py": helper, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/helper_mod.py b/app/helper_mod.py\n"
+          "--- a/app/helper_mod.py\n+++ b/app/helper_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def helper():\n+    return 1\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if not r.ok:
+          print("FAIL: wired helper() was incorrectly flagged:", r.hard_failures); sys.exit(1)
+      print("OK: wired helper() passes")
+      PYEOF
+    expect_exit: 0
+
+  - id: accepts-wired-value-framework
+    description: >
+      Green: def node_fn() passed as a value `graph.add_node(node_fn)` from reachable code → PASS.
+      This is the key false-positive guard: framework registrations must wire without literal call.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      node = "def node_fn():\n    return 'node'\n"
+      ep = (
+          "from app.node_mod import node_fn\n"
+          "class Graph:\n    def add_node(self, fn): pass\n"
+          "def build():\n    g = Graph()\n    g.add_node(node_fn)\n"
+          "if __name__ == '__main__':\n    build()\n"
+      )
+      files = {"app/node_mod.py": node, "app/builder.py": ep}
+      diff = (
+          "diff --git a/app/node_mod.py b/app/node_mod.py\n"
+          "--- a/app/node_mod.py\n+++ b/app/node_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def node_fn():\n+    return 'node'\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if not r.ok:
+          print("FAIL: value-wired node_fn() was incorrectly flagged:", r.hard_failures); sys.exit(1)
+      print("OK: value-wired node_fn() passes")
+      PYEOF
+    expect_exit: 0
+
+  - id: rejects-bare-import-only
+    description: >
+      Red: symbol only re-exported via `from mod import sym` in __init__, never referenced → HARD fail.
+      Import statements do NOT create edges per C4.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      sym = "def public_fn():\n    return 'data'\n"
+      init = "from app.sym_mod import public_fn  # re-export\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/sym_mod.py": sym, "app/__init__.py": init, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/sym_mod.py b/app/sym_mod.py\n"
+          "--- a/app/sym_mod.py\n+++ b/app/sym_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def public_fn():\n+    return 'data'\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: bare-import-only public_fn() was not caught"); sys.exit(1)
+      if not any("public_fn" in f for f in r.hard_failures):
+          print("FAIL: failure message does not name 'public_fn':", r.hard_failures); sys.exit(1)
+      print("OK: bare-import-only correctly rejected:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: rejects-test-only
+    description: >
+      Red: symbol referenced ONLY from tests/ → HARD fail (tests are not runtime entrypoints).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      sym = "def compute_result():\n    return 99\n"
+      test = "from app.compute_mod import compute_result\ndef test_compute():\n    assert compute_result() == 99\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/compute_mod.py": sym, "tests/unit/test_compute.py": test, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/compute_mod.py b/app/compute_mod.py\n"
+          "--- a/app/compute_mod.py\n+++ b/app/compute_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def compute_result():\n+    return 99\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: test-only compute_result() was not caught"); sys.exit(1)
+      if not any("compute_result" in f for f in r.hard_failures):
+          print("FAIL: failure message does not name 'compute_result':", r.hard_failures); sys.exit(1)
+      print("OK: test-only correctly rejected:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: ignores-private
+    description: >
+      Green: added def _private() unreferenced → NOT flagged (private symbols out of scope).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      code = "def _private():\n    return 'secret'\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/private_mod.py": code, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/private_mod.py b/app/private_mod.py\n"
+          "--- a/app/private_mod.py\n+++ b/app/private_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def _private():\n+    return 'secret'\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if any("_private" in f for f in r.hard_failures):
+          print("FAIL: _private() was incorrectly flagged:", r.hard_failures); sys.exit(1)
+      print("OK: _private() correctly ignored")
+      PYEOF
+    expect_exit: 0
+
+  - id: rejects-self-waiver
+    description: >
+      Red: a changed symbol with an added @manual → HARD fail (C4 forbids self-waiver).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      code = "@manual\ndef waived_fn():\n    return 'waived'\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/waiver_mod.py": code, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/waiver_mod.py b/app/waiver_mod.py\n"
+          "--- a/app/waiver_mod.py\n+++ b/app/waiver_mod.py\n"
+          "@@ -0,0 +1,3 @@\n+@manual\n+def waived_fn():\n+    return 'waived'\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: @manual self-waiver was not caught"); sys.exit(1)
+      combined = " ".join(r.hard_failures).lower()
+      if "manual" not in combined and "waiver" not in combined:
+          print("FAIL: failure message does not mention self-waiver:", r.hard_failures); sys.exit(1)
+      print("OK: @manual self-waiver correctly rejected:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: accepts-allowlisted-entrypoint
+    description: >
+      Green: an otherwise-dead added symbol listed in the allowlist → PASS.
+      The allowlist is the operator-approved escape hatch.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      sym = "def standalone_tool():\n    return 'runs standalone'\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/tool_mod.py": sym, "app/entry.py": ep}
+      diff = (
+          "diff --git a/app/tool_mod.py b/app/tool_mod.py\n"
+          "--- a/app/tool_mod.py\n+++ b/app/tool_mod.py\n"
+          "@@ -0,0 +1,2 @@\n+def standalone_tool():\n+    return 'runs standalone'\n"
+      )
+      allowlist = ["app.tool_mod"]
+      r = evaluate(diff, lambda p: files[p], "", allowlist, list(files.keys()))
+      if not r.ok:
+          print("FAIL: allowlisted standalone_tool() was incorrectly flagged:", r.hard_failures); sys.exit(1)
+      print("OK: allowlisted symbol passes")
+      PYEOF
+    expect_exit: 0
+
+  - id: gate-passes-on-own-source
+    description: >
+      Green: evaluate() on a diff adding dead_code_gate.py's own public functions
+      (with its __main__ block) → PASS. The gate must be self-rooted.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      gate_code = (
+          "def extract_changed_public_symbols(diff_text, new_file_reader):\n    return []\n\n"
+          "def build_callgraph(source_files, file_reader):\n    return {}\n\n"
+          "def find_entrypoints(source_files, file_reader, pyproject_text, allowlist_lines):\n    return set()\n\n"
+          "def reachable(graph, roots):\n    return set()\n\n"
+          "def evaluate(diff_text, file_reader, pyproject_text, allowlist_lines, source_files=None):\n    pass\n\n"
+          "def main(argv):\n    return 0\n\n"
+          "if __name__ == '__main__':\n    import sys\n    sys.exit(main(sys.argv[1:]))\n"
+      )
+      files = {"scripts/ci/dead_code_gate.py": gate_code}
+      line_count = gate_code.count('\n')
+      added = ''.join('+' + l + '\n' for l in gate_code.splitlines())
+      diff = (
+          "diff --git a/scripts/ci/dead_code_gate.py b/scripts/ci/dead_code_gate.py\n"
+          "--- a/scripts/ci/dead_code_gate.py\n"
+          "+++ b/scripts/ci/dead_code_gate.py\n"
+          f"@@ -0,0 +1,{line_count} @@\n"
+          + added
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if not r.ok:
+          print("FAIL: gate flagged its own functions as dead:", r.hard_failures); sys.exit(1)
+      print("OK: gate passes on its own source")
+      PYEOF
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/dead-code-gate.yml
+  artifact: dead-code reachability gate (diff-vs-callgraph) + acceptance re-run + gate unit tests

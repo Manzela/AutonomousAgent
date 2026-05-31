@@ -497,6 +497,175 @@ assertions:
       PYEOF
     expect_exit: 0
 
+  - id: fixa-manual-ban-fires-bare-toplevel
+    description: >
+      FIX A (self-waiver ban): bare top-level @manual on an added line → HARD fail.
+      Red-green proof: would fail if _detect_self_waivers_in_diff used
+      stripped.startswith(" @manual") (leading space — always False after .strip()).
+      The correct check startswith("@manual") catches both top-level and indented forms.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      diff_lines = [
+          "diff --git a/app/t.py b/app/t.py",
+          "--- a/app/t.py",
+          "+++ b/app/t.py",
+          "@@ -0,0 +1,3 @@",
+          "+@manual",
+          "+def waived_fn():",
+          "+    return 'waived'",
+      ]
+      diff = "\n".join(diff_lines) + "\n"
+      code = "@manual\ndef waived_fn():\n    return 'waived'\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/t.py": code, "app/entry.py": ep}
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: @manual on bare top-level def must be a HARD fail"); sys.exit(1)
+      combined = " ".join(r.hard_failures).lower()
+      if "manual" not in combined and "waiver" not in combined:
+          print("FAIL: failure must mention @manual/waiver:", r.hard_failures); sys.exit(1)
+      print("OK: bare @manual correctly caught:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: fixa-manual-ban-fires-indented-class-method
+    description: >
+      FIX A (indented @manual): @manual decorating a method inside a class → HARD fail.
+      The diff line is '+    @manual' (leading spaces); after content.strip() it becomes
+      '@manual'. This proves the ban fires for the indented form too.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      diff_lines = [
+          "diff --git a/app/cls_waiver.py b/app/cls_waiver.py",
+          "--- a/app/cls_waiver.py",
+          "+++ b/app/cls_waiver.py",
+          "@@ -0,0 +1,5 @@",
+          "+class MyClass:",
+          "+    @manual",
+          "+    def waived_method(self):",
+          "+        return 'waived'",
+      ]
+      diff = "\n".join(diff_lines) + "\n"
+      code = "class MyClass:\n    @manual\n    def waived_method(self):\n        return 'waived'\n"
+      ep = "if __name__ == '__main__':\n    pass\n"
+      files = {"app/cls_waiver.py": code, "app/entry.py": ep}
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: @manual on indented class method must be a HARD fail"); sys.exit(1)
+      combined = " ".join(r.hard_failures).lower()
+      if "manual" not in combined and "waiver" not in combined:
+          print("FAIL: failure must mention @manual/waiver:", r.hard_failures); sys.exit(1)
+      print("OK: indented @manual correctly caught:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: rejects-passive-decorator-only-dead-symbol
+    description: >
+      FIX B (passive decorator denylist): @functools.cache (passive) on an orphan fn
+      in an imported module → HARD fail. Before FIX B, ANY decorator wired the symbol;
+      an agent could slap @cache on dead code to get a free pass. Passive decorators
+      (cache, lru_cache, property, staticmethod, etc.) do NOT constitute call sites.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      orphan = "import functools\n\n@functools.cache\ndef orphan():\n    return 42\n"
+      ep = "import app.orphan_passive\nif __name__ == '__main__':\n    pass\n"
+      files = {"app/orphan_passive.py": orphan, "app/entry.py": ep}
+      lines = orphan.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/app/orphan_passive.py b/app/orphan_passive.py\n"
+          "--- a/app/orphan_passive.py\n+++ b/app/orphan_passive.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n" + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if r.ok:
+          print("FAIL: @functools.cache (passive) must NOT wire the symbol"); sys.exit(1)
+      if not any("orphan" in f for f in r.hard_failures):
+          print("FAIL: failure must name orphan:", r.hard_failures); sys.exit(1)
+      print("OK: passive decorator correctly rejected:", r.hard_failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: accepts-registration-decorator
+    description: >
+      FIX B complement: @app.get (active/registration decorator) in an imported module → PASS.
+      @app.get is not in the passive denylist; it IS a runtime registration call site.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import evaluate
+
+      routes = (
+          "class app:\n"
+          "    @staticmethod\n"
+          "    def get(path):\n"
+          "        def decorator(fn): return fn\n"
+          "        return decorator\n\n"
+          "@app.get('/x')\n"
+          "def handler():\n"
+          "    return []\n"
+      )
+      ep = "import app.routes_active\nif __name__ == '__main__':\n    pass\n"
+      files = {"app/routes_active.py": routes, "app/entry.py": ep}
+      lines = routes.splitlines()
+      added = "\n".join("+" + l for l in lines)
+      diff = (
+          "diff --git a/app/routes_active.py b/app/routes_active.py\n"
+          "--- a/app/routes_active.py\n+++ b/app/routes_active.py\n"
+          f"@@ -0,0 +1,{len(lines)} @@\n" + added + "\n"
+      )
+      r = evaluate(diff, lambda p: files[p], "", [], list(files.keys()))
+      if not r.ok:
+          print("FAIL: @app.get (active) in imported module must pass:", r.hard_failures); sys.exit(1)
+      print("OK: active registration decorator passes")
+      PYEOF
+    expect_exit: 0
+
+  - id: relative-import-init-resolution
+    description: >
+      FIX C: `from . import utils` in app/core/__init__.py must resolve to app.core.utils,
+      not app.utils. Before FIX C, level-1 stripped one segment from 'app.core' to get
+      base='app', producing the wrong 'app.utils'. After FIX C, __init__.py files are
+      detected and level-1 keeps all segments (base='app.core'), giving 'app.core.utils'.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import build_callgraph
+
+      init_code = "from . import utils\n"
+      utils_code = "def util_fn():\n    return 42\n"
+      ep_code = "import app.core\n\nif __name__ == '__main__':\n    pass\n"
+      files = {
+          "app/core/__init__.py": init_code,
+          "app/core/utils.py": utils_code,
+          "app/entry.py": ep_code,
+      }
+      graph = build_callgraph(list(files.keys()), lambda p: files[p])
+      core_edges = graph.get("app.core:<module>", set())
+      if "app.core.utils:<module>" not in core_edges:
+          print("FAIL: __init__.py relative import must resolve to app.core.utils, not app.utils")
+          print("  app.core:<module> edges:", sorted(core_edges)); sys.exit(1)
+      if "app.utils:<module>" in core_edges:
+          print("FAIL: old bug — import resolved to wrong parent app.utils")
+          print("  app.core:<module> edges:", sorted(core_edges)); sys.exit(1)
+      print("OK: from . import utils in __init__.py resolves to app.core.utils")
+      PYEOF
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/dead-code-gate.yml
   artifact: dead-code reachability gate (diff-vs-callgraph) + acceptance re-run + gate unit tests

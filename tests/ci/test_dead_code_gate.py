@@ -13,6 +13,9 @@ from typing import Callable
 
 # Import the module under test — will fail at collection time until the gate exists.
 from scripts.ci.dead_code_gate import (
+    _detect_self_waivers_in_diff,
+    _has_active_decorators,
+    build_callgraph,
     evaluate,
     extract_changed_public_symbols,
     find_entrypoints,
@@ -1152,4 +1155,368 @@ def test_fix5_triple_quote_comment_with_dead_code_ignore_also_caught() -> None:
     combined = " ".join(result.hard_failures).lower()
     assert "waiver" in combined or "ignore" in combined or "manual" in combined, (
         "failure must mention self-waiver: " + str(result.hard_failures)
+    )
+
+
+# ===========================================================================
+# 18. FIX A — @manual self-waiver ban: top-level AND indented (class method)
+#
+# Red-green proof: these tests would FAIL if _detect_self_waivers_in_diff used
+#   stripped.startswith(" @manual")  ← leading SPACE on an already-stripped string
+#                                       (always False, waiver ban evaded)
+# They PASS because the correct check is stripped.startswith("@manual") (no space).
+# ===========================================================================
+
+
+def test_fixa_manual_on_bare_toplevel_def_is_hard_failure() -> None:
+    """FIX A: A diff line '+@manual' (bare top-level decorator) → HARD fail.
+
+    Regression guard: the buggy check `stripped.startswith(' @manual')` (leading space)
+    would make this pass silently because strip() removes leading whitespace first,
+    leaving '@manual' which then fails the space-prefixed startswith test.
+    This test proves the ban fires on the most basic form.
+    """
+    diff_lines = [
+        "diff --git a/app/t.py b/app/t.py",
+        "--- a/app/t.py",
+        "+++ b/app/t.py",
+        "@@ -0,0 +1,3 @@",
+        "+@manual",
+        "+def waived_fn():",
+        "+    return 'waived'",
+    ]
+    diff = "\n".join(diff_lines) + "\n"
+    code = textwrap.dedent("""\
+        @manual
+        def waived_fn():
+            return 'waived'
+    """)
+    ep_code = "if __name__ == '__main__':\n    pass\n"
+    files = {"app/t.py": code, "app/entry.py": ep_code}
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=make_reader(files),
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "@manual on bare top-level def must be a HARD fail"
+    combined = " ".join(result.hard_failures).lower()
+    assert "manual" in combined or "waiver" in combined, (
+        "failure must mention @manual or self-waiver: " + str(result.hard_failures)
+    )
+
+
+def test_fixa_manual_on_class_method_is_hard_failure() -> None:
+    """FIX A (indented case): A diff adding '@    @manual' (indented inside class body) → HARD fail.
+
+    This is the critical indented form: in a diff, the raw line is '+    @manual'.
+    After stripping the leading '+' we get '    @manual', then after .strip() we get '@manual'.
+    A buggy `stripped.startswith(' @manual')` would FAIL HERE TOO because .strip() removes
+    the spaces — this test proves the correct startswith('@manual') fires in both forms.
+    """
+    diff_lines = [
+        "diff --git a/app/cls_waiver.py b/app/cls_waiver.py",
+        "--- a/app/cls_waiver.py",
+        "+++ b/app/cls_waiver.py",
+        "@@ -0,0 +1,5 @@",
+        "+class MyClass:",
+        "+    @manual",
+        "+    def waived_method(self):",
+        "+        return 'waived'",
+    ]
+    diff = "\n".join(diff_lines) + "\n"
+    code = textwrap.dedent("""\
+        class MyClass:
+            @manual
+            def waived_method(self):
+                return 'waived'
+    """)
+    ep_code = "if __name__ == '__main__':\n    pass\n"
+    files = {"app/cls_waiver.py": code, "app/entry.py": ep_code}
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=make_reader(files),
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "@manual on indented class method must be a HARD fail"
+    combined = " ".join(result.hard_failures).lower()
+    assert "manual" in combined or "waiver" in combined, (
+        "failure must mention @manual or self-waiver: " + str(result.hard_failures)
+    )
+
+
+def test_fixa_detect_self_waivers_unit_bare_at_manual() -> None:
+    """FIX A unit: _detect_self_waivers_in_diff fires for both top-level and indented @manual."""
+    diff_toplevel = (
+        "diff --git a/app/t.py b/app/t.py\n--- a/app/t.py\n+++ b/app/t.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+@manual\n+def fn():\n+    pass\n"
+    )
+    top_found = _detect_self_waivers_in_diff(diff_toplevel)
+    assert top_found, "top-level @manual must be detected"
+    assert any("@manual" in s for s in top_found), top_found
+
+    diff_indented = (
+        "diff --git a/app/t.py b/app/t.py\n--- a/app/t.py\n+++ b/app/t.py\n"
+        "@@ -0,0 +1,4 @@\n"
+        "+class Foo:\n+    @manual\n+    def method(self):\n+        pass\n"
+    )
+    indent_found = _detect_self_waivers_in_diff(diff_indented)
+    assert indent_found, "indented @manual inside class must be detected"
+    assert any("@manual" in s for s in indent_found), indent_found
+
+
+# ===========================================================================
+# 19. FIX B — Passive decorator denylist: @cache/@lru_cache do NOT wire symbol
+# ===========================================================================
+
+
+def test_fixb_passive_decorator_cache_on_orphan_in_imported_module_fails() -> None:
+    """FIX B: @functools.cache on an orphan fn in a module imported by entrypoint → HARD fail.
+
+    Before FIX B, any decorator wired the symbol — so @functools.cache alone on a dead
+    function in an imported module would make it pass. After FIX B, passive decorators
+    (cache, lru_cache, staticmethod, classmethod, property, abstractmethod, etc.) do NOT
+    count as a wiring call site.
+    """
+    orphan_code = textwrap.dedent("""\
+        import functools
+
+        @functools.cache
+        def orphan():
+            return 42
+    """)
+    ep_code = textwrap.dedent("""\
+        import app.orphan_passive
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/orphan_passive.py": orphan_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/orphan_passive.py", orphan_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert not result.ok, "@functools.cache (passive) must NOT wire the symbol"
+    assert any("orphan" in f for f in result.hard_failures), result.hard_failures
+
+
+def test_fixb_active_registration_decorator_in_imported_module_passes() -> None:
+    """FIX B complement: An active (@app.get) registration decorator in an imported module → PASS.
+
+    @app.get is not in the passive denylist; it IS a runtime registration call site.
+    The module is reachable (imported by entrypoint), and @app.get wires get_items.
+    """
+    routes_code = textwrap.dedent("""\
+        class app:
+            @staticmethod
+            def get(path):
+                def decorator(fn): return fn
+                return decorator
+
+        @app.get('/x')
+        def handler():
+            return []
+    """)
+    ep_code = textwrap.dedent("""\
+        import app.routes_active
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/routes_active.py": routes_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/routes_active.py", routes_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert result.ok, "@app.get (active decorator) in imported module must pass: " + str(
+        result.hard_failures
+    )
+
+
+def test_fixb_property_on_method_of_reachable_class_passes_via_class_method_edge() -> None:
+    """FIX B + FIX 4: @property on a method of a reachable class → PASSES via class->method edge.
+
+    @property is passive (doesn't wire by decorator), but the class is reachable and
+    FIX 4 (class->method edge) wires ALL public methods of a reachable class.
+    This confirms passive decorators don't break @property methods on reachable classes.
+    """
+    cls_code = textwrap.dedent("""\
+        class Config:
+            def __init__(self, val):
+                self._val = val
+
+            @property
+            def value(self):
+                return self._val
+    """)
+    ep_code = textwrap.dedent("""\
+        from app.config_cls import Config
+
+        def main():
+            c = Config(1)
+
+        if __name__ == "__main__":
+            main()
+    """)
+    files = {
+        "app/config_cls.py": cls_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+    diff = diff_adding("app/config_cls.py", cls_code)
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=reader,
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert result.ok, (
+        "@property method on reachable class must pass via class->method edge: "
+        + str(result.hard_failures)
+    )
+
+
+def test_fixb_has_active_decorators_unit() -> None:
+    """FIX B unit: _has_active_decorators correctly classifies passive vs active names."""
+    # Empty -> no active decorators
+    assert not _has_active_decorators([])
+    # All passive
+    assert not _has_active_decorators(["staticmethod"])
+    assert not _has_active_decorators(["classmethod"])
+    assert not _has_active_decorators(["property"])
+    assert not _has_active_decorators(["cache"])
+    assert not _has_active_decorators(["lru_cache"])
+    assert not _has_active_decorators(["abstractmethod"])
+    assert not _has_active_decorators(["dataclass"])
+    assert not _has_active_decorators(["wraps"])
+    assert not _has_active_decorators(["cached_property", "staticmethod"])
+    # Active decorators
+    assert _has_active_decorators(["get"])  # @app.get -> short name 'get'
+    assert _has_active_decorators(["tool"])  # @registry.tool -> 'tool'
+    assert _has_active_decorators(["route"])  # @blueprint.route -> 'route'
+    assert _has_active_decorators(["task"])  # @celery.task -> 'task'
+    # Mixed: one passive + one active -> active wins
+    assert _has_active_decorators(["staticmethod", "get"])
+    assert _has_active_decorators(["lru_cache", "task"])
+
+
+# ===========================================================================
+# 20. FIX C — Relative import in __init__.py resolves correctly
+# ===========================================================================
+
+
+def test_fixc_from_dot_import_in_init_resolves_to_package_submodule() -> None:
+    """FIX C: `from . import utils` in app/core/__init__.py → resolves to app.core.utils.
+
+    Bug before FIX C: level-1 relative import stripped one segment from the module name,
+    so 'app.core' became base='app', and the resolved import was 'app.utils' (wrong).
+    After FIX C: for __init__.py files the module IS the package; level-1 means 'here',
+    so 'app.core' stays as base and result is 'app.core.utils' (correct).
+
+    This test verifies that a symbol in app/core/utils.py is reachable when:
+      1. app/entry.py does `import app.core`
+      2. app/core/__init__.py does `from . import utils`
+      3. app/core/utils.py has a public function
+    Without the fix, app.core.utils:<module> would not be reachable.
+    """
+    init_code = "from . import utils\n"
+    utils_code = textwrap.dedent("""\
+        def util_fn():
+            return 42
+    """)
+    ep_code = textwrap.dedent("""\
+        import app.core
+
+        if __name__ == "__main__":
+            pass
+    """)
+    files = {
+        "app/core/__init__.py": init_code,
+        "app/core/utils.py": utils_code,
+        "app/entry.py": ep_code,
+    }
+    reader = make_reader(files)
+
+    # The key assertion is that the graph edge resolves to app.core.utils, not app.utils.
+    graph = build_callgraph(list(files.keys()), reader)
+    # app.core:<module> must have an edge to app.core.utils:<module>
+    core_edges = graph.get("app.core:<module>", set())
+    assert "app.core.utils:<module>" in core_edges, (
+        f"__init__.py relative import must resolve to app.core.utils, not app.utils. "
+        f"app.core:<module> edges: {core_edges}"
+    )
+    # Also confirm app.utils:<module> is NOT created (old wrong resolution)
+    assert (
+        "app.utils:<module>" not in core_edges
+    ), "Old bug: relative import in __init__.py resolved to wrong parent app.utils"
+
+
+def test_fixc_regular_file_relative_import_still_correct() -> None:
+    """FIX C complement: `from . import utils` in app/core/thing.py → still resolves to app.core.utils.
+
+    Regular-file behavior must be unchanged. app/core/thing.py has module 'app.core.thing';
+    level-1 strips the last segment ('thing') to get base='app.core', so result is
+    'app.core.utils'. This must remain correct after FIX C.
+    """
+    thing_code = "from . import utils\n"
+    utils_code = "def util_fn():\n    return 42\n"
+    ep_code = "import app.core.thing\n\nif __name__ == '__main__':\n    pass\n"
+    files = {
+        "app/core/thing.py": thing_code,
+        "app/core/utils.py": utils_code,
+        "app/entry.py": ep_code,
+    }
+    graph = build_callgraph(list(files.keys()), make_reader(files))
+    thing_edges = graph.get("app.core.thing:<module>", set())
+    assert "app.core.utils:<module>" in thing_edges, (
+        f"Regular file relative import must still resolve to app.core.utils. "
+        f"app.core.thing:<module> edges: {thing_edges}"
+    )
+
+
+def test_fixc_from_dot_mod_import_in_init_resolves_correctly() -> None:
+    """FIX C: `from .utils import something` in app/core/__init__.py → resolves to app.core.utils.
+
+    This is the `from .mod import x` form (node.module='utils', level=1) as opposed to
+    `from . import utils` (node.module=None, level=1). Both must resolve to app.core.utils.
+    """
+    init_code = "from .utils import util_fn\n"
+    utils_code = "def util_fn():\n    return 42\n"
+    ep_code = "import app.core\n\nif __name__ == '__main__':\n    pass\n"
+    files = {
+        "app/core/__init__.py": init_code,
+        "app/core/utils.py": utils_code,
+        "app/entry.py": ep_code,
+    }
+    graph = build_callgraph(list(files.keys()), make_reader(files))
+    core_edges = graph.get("app.core:<module>", set())
+    assert "app.core.utils:<module>" in core_edges, (
+        f"from .utils import x in __init__.py must resolve to app.core.utils. "
+        f"app.core:<module> edges: {core_edges}"
     )

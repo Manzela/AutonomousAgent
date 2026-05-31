@@ -24,7 +24,10 @@ Approximation notes (documented per design):
       (b) Import→module edge — importing a first-party module makes its module-level
           code (including decorator registrations) reachable.
       (c) Decorator wiring — a decorated public symbol in a reachable module is
-          wired (the decorator is the call site that registers it).
+          wired ONLY if it has at least one ACTIVE (non-passive) decorator.
+          Passive decorators (@staticmethod, @classmethod, @property, @cache,
+          @lru_cache, @abstractmethod, @dataclass, etc.) are NOT wiring call sites.
+          Active decorators (@app.get, @registry.tool, etc.) ARE wiring call sites.
       (d) Class→public-method edge — public methods of a reachable class are wired
           to handle polymorphic/override dispatch patterns (e.g. AbstractSandbox
           subclasses). This is a granularity reduction: all public methods of a
@@ -60,6 +63,10 @@ class Symbol:
     module: str  # dotted module path, e.g. "app.core.orchestrator"
     name: str  # short name, e.g. "method" or "top_fn"
     kind: str  # "function" | "async_function" | "class"
+    # FIX D: store decorator short names and class flag during Pass 1 for O(1) lookups.
+    # Populated by _collect_symbols_from_ast; avoids O(N*M) AST rewalk per symbol.
+    decorator_names: list[str] = field(default_factory=list)
+    is_class: bool = False
 
     @property
     def node_id(self) -> str:
@@ -90,10 +97,63 @@ _SELF_WAIVER_PATTERNS = [
     re.compile(r"#\s*noqa:\s*DC\d+"),
 ]
 
+# FIX B: Passive decorators that do NOT constitute a "wiring" call site.
+# A symbol whose decorators are ALL passive is not wired-by-decorator; it must
+# be reached via an explicit reference edge or the class->method edge instead.
+# Matched against the decorator's resolved short name (last component), handling:
+#   @cache               -> 'cache'
+#   @functools.cache     -> 'cache'   (Attribute node .attr)
+#   @functools.lru_cache() -> 'lru_cache'  (Call node wrapping Attribute)
+_PASSIVE_DECORATORS: frozenset[str] = frozenset(
+    {
+        "staticmethod",
+        "classmethod",
+        "property",
+        "cached_property",
+        "dataclass",
+        "abstractmethod",
+        "abstractproperty",
+        "cache",
+        "lru_cache",
+        "wraps",
+        "total_ordering",
+        "singledispatch",
+        "runtime_checkable",
+    }
+)
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _decorator_short_name(dec: ast.expr) -> str:
+    """Extract the short name from a decorator AST node.
+
+    Handles three forms:
+      @name             -> ast.Name         -> 'name'
+      @obj.name         -> ast.Attribute    -> 'name'
+      @obj.name(...)    -> ast.Call         -> 'name'  (called decorator)
+    """
+    if isinstance(dec, ast.Call):
+        dec = dec.func  # strip the call wrapper, then fall through
+    if isinstance(dec, ast.Attribute):
+        return dec.attr
+    if isinstance(dec, ast.Name):
+        return dec.id
+    return ""
+
+
+def _has_active_decorators(decorator_names: list[str]) -> bool:
+    """Return True if the symbol has at least one non-passive decorator.
+
+    A symbol with ONLY passive decorators is not wired-by-decorator (FIX B).
+    It must be reached via an explicit reference or the class->method edge.
+    """
+    if not decorator_names:
+        return False
+    return any(name not in _PASSIVE_DECORATORS for name in decorator_names)
 
 
 def _is_first_party(path: str) -> bool:
@@ -148,6 +208,8 @@ def _collect_symbols_from_ast(tree: ast.Module, module: str) -> list[Symbol]:
             else:
                 kind = "class"
             is_private = node.name.startswith("_")
+            # FIX D: collect decorator short names and is_class during Pass 1.
+            dec_names = [_decorator_short_name(d) for d in getattr(node, "decorator_list", [])]
             # Public: name does NOT start with '_' AND no private ancestor
             if not is_private and not self._has_private_ancestor:
                 results.append(
@@ -156,6 +218,8 @@ def _collect_symbols_from_ast(tree: ast.Module, module: str) -> list[Symbol]:
                         module=module,
                         name=node.name,
                         kind=kind,
+                        decorator_names=dec_names,
+                        is_class=isinstance(node, ast.ClassDef),
                     )
                 )
             self._scope.append(node.name)
@@ -426,11 +490,15 @@ def build_callgraph(
         reachable. CRITICAL: only the module node is wired, NOT the individual imported
         symbols (bare import/re-export does NOT count per C4).
 
-      FIX 3 (decorator wiring):
-      - A decorated public function/class (any decorator) in a reachable module is
-        wired by adding an edge from its enclosing scope (`<module>` or parent class
-        node) to the decorated symbol's node. A decorated symbol is reachable IFF its
-        module is reachable.
+      FIX 3 (decorator wiring, refined by FIX B):
+      - A decorated public function/class in a reachable module is wired ONLY if it
+        has at least one ACTIVE (non-passive) decorator. Passive decorators like
+        @staticmethod, @classmethod, @property, @cache, @lru_cache, @abstractmethod,
+        @dataclass, etc. are implementation-only modifiers and do NOT constitute a
+        call site. A symbol whose ALL decorators are passive is NOT wired-by-decorator
+        and must be reached via an explicit reference or the class→method edge.
+        Active decorators (e.g. @app.get, @registry.tool) wire the symbol by
+        registering it at import time.
 
       FIX 4 (class→public-method edge):
       - Public methods of a reachable class are wired via a class→method edge. This
@@ -513,101 +581,57 @@ def build_callgraph(
         if module_node not in graph:
             graph[module_node] = set()
 
-        for sym in syms_in_module:
-            # FIX 3: Decorator wiring — if a top-level public symbol has ANY decorator,
-            # wire it from the enclosing scope (<module>) to the symbol node.
-            # A decorated symbol (e.g. @app.get, @tool, @pytest.fixture) is registered
-            # by the decorator call site; the decorator IS the wiring mechanism.
-            if "." not in sym.qualname:
-                # Top-level symbol — check if it has decorators in the AST
-                if _has_decorators(tree, sym.qualname):
-                    graph[module_node].add(sym.node_id)
-            else:
-                # Nested symbol (method of a class) — decorator wiring from class node
-                parent_qualname = sym.qualname.rsplit(".", 1)[0]
-                parent_node = f"{module}:{parent_qualname}"
-                if parent_node not in graph:
-                    graph[parent_node] = set()
-                if _has_decorators(tree, sym.qualname):
-                    graph[parent_node].add(sym.node_id)
+        # FIX D: Build O(1) qualname->is_class index from already-collected symbols.
+        # Avoids calling _is_class_in_module(tree, ...) which rewalk the full AST.
+        qualname_is_class: dict[str, bool] = {s.qualname: s.is_class for s in syms_in_module}
 
-            # FIX 4: Class->public-method edge — wire each public method of a class
-            # from the class node. This handles polymorphic dispatch (override pattern).
-            if "." in sym.qualname:
-                parent_qualname = sym.qualname.rsplit(".", 1)[0]
-                # Only wire if the parent is a class (not a nested function)
-                if _is_class_in_module(tree, parent_qualname):
+        for sym in syms_in_module:
+            # FIX 3 + FIX B: Decorator wiring — only if the symbol has at least one
+            # ACTIVE (non-passive) decorator. Passive decorators like @cache, @property,
+            # @staticmethod, @classmethod, etc. do NOT constitute a call site; they are
+            # implementation-only modifiers. An agent slapping @functools.cache on dead
+            # code must NOT get a free pass. Only active registrations (e.g. @app.get,
+            # @registry.tool) count as wiring.
+            # FIX D: Use sym.decorator_names (O(1)) instead of _has_decorators(tree, ...).
+            if _has_active_decorators(sym.decorator_names):
+                if "." not in sym.qualname:
+                    # Top-level symbol — wire from module node
+                    graph[module_node].add(sym.node_id)
+                else:
+                    # Nested symbol (method of a class) — wire from class node
+                    parent_qualname = sym.qualname.rsplit(".", 1)[0]
                     parent_node = f"{module}:{parent_qualname}"
                     if parent_node not in graph:
                         graph[parent_node] = set()
                     graph[parent_node].add(sym.node_id)
 
+            # FIX 4: Class->public-method edge — wire each public method of a class
+            # from the class node. This handles polymorphic dispatch (override pattern).
+            # FIX D: Use qualname_is_class index (O(1)) instead of _is_class_in_module(tree, ...).
+            if "." in sym.qualname:
+                parent_qualname = sym.qualname.rsplit(".", 1)[0]
+                # Only wire if the parent is a class (not a nested function)
+                if qualname_is_class.get(parent_qualname, False):
+                    parent_node = f"{module}:{parent_qualname}"
+                    if parent_node not in graph:
+                        graph[parent_node] = set()
+                    graph[parent_node].add(sym.node_id)
+
+        # FIX C: Track whether current file is __init__.py for relative import resolution.
+        is_init_file = file_path.replace("\\", "/").endswith("/__init__.py")
+
         # Walk the tree to resolve reference edges (Name, Attribute, imports)
         _add_reference_edges(
-            tree, module, graph, all_symbols, sym_qualnames_in_module, first_party_modules
+            tree,
+            module,
+            graph,
+            all_symbols,
+            sym_qualnames_in_module,
+            first_party_modules,
+            is_init_file=is_init_file,
         )
 
     return graph
-
-
-def _has_decorators(tree: ast.Module, qualname: str) -> bool:
-    """Return True if the def/class with the given qualname has any decorators."""
-    parts = qualname.split(".")
-
-    class Finder(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self._scope: list[str] = []
-            self.found = False
-
-        def _visit_def(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
-            self._scope.append(node.name)
-            if self._scope == parts and node.decorator_list:
-                self.found = True
-            self.generic_visit(node)
-            self._scope.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._visit_def(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._visit_def(node)
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self._visit_def(node)
-
-    finder = Finder()
-    finder.visit(tree)
-    return finder.found
-
-
-def _is_class_in_module(tree: ast.Module, qualname: str) -> bool:
-    """Return True if the def with the given qualname is a ClassDef."""
-    parts = qualname.split(".")
-
-    class Finder(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self._scope: list[str] = []
-            self.found = False
-
-        def _visit_def(self, node: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef) -> None:
-            self._scope.append(node.name)
-            if self._scope == parts and isinstance(node, ast.ClassDef):
-                self.found = True
-            self.generic_visit(node)
-            self._scope.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._visit_def(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._visit_def(node)
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self._visit_def(node)
-
-    finder = Finder()
-    finder.visit(tree)
-    return finder.found
 
 
 def _enclosing_qualname(scope_stack: list[str]) -> str:
@@ -622,6 +646,7 @@ def _add_reference_edges(
     all_symbols: dict[str, list[Symbol]],
     sym_qualnames_in_module: set[str],
     first_party_modules: set[str],
+    is_init_file: bool = False,
 ) -> None:
     """Walk an AST and add reference edges into `graph`.
 
@@ -632,6 +657,10 @@ def _add_reference_edges(
     to the imported first-party module's <module> node (so importing a module makes
     its module-level code reachable). Individual imported symbols are NOT wired
     (C4: bare import/re-export does NOT count).
+
+    FIX C: For __init__.py files, relative import level math must NOT drop a segment
+    for level 1. The module name of an __init__.py IS the package itself; level-1
+    means 'this package', not 'parent package'.
 
     Other import statements (non-first-party) are skipped entirely.
     """
@@ -696,27 +725,57 @@ def _add_reference_edges(
 
             CRITICAL: do NOT wire individual imported symbols (x is NOT wired here).
             Only the module's <module> node (its top-level code) becomes reachable.
+
+            Two forms handled:
+              - `from pkg.mod import x`  → node.module='pkg.mod', level=0
+                Emits edge to 'pkg.mod:<module>'.
+              - `from . import utils`    → node.module=None, level=1
+                Emits edge to '<base>.utils:<module>' for each name in node.names
+                (each name is a submodule being imported from the package).
+              - `from .mod import x`    → node.module='mod', level=1
+                Emits edge to '<base>.mod:<module>'.
+
+            FIX C: For __init__.py files the module name IS the package (e.g. 'app.core').
+            A level-1 relative import means 'this package', NOT 'parent package'.
+            Regular files (e.g. 'app.core.thing') correctly strip one segment for level 1
+            to obtain 'app.core'. __init__.py files must NOT strip any segment for level 1.
             """
-            if node.module is None:
+            if node.module is None and node.level == 0:
                 return
             src = f"{module}:<module>"  # always from the module-level node
             self._ensure_node(src)
-            # Resolve relative imports: build the full module path
+
             if node.level and node.level > 0:
-                # Relative import: reconstruct the target module from current module + level
+                # Relative import: compute base package from current module + level.
+                # FIX C: For __init__.py (is_init_file=True), the module name IS already
+                # the package, so level 1 means 'here' (no segment to drop). For a regular
+                # file, level 1 means 'parent package' (drop the last segment = filename).
                 parts = module.split(".")
-                # Go up `level` levels
-                base_parts = parts[: len(parts) - node.level]
-                if node.module:
-                    imported_mod = ".".join(base_parts + [node.module])
+                if is_init_file:
+                    # __init__.py: module = 'app.core' = the package itself.
+                    # level 1 -> base = 'app.core', level 2 -> base = 'app', etc.
+                    base_parts = (
+                        parts[: len(parts) - (node.level - 1)] if node.level > 1 else parts[:]
+                    )
                 else:
-                    imported_mod = ".".join(base_parts)
+                    # Regular file: module = 'app.core.thing'; level 1 -> 'app.core'
+                    base_parts = parts[: len(parts) - node.level]
+
+                if node.module:
+                    # `from .mod import x` — target is base.mod
+                    candidate_mods = [".".join(base_parts + [node.module])]
+                else:
+                    # `from . import utils, other` — each name in node.names is a submodule
+                    candidate_mods = [".".join(base_parts + [alias.name]) for alias in node.names]
             else:
-                imported_mod = node.module
-            if imported_mod in first_party_modules:
-                tgt = f"{imported_mod}:<module>"
-                self._ensure_node(tgt)
-                graph[src].add(tgt)
+                # Absolute import
+                candidate_mods = [node.module]  # type: ignore[list-item]
+
+            for imported_mod in candidate_mods:
+                if imported_mod and imported_mod in first_party_modules:
+                    tgt = f"{imported_mod}:<module>"
+                    self._ensure_node(tgt)
+                    graph[src].add(tgt)
 
         def visit_Name(self, node: ast.Name) -> None:
             if isinstance(node.ctx, ast.Load):

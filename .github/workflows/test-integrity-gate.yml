@@ -1,0 +1,67 @@
+# SP-00e.4 — test-integrity-gate (Executor Contract C6, anti-reward-hacking).
+#
+# ImpossibleBench: agents cheat by deleting/weakening tests. This fails a PR that deletes a
+# test function or net-removes assertions (in TEST paths) UNLESS the PR body carries a
+# `## Test Changes` block (which the C9 reviewer approves). Coverage-floor enforcement
+# (coverage-baseline.json) is a separate C6 piece deferred until SP-00c gives a CI-green suite.
+#
+# CODEOWNERS guards .github/, so this gate-config is reviewed by the operator + Gemini (C9).
+name: test-integrity-gate
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  test-integrity:
+    name: no unexplained test deletion/weakening (C6)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_test_integrity_gate.py -q
+
+      - name: Re-run SP-00e.4 acceptance (C1)
+        run: |
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00e.4.yaml
+
+      - name: --strict-markers committed in pyproject (C6)
+        run: grep -q 'strict-markers' pyproject.toml
+
+      - name: Write PR body to a file (env-passed, not interpolated)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf -- '%s' "$PR_BODY" > pr_body.md
+
+      - name: test-integrity-gate (diff of TEST paths vs PR body)
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          # Scope the diff to TEST paths so removing a runtime assert never false-positives.
+          git diff "${BASE}...${HEAD}" -- \
+            'tests' 'lib/durability/tests' 'lib/evaluators/tests' 'lib/router/tests' \
+            'scripts/tests' 'app/tests' 'app/adapters/inmemory/tests' 'lib/a2a/tests' \
+            ':(glob)**/test_*.py' ':(glob)**/*_test.py' > test_diff.patch || true
+          python3 scripts/ci/test_integrity_gate.py --diff-file test_diff.patch --pr-body pr_body.md

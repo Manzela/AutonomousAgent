@@ -1,0 +1,3 @@
+== SP-00e.4 GREEN: same deletion WITH an approved ## Test Changes block ==
+== test-integrity-gate: PASS (no unexplained test deletion/weakening) ==
+exit=0

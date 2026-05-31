@@ -1,0 +1,138 @@
+# Acceptance — SP-00i · model-pin gate + harness-config sha + upgrade-regression gate
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Scope (honest):
+#   - Scanning config/hermes/model-tiers.yaml, config/limits.yaml, deploy/litellm/config.yaml
+#     for unpinned / ':latest' model refs — BLOCKING.
+#   - Stamping the harness-config sha (reasoning_effort + system_prompt_sha + thinking +
+#     compaction) into the step summary — INFORMATIONAL, not blocking.
+#   - Detecting when a model or config file changes in the PR diff — ADVISORY (non-blocking
+#     warning to trigger a manual SP-G1 re-run).
+#   - SP-G1 golden regression gate: ADVISORY ONLY — SP-G1 is not yet built (task #11).
+#     A PR changing NEITHER a scanned config file NOR the harness-config sha does NOT
+#     trigger an SP-G1 re-run (no-op control, documented in .github/workflows/model-pin-gate.yml).
+#
+# Assertions are stdlib + the script only (run_acceptance.py re-runs them, C1).
+# Each 'detects-*' assertion is a self-contained red-green (C2/C12): creates a deliberately
+# broken temp input, runs the gate, exits 0 ONLY if the gate returned non-zero.
+#
+# Source: PRD §6 EPIC 0 SP-00i.
+
+task: SP-00i
+title: "model-pin gate (SP-00i) — unpinned/latest model ref fails; harness-config sha stamped; SP-G1 advisory"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: passes-on-real-configs
+    description: >
+      Green control: the real repo config files (model-tiers.yaml, limits.yaml,
+      deploy/litellm/config.yaml) are all pinned — the gate exits 0.
+      Non-vacuous: proves the gate is wired to the real tree and does not trivially
+      always-fail.
+    cmd: |
+      python3 scripts/ci/model_pin_check.py \
+        --paths config/hermes/model-tiers.yaml,config/limits.yaml,deploy/litellm/config.yaml
+    expect_exit: 0
+
+  - id: detects-latest-tag
+    description: >
+      Self-contained red-green (C2/C12): a config containing a ':latest' model ref
+      MUST make the gate fail. Exits 0 only if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'model: badregistry/some-model:latest\n' > "$tmp"
+      if python3 scripts/ci/model_pin_check.py --paths "$tmp" >/dev/null 2>&1; then
+        echo "FAIL: ':latest' model ref not caught"; rm -f "$tmp"; exit 1
+      fi
+      rm -f "$tmp"; echo "OK: ':latest' ref rejected (gate failed as required)"
+    expect_exit: 0
+
+  - id: detects-bare-name-no-version
+    description: >
+      Self-contained red-green (C2/C12): a config containing a model ref with no
+      version component (bare provider/name) MUST make the gate fail. Exits 0 only
+      if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'model: some_provider/no_version_here\n' > "$tmp"
+      if python3 scripts/ci/model_pin_check.py --paths "$tmp" >/dev/null 2>&1; then
+        echo "FAIL: bare-name unpinned ref not caught"; rm -f "$tmp"; exit 1
+      fi
+      rm -f "$tmp"; echo "OK: bare-name unpinned ref rejected (gate failed as required)"
+    expect_exit: 0
+
+  - id: accepts-digest-pinned-ref
+    description: >
+      A model ref pinned with a @sha256: digest is ALWAYS considered pinned regardless
+      of the rest of the name. The gate exits 0 for a digest-only config.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'model: myrepo/model@sha256:abc123def456abc123def456\n' > "$tmp"
+      python3 scripts/ci/model_pin_check.py --paths "$tmp"
+      rc=$?; rm -f "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: accepts-versioned-name-segment
+    description: >
+      Model refs with version digits embedded in the last path segment (the repo
+      convention for vertex_ai/*, openrouter/*, hosted_vllm/*) are pinned.
+      Gate exits 0.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'model_name: vertex_ai/claude-opus-4-7\nmodel: vertex_ai/gemini-3-5-flash\n' > "$tmp"
+      python3 scripts/ci/model_pin_check.py --paths "$tmp"
+      rc=$?; rm -f "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: harness-sha-is-stable
+    description: >
+      The harness-config sha produced by --harness-config is deterministic: running
+      the gate twice with the same key=val pairs produces the same sha. The gate
+      exits 0 on both runs and the sha lines are identical.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'model: vertex_ai/claude-opus-4-7\n' > "$tmp"
+      sha1="$(python3 scripts/ci/model_pin_check.py --paths "$tmp" \
+               --harness-config 'reasoning_effort=high,thinking=true' 2>/dev/null \
+               | grep 'harness-config-sha:' | awk '{print $NF}')"
+      sha2="$(python3 scripts/ci/model_pin_check.py --paths "$tmp" \
+               --harness-config 'reasoning_effort=high,thinking=true' 2>/dev/null \
+               | grep 'harness-config-sha:' | awk '{print $NF}')"
+      rm -f "$tmp"
+      if [ -z "$sha1" ] || [ "$sha1" != "$sha2" ]; then
+        echo "FAIL: harness-config sha not stable (sha1='$sha1', sha2='$sha2')"; exit 1
+      fi
+      echo "OK: harness-config sha is stable: $sha1"
+    expect_exit: 0
+
+  - id: harness-sha-changes-on-value-bump
+    description: >
+      A change to any harness-config field produces a DIFFERENT sha — proving that
+      a model or reasoning-effort bump is detectable. Exits 0 only if the two shas differ.
+    cmd: |
+      tmp="$(mktemp)"
+      printf 'model: vertex_ai/claude-opus-4-7\n' > "$tmp"
+      sha_before="$(python3 scripts/ci/model_pin_check.py --paths "$tmp" \
+               --harness-config 'reasoning_effort=high' 2>/dev/null \
+               | grep 'harness-config-sha:' | awk '{print $NF}')"
+      sha_after="$(python3 scripts/ci/model_pin_check.py --paths "$tmp" \
+               --harness-config 'reasoning_effort=medium' 2>/dev/null \
+               | grep 'harness-config-sha:' | awk '{print $NF}')"
+      rm -f "$tmp"
+      if [ -z "$sha_before" ] || [ "$sha_before" = "$sha_after" ]; then
+        echo "FAIL: harness-config sha did not change on value bump"; exit 1
+      fi
+      echo "OK: sha changed from $sha_before to $sha_after"
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/model-pin-gate.yml
+  artifact: model-pin-gate-evidence (CI-produced, re-runs this via run_acceptance.py)
+  sp_g1_advisory: >
+    SP-G1 golden regression re-run is ADVISORY (task #11 not yet built). When a model or
+    harness-config change is detected in the PR diff, the workflow emits a non-blocking
+    warning. Operator must manually confirm no regression before merging any PR that bumps
+    a model or harness-config field. The no-op control (PR changes neither -> no SP-G1
+    re-run) is documented in .github/workflows/model-pin-gate.yml.

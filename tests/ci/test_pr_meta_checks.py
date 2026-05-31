@@ -65,6 +65,15 @@ def test_extract_section_missing_returns_none():
     assert pmc.extract_section("## Summary\nx\n", "Evidence") is None
 
 
+def test_extract_section_matches_contract_annotated_header():
+    """The §4 PR template annotates headers ('## Evidence (C1)'); the gate must still find it."""
+    md = "## Evidence (C1)\n```\necho ok\n```\n\n## Test Truth (C7)\ncollected=1 passed=1 failed=0 skipped=0 errors=0\n"
+    assert "echo ok" in pmc.extract_section(md, "Evidence")
+    assert "collected=1" in pmc.extract_section(md, "Test Truth")
+    # must NOT over-match a different header that merely starts with the same letters
+    assert pmc.extract_section("## Evidenced\nx\n", "Evidence") is None
+
+
 def test_extract_fenced_blocks():
     section = "intro\n```\ncmd one\n```\nmid\n```bash\ncmd two\n```\n"
     blocks = pmc.extract_fenced_blocks(section)

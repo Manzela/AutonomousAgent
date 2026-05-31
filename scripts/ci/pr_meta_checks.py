@@ -61,7 +61,11 @@ def extract_section(md: str, header: str) -> str | None:
         if m:
             if collecting:
                 break  # next section starts
-            if m.group(1).strip().lower() == header.strip().lower():
+            htext = m.group(1).strip().lower()
+            target = header.strip().lower()
+            # Match the exact header OR a §4-annotated one ("## Evidence (C1)"), but not a
+            # different header that merely shares a prefix ("## Evidenced").
+            if htext == target or htext.startswith(target + " "):
                 collecting = True
             continue
         if collecting:

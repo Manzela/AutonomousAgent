@@ -27,24 +27,29 @@ run_from: repo_root
 assertions:
   - id: detects-unpinned-added-dep
     description: >
-      Self-contained red-green (C2/C12): a diff that ADDS a bare (unpinned) dep to
-      [project.dependencies] must make the gate FAIL (exit non-zero). This assertion
-      exits 0 only if the gate correctly returned non-zero.
+      Self-contained red-green (C2/C12): a diff that ADDS a bare (unpinned) dep using
+      the REAL PEP-621 pyproject.toml structure (`dependencies = [` under `[project]`,
+      NOT the legacy `[project.dependencies]` section header) must make the gate FAIL
+      (exit non-zero). This exercises the PEP-621 parse path (Fix 2). Exits 0 only if
+      the gate correctly returned non-zero.
     cmd: |
       tmp="$(mktemp -d)"
       cat > "$tmp/bad_diff.txt" << 'DIFF'
       --- a/pyproject.toml
       +++ b/pyproject.toml
-       [project.dependencies]
+       [project]
+       name = "myapp"
+       dependencies = [
       +  "bare-unpinned-dep",
+       ]
       DIFF
       if python3 scripts/ci/license_dep_gate.py \
            --pyproject-diff "$tmp/bad_diff.txt" \
            --added-files /dev/null >/dev/null 2>&1; then
-        echo "FAIL: unpinned dep not caught by gate"; rm -rf "$tmp"; exit 1
+        echo "FAIL: unpinned dep not caught by gate (PEP-621 parse path)"; rm -rf "$tmp"; exit 1
       fi
       rm -rf "$tmp"
-      echo "OK: gate correctly rejected unpinned added dep"
+      echo "OK: gate correctly rejected unpinned added dep (PEP-621 structure)"
     expect_exit: 0
 
   - id: detects-gpl-license-in-added-source
@@ -132,16 +137,20 @@ assertions:
 
   - id: accepts-clean-pinned-dep-and-mit-source
     description: >
-      Green control: a diff adding a pinned dep from the allowlist + a source file
-      with an MIT SPDX header passes the gate (exit 0). Proves the gate is not
-      trivially always-fail.
+      Green control: a diff adding a pinned dep from the allowlist using the real
+      PEP-621 structure (`dependencies = [` under `[project]`) plus a source file with
+      an MIT SPDX header passes the gate (exit 0). Proves the gate is not trivially
+      always-fail and that PEP-621 parse path accepts legitimate additions.
     cmd: |
       tmp="$(mktemp -d)"
       cat > "$tmp/clean_diff.txt" << 'DIFF'
       --- a/pyproject.toml
       +++ b/pyproject.toml
-       [project.dependencies]
+       [project]
+       name = "myapp"
+       dependencies = [
       +  "pyyaml>=6.0",
+       ]
       DIFF
       printf '# SPDX-License-Identifier: MIT\nimport os\n' > "$tmp/clean_file.py"
       printf '%s\n' "$tmp/clean_file.py" > "$tmp/added_files.txt"
@@ -162,6 +171,97 @@ assertions:
         --pyproject-diff "$tmp/empty_diff.txt" \
         --added-files /dev/null
       rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: gate-passes-on-own-source
+    description: >
+      Regression guard (Fix 1): the gate must NOT flag its own source file
+      scripts/ci/license_dep_gate.py. The script defines GPL/AGPL/LGPL as string
+      constants — bare keyword scanning would false-positive here, which was the root
+      cause of the CI red. Exits 0 only if the gate exits 0 when scanning its own file.
+    cmd: |
+      tmp="$(mktemp -d)"
+      # Empty pyproject diff (no dep changes in the gate's own PR)
+      printf '' > "$tmp/empty_diff.txt"
+      # List the gate's own source as an "added" file
+      printf 'scripts/ci/license_dep_gate.py\n' > "$tmp/added_files.txt"
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/empty_diff.txt" \
+        --added-files "$tmp/added_files.txt"
+      rc=$?
+      rm -rf "$tmp"
+      if [ "$rc" -ne 0 ]; then
+        echo "FAIL: gate falsely flagged its own source file (Fix 1 regression)"; exit 1
+      fi
+      echo "OK: gate passes on its own source (disallowed_license_in returns None)"
+    expect_exit: 0
+
+  - id: pinned-dep-gt-lt-operators
+    description: >
+      Regression guard (Fix 3): a dep specifier using PEP-440 `>` or `<` operators
+      (`pkg > 1.0`, `pkg < 2.0`) must be treated as PINNED and must NOT trigger the
+      unpinned-dep hard failure. Uses an allowlisted dep (pyyaml) with gt/lt pins.
+      Exits 0 only if the gate exits 0 (no hard failure) for both operators.
+    cmd: |
+      tmp="$(mktemp -d)"
+      # pyyaml with a > lower bound — must be treated as pinned
+      cat > "$tmp/gt_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "pyyaml > 5.0",
+       ]
+      DIFF
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/gt_diff.txt" \
+        --added-files /dev/null
+      rc_gt=$?
+      cat > "$tmp/lt_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "pyyaml < 7.0",
+       ]
+      DIFF
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/lt_diff.txt" \
+        --added-files /dev/null
+      rc_lt=$?
+      rm -rf "$tmp"
+      if [ "$rc_gt" -ne 0 ] || [ "$rc_lt" -ne 0 ]; then
+        echo "FAIL: gate rejected pyyaml with > or < operator (Fix 3 regression)"; exit 1
+      fi
+      echo "OK: gate correctly accepts > and < version operators as pinned"
+    expect_exit: 0
+
+  - id: detects-unknown-not-allowlisted-dep
+    description: >
+      Red-green (Fix 4): a dep that is NOT in the allowlist and NOT a typosquat must
+      cause a HARD failure (exit non-zero). Adding a dep to the allowlist is a reviewed
+      act — the gate enforces this by blocking merges for any unreviewed addition.
+      Exits 0 only if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      # 'totally-new-library' is not a typosquat of any popular package and is not
+      # in the built-in allowlist — must be a hard failure.
+      cat > "$tmp/unknown_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project]
+       dependencies = [
+      +  "totally-new-library>=1.0",
+       ]
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/unknown_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: unknown non-allowlisted dep was not rejected (Fix 4 regression)"
+        rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly hard-failed on unknown not-allowlisted dep"
     expect_exit: 0
 
 proof:

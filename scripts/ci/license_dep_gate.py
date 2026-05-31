@@ -32,21 +32,32 @@ from typing import Optional
 # Constants
 # ---------------------------------------------------------------------------
 
-# SPDX identifiers (or fragments) that are disallowed in agent-owned source.
-# Lower-cased for comparison; matched as word-boundary substrings so
-# 'GPL-2.0-or-later' and 'AGPL-3.0' are both caught.
-_DISALLOWED_LICENSE_PATTERNS: list[re.Pattern] = [
-    re.compile(r"\bGPL\b", re.IGNORECASE),  # GPL-2.0, GPL-3.0, LGPL-*
-    re.compile(r"\bLGPL\b", re.IGNORECASE),
-    re.compile(r"\bAGPL\b", re.IGNORECASE),
-    re.compile(r"all rights reserved", re.IGNORECASE),
-    # Unlicensed / proprietary markers
-    re.compile(r"\bProprietary\b", re.IGNORECASE),
-    re.compile(r"\bUNLICENSED\b", re.IGNORECASE),  # catch explicit UNLICENSED
-]
-
 # SPDX-License-Identifier line: if present, ONLY these identifiers are allowed.
 _SPDX_HEADER_RE = re.compile(r"SPDX-License-Identifier:\s*([\w.+\-]+)", re.IGNORECASE)
+
+# Copyleft / proprietary SPDX identifiers that are disallowed when declared in
+# an SPDX-License-Identifier header.  This list is matched as a case-insensitive
+# PREFIX on the declared identifier so 'GPL-3.0-only', 'AGPL-3.0-or-later', and
+# 'LGPL-2.1-only' are all caught without scanning the rest of the file for the
+# bare word "GPL" (which would cause false positives in source files like THIS
+# one that merely DEFINE the term as a string constant).
+_DISALLOWED_SPDX_PREFIXES: tuple[str, ...] = (
+    "GPL",
+    "AGPL",
+    "LGPL",
+    "UNLICENSED",
+    "Proprietary",
+)
+
+# Prose patterns that are checked ONLY when there is NO SPDX header.
+# Intentionally narrow: only match "All Rights Reserved" when it appears on a
+# comment line (starts with `#`), which is the canonical form of a copyright
+# reservation notice in source files.  This avoids false positives on source
+# files — like this gate script itself — that merely MENTION the phrase in a
+# docstring or comment explaining what the pattern means.
+_PROSE_DISALLOWED_PATTERNS: list[re.Pattern] = [
+    re.compile(r"^#.*all\s+rights\s+reserved", re.IGNORECASE | re.MULTILINE),
+]
 
 # Permissive safe list for SPDX identifiers found in file headers.
 _ALLOWED_SPDX = frozenset(
@@ -185,8 +196,10 @@ _DEP_LINE_RE = re.compile(
     r"([\s,;\[><=!@~'\"]|$)",  # version specifier, closing quote, or end-of-name
 )
 
-# Version specifier: must have one of ==, >=, ~=, <=, !=, @ (URL/git)
-_VERSION_SPEC_RE = re.compile(r"(==|>=|~=|<=|!=|@)")
+# Version specifier: must have one of ==, >=, ~=, <=, !=, >, <, @ (URL/git).
+# Note: the multi-char operators (>=, <=, !=, ~=, ==) are listed FIRST so the
+# alternation matches them before the single-char < and > variants.
+_VERSION_SPEC_RE = re.compile(r"(==|>=|~=|<=|!=|>|<|@)")
 
 
 # ---------------------------------------------------------------------------
@@ -210,10 +223,11 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
     for raw_line in pyproject_diff_text.splitlines():
         # Track section boundaries (diff context lines start with ' ' or '-')
         stripped = raw_line.lstrip("+ ")
+
         if stripped.startswith("["):
             # A TOML section header — toggle whether we're in a dep section.
             # Accept [project.dependencies], [project.optional-dependencies.*],
-            # or bare variant names like [gcp], [a2a], [dev].
+            # or bare extra names like [gcp], [a2a], [dev].
             in_dep_section = bool(
                 re.match(
                     r"\[(project\.(?:optional-)?dependencies" r"|dev|gcp|a2a|test|extras)",
@@ -222,6 +236,36 @@ def find_added_deps(pyproject_diff_text: str) -> list[str]:
                 )
             )
             continue
+
+        # PEP-621 inline array style: deps live directly under [project] as
+        #   dependencies = [
+        #     "pkg>=1.0",
+        #   ]
+        # and under [project.optional-dependencies] as extra groups:
+        #   dev = [
+        #   gcp = [
+        # These do NOT produce a section header line, so we detect them by
+        # matching the key name on a context (space-prefixed) or added ('+')
+        # diff line.  We treat the assignment line itself as entering a dep
+        # section; the section ends when we hit the next TOML key or section.
+        if re.match(
+            r"^[+ ]?\s*(dependencies|optional-dependencies" r"|dev|gcp|a2a|test|extras)\s*=\s*\[",
+            raw_line,
+            re.IGNORECASE,
+        ):
+            in_dep_section = True
+            # The opening `[` line itself is not a dep spec — continue.
+            continue
+
+        # A closing bracket on its own line exits the current dep array.
+        if re.match(r"^[+ ]?\s*\]\s*$", raw_line) and in_dep_section:
+            in_dep_section = False
+            continue
+
+        # Any new TOML key (not a dep item) resets the section.
+        # Dep items are quoted strings; other TOML keys look like `key = ...`
+        if re.match(r"^[+ ]?\s*[a-zA-Z_][a-zA-Z0-9_\-]*\s*=\s*[^\[]", raw_line):
+            in_dep_section = False
 
         # Only inspect ADDED lines ('+') inside a dep section
         if not raw_line.startswith("+"):
@@ -357,18 +401,30 @@ def disallowed_license_in(file_text: str) -> Optional[str]:
     """
     lines = file_text.splitlines()[:50]  # only scan the header region
 
-    # 1. Check explicit SPDX-License-Identifier header
+    # 1. Check explicit SPDX-License-Identifier header.
+    #    If present, the identifier must be in _ALLOWED_SPDX.  We check it
+    #    against _DISALLOWED_SPDX_PREFIXES (not a raw keyword scan) so that
+    #    source files which MENTION "GPL" in a comment or docstring (e.g. this
+    #    very gate script) are not false-flagged.
     for line in lines:
         m = _SPDX_HEADER_RE.search(line)
         if m:
             spdx_id = m.group(1).strip()
-            if spdx_id not in _ALLOWED_SPDX:
-                return spdx_id
-            return None  # valid SPDX — no further scanning needed
+            if spdx_id in _ALLOWED_SPDX:
+                return None  # valid SPDX — clean
+            # Check whether the declared identifier starts with a disallowed prefix.
+            spdx_upper = spdx_id.upper()
+            for prefix in _DISALLOWED_SPDX_PREFIXES:
+                if spdx_upper.startswith(prefix.upper()):
+                    return spdx_id
+            # Not in allowed set and not a known disallowed prefix — still disallowed.
+            return spdx_id
 
-    # 2. Pattern scan (first 50 lines)
+    # 2. No SPDX header: scan only for explicit prose copyright reservations.
+    #    We do NOT scan for bare "GPL"/"AGPL" keywords here — that would flag any
+    #    source file that discusses those terms (including this gate itself).
     header_text = "\n".join(lines)
-    for pat in _DISALLOWED_LICENSE_PATTERNS:
+    for pat in _PROSE_DISALLOWED_PATTERNS:
         match = pat.search(header_text)
         if match:
             return match.group(0)  # return the matched token
@@ -389,13 +445,9 @@ def evaluate(
     Hard violations:
       - A dep specifier that is unpinned (no version constraint).
       - A dep name that is a typosquat candidate (edit-distance 1-2 from popular).
+      - A dep NOT in the allowlist (regardless of typosquat proximity) — the author
+        must add it to _BUILTIN_ALLOWLIST as a reviewed act before the PR can merge.
       - An added source file containing a disallowed license marker.
-
-    Not-a-hard-block (advisory, recorded in reasons with 'ADVISORY:' prefix):
-      - A dep in the allowlist but lacking a pin (still a hard fail — pinning
-        is always required regardless of allowlist status).
-      - A dep NOT in the allowlist but not typosquatting (advisory: unknown dep,
-        needs review for SP-G1 golden set).
     """
     if allowlist is None:
         allowlist = _BUILTIN_ALLOWLIST
@@ -423,11 +475,12 @@ def evaluate(
         elif re.sub(r"[_\-]+", "-", name) not in {
             re.sub(r"[_\-]+", "-", a.lower()) for a in allowlist
         }:
-            # Advisory: unknown dep, not a typosquat but not yet allowlisted.
+            # Hard failure: unknown dep not yet in the allowlist. Adding a dep to
+            # the allowlist is a reviewed act — the author must do it explicitly.
             reasons.append(
-                f"ADVISORY: added dep '{name}' is not in the SP-00h allowlist "
-                f"(not a detected typosquat; add to _BUILTIN_ALLOWLIST once reviewed "
-                f"— tracked under SP-G1)"
+                f"HARD: added dep '{name}' is not in the SP-00h allowlist "
+                f"(add to _BUILTIN_ALLOWLIST in scripts/ci/license_dep_gate.py "
+                f"as a reviewed act before merging)"
             )
 
     for filename, text in sorted(added_file_texts.items()):

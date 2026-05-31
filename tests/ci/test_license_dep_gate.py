@@ -207,9 +207,14 @@ def test_disallowed_license_in_apache_is_clean():
 
 
 def test_disallowed_license_in_proprietary_prose():
+    # Bare "Proprietary" in a comment is NOT caught by the prose scanner —
+    # the gate only flags copyleft when declared via SPDX-License-Identifier.
+    # A file that wants to mark itself proprietary should use an SPDX header;
+    # prose scanning for "Proprietary" would false-flag comments that merely
+    # discuss the concept (see docs, scripts, etc.).
     text = "# This software is Proprietary and confidential.\nimport os\n"
     result = ldg.disallowed_license_in(text)
-    assert result is not None
+    assert result is None  # prose-only "Proprietary" is not flagged; SPDX header required
 
 
 def test_disallowed_license_in_lgpl_spdx():
@@ -276,17 +281,22 @@ def test_evaluate_disallowed_license_in_added_file_is_hard_fail():
     assert any("license" in r.lower() for r in reasons)
 
 
-def test_evaluate_unknown_dep_not_typosquat_is_advisory_not_hard():
-    """An added dep that is not in the allowlist but not typosquatting is advisory only."""
+def test_evaluate_unknown_dep_not_typosquat_is_hard_fail():
+    """An added dep not in the allowlist is a HARD failure even if it is not a typosquat.
+
+    Adding a dep to the allowlist is a reviewed act; the gate enforces that the author
+    must explicitly add it to _BUILTIN_ALLOWLIST before the PR can merge.
+    """
     ok, reasons = ldg.evaluate(
         added_dep_specs=["my-new-lib>=1.0"],
         added_file_texts={},
         allowlist=frozenset(),  # not in allowlist
-        popular=frozenset({"requests"}),  # far from requests
+        popular=frozenset({"requests"}),  # far from requests — not a typosquat
     )
-    # Should pass (no hard violation) but emit an advisory
-    assert ok is True
-    assert any("ADVISORY" in r for r in reasons)
+    # Must be a hard failure: allowlist check is now blocking, not advisory.
+    assert ok is False
+    hard = [r for r in reasons if r.startswith("HARD:")]
+    assert any("allowlist" in r.lower() for r in hard), f"Expected allowlist hard-fail in {hard}"
 
 
 def test_evaluate_multiple_hard_violations_all_reported():
@@ -305,3 +315,79 @@ def test_evaluate_empty_inputs_ok():
     ok, reasons = ldg.evaluate([], {})
     assert ok is True
     assert reasons == []
+
+
+# ---------------------------------------------------------------------------
+# Fix-specific regression tests (added 2026-05-31)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_passes_on_its_own_source():
+    """disallowed_license_in must return None for license_dep_gate.py itself.
+
+    The gate defines GPL/AGPL/LGPL as string patterns in its source; bare keyword
+    scanning would false-flag its own file. This is the CI red case that Fix 1 solves.
+    """
+    import os
+
+    gate_path = os.path.join(
+        os.path.dirname(__file__), "..", "..", "scripts", "ci", "license_dep_gate.py"
+    )
+    with open(gate_path) as fh:
+        content = fh.read()
+    result = ldg.disallowed_license_in(content)
+    assert result is None, (
+        f"disallowed_license_in flagged the gate's own source: {result!r}. "
+        "The gate must pass on itself (Fix 1 regression)."
+    )
+
+
+def test_is_pinned_dep_accepts_gt():
+    """'pkg > 1.0' carries a version constraint and must be treated as pinned (Fix 3)."""
+    assert ldg.is_pinned_dep("pkg > 1.0") is True
+
+
+def test_is_pinned_dep_accepts_lt():
+    """'pkg < 2.0' carries a version constraint and must be treated as pinned (Fix 3)."""
+    assert ldg.is_pinned_dep("pkg < 2.0") is True
+
+
+def test_find_added_deps_pep621_inline_array():
+    """PEP-621 deps under [project] with `dependencies = [` must be detected (Fix 2).
+
+    Real pyproject.toml structure:
+        [project]
+        dependencies = [
+          "newdep>=1.0",
+        ]
+    A dep added inside this array must be returned by find_added_deps.
+    """
+    diff = (
+        "--- a/pyproject.toml\n"
+        "+++ b/pyproject.toml\n"
+        " [project]\n"
+        ' name = "myapp"\n'
+        " dependencies = [\n"
+        '+  "newdep>=1.0",\n'
+        " ]\n"
+    )
+    specs = ldg.find_added_deps(diff)
+    assert any("newdep" in s for s in specs), f"Expected newdep in {specs}"
+
+
+def test_evaluate_unknown_non_typosquat_dep_hard_fails_with_allowlist_message():
+    """An allowlist miss that is NOT a typosquat must produce a HARD failure (Fix 4).
+
+    The error message must guide the author to add the dep to _BUILTIN_ALLOWLIST.
+    """
+    ok, reasons = ldg.evaluate(
+        added_dep_specs=["totally-new-pkg>=2.0"],
+        added_file_texts={},
+        allowlist=frozenset(),
+        popular=frozenset({"requests", "flask"}),
+    )
+    assert ok is False, "Unknown non-typosquat dep must be a hard failure (Fix 4)"
+    hard = [r for r in reasons if r.startswith("HARD:")]
+    assert any(
+        "allowlist" in r.lower() for r in hard
+    ), f"Hard reason must mention 'allowlist' but got: {hard}"

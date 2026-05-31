@@ -103,6 +103,11 @@ target-version = "py311"
 extend-exclude = ["hermes-agent"]
 
 [tool.pytest.ini_options]
+# SP-00e.4 (C6): --strict-markers (every marker is registered/built-in — verified by a
+# --collect-only sweep) so an unregistered/typo'd marker errors instead of silently passing;
+# `-p no:cacheprovider` disables the cache plugin so CI runs exactly what it claims (no
+# --lf/--ff state leakage between runs).
+addopts = ["--strict-markers", "-p", "no:cacheprovider"]
 testpaths = [
   "tests",
   "lib/durability/tests",

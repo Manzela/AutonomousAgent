@@ -716,6 +716,82 @@ assertions:
       PYEOF
     expect_exit: 0
 
+  - id: waiver-ban-survives-multifile-state-leak
+    description: >
+      BUG 1 FIX (state leak across files): in_triple_string MUST reset at every
+      new-file boundary in a multi-file diff. Without the fix, if file A leaves an
+      unclosed triple-quote hunk, in_triple_string stays True into file B, causing
+      @manual on an added def in file B to be silently skipped (waiver ban bypassed).
+      After the fix: state resets at `diff --git ` so file B's @manual IS detected.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import _detect_self_waivers_in_diff
+
+      # File A: adds an unclosed opening triple-quote (no closing """ in the hunk)
+      # File B: adds @manual on a public def
+      diff = (
+          "diff --git a/app/file_a.py b/app/file_a.py\n"
+          "--- a/app/file_a.py\n"
+          "+++ b/app/file_a.py\n"
+          "@@ -0,0 +1,2 @@\n"
+          "+def func_a():\n"
+          '+    """\n'
+          "diff --git a/app/file_b.py b/app/file_b.py\n"
+          "--- a/app/file_b.py\n"
+          "+++ b/app/file_b.py\n"
+          "@@ -0,0 +1,3 @@\n"
+          "+@manual\n"
+          "+def func_b():\n"
+          "+    pass\n"
+      )
+      found = _detect_self_waivers_in_diff(diff)
+      if not found:
+          print("FAIL: @manual in file B was NOT detected — state leaked from file A's unclosed triple-quote")
+          sys.exit(1)
+      if not any("@manual" in s for s in found):
+          print("FAIL: found entries do not contain @manual:", found)
+          sys.exit(1)
+      print("OK: @manual in file B correctly detected despite file A's unclosed triple-quote:", found)
+      PYEOF
+    expect_exit: 0
+
+  - id: waiver-ban-ignores-removed-line-triplequote
+    description: >
+      BUG 2 FIX (removed-line state corruption): removed (`-`) lines must NOT affect
+      the triple-string toggle. Without the fix, a diff that REMOVES a line with `"""`
+      and then ADDS `@manual` on the next line causes the removed `"""` to flip
+      in_triple_string, treating the added `@manual` as inside a string (ban bypassed).
+      After the fix: `-` lines are skipped for state purposes so the @manual IS detected.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.dead_code_gate import _detect_self_waivers_in_diff
+
+      # Diff REMOVES a line with """ then ADDS @manual on the next line
+      diff = (
+          "diff --git a/app/attack_mod.py b/app/attack_mod.py\n"
+          "--- a/app/attack_mod.py\n"
+          "+++ b/app/attack_mod.py\n"
+          "@@ -1,2 +1,3 @@\n"
+          '-    """\n'
+          "+@manual\n"
+          "+def attacked_fn():\n"
+          "+    pass\n"
+      )
+      found = _detect_self_waivers_in_diff(diff)
+      if not found:
+          print('FAIL: @manual was NOT detected — removed """ line incorrectly flipped triple-string state')
+          sys.exit(1)
+      if not any("@manual" in s for s in found):
+          print("FAIL: found entries do not contain @manual:", found)
+          sys.exit(1)
+      print("OK: @manual correctly detected despite preceding removed triple-quote line:", found)
+      PYEOF
+    expect_exit: 0
+
 proof:
   ci_workflow: .github/workflows/dead-code-gate.yml
   artifact: dead-code reachability gate (diff-vs-callgraph) + acceptance re-run + gate unit tests

@@ -336,12 +336,44 @@ def _detect_self_waivers_in_diff(diff_text: str) -> list[str]:
     FIX 5: Before counting triple-quotes, strip comment portions (text after unquoted '#')
     so that a line like `# \"\"\"` does NOT toggle the triple-string state — it's a comment,
     not an actual triple-quoted string delimiter.
+
+    BUG 1 FIX — State leak across files: `in_triple_string` is reset to False at every
+    new-file boundary (`diff --git ` lines). Without this reset, a hunk in file A that
+    leaves a triple-quote "open" would carry its state into file B, causing added waiver
+    lines in file B to be silently skipped (ban bypassed).
+
+    BUG 2 FIX — Removed-line state corruption: Only context (unchanged) lines and ADDED
+    (`+`) lines update the triple-string state. REMOVED (`-`) lines and diff metadata
+    lines (`---`, `+++`, `@@`, `diff --git`) are NOT part of the new file and must NOT
+    affect new-side string state. Without this fix, an attacker can remove a line
+    containing `\"\"\"` to flip the toggle and cause the next added `@manual` to be skipped.
     """
     found: list[str] = []
     in_triple_string = False  # tracks whether we're inside a """...""" or '''...''' block
 
     for raw_line in diff_text.splitlines():
-        content = raw_line[1:] if raw_line.startswith("+") else raw_line
+        # BUG 1 FIX: Reset triple-string state at every new-file boundary.
+        # A diff may span multiple files; the toggle must NOT leak across file sections.
+        if raw_line.startswith("diff --git "):
+            in_triple_string = False
+            continue
+
+        # BUG 2 FIX: Skip diff metadata lines and REMOVED lines for state purposes.
+        # Removed lines are NOT part of the new file; they must not affect new-side state.
+        # Metadata lines (---, +++, @@) are also skipped for state updates.
+        is_added = raw_line.startswith("+") and not raw_line.startswith("+++")
+        is_removed = raw_line.startswith("-") and not raw_line.startswith("---")
+        is_metadata = (
+            raw_line.startswith("---") or raw_line.startswith("+++") or raw_line.startswith("@@")
+        )
+
+        if is_removed or is_metadata:
+            # Skip: does not affect new-side string state; not scanned for markers.
+            continue
+
+        # At this point: raw_line is either a `+` (added) line or a context line.
+        # Both are present in the NEW file and should update triple-string state.
+        content = raw_line[1:] if is_added else raw_line
         stripped = content.strip()
 
         # FIX 5: Strip the comment portion before counting triple-quotes.
@@ -352,8 +384,8 @@ def _detect_self_waivers_in_diff(diff_text: str) -> list[str]:
         if tq_count % 2 == 1:
             in_triple_string = not in_triple_string
 
-        # Only inspect added lines for waivers
-        if not raw_line.startswith("+") or raw_line.startswith("+++"):
+        # Only inspect ADDED lines for waiver markers (context lines update state only).
+        if not is_added:
             continue
 
         # Skip lines inside triple-quoted strings (docstrings, multiline strings)

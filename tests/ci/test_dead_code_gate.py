@@ -1527,6 +1527,185 @@ def test_fixc_from_dot_mod_import_in_init_resolves_correctly() -> None:
 # ===========================================================================
 
 
+# ===========================================================================
+# 22. BUG 1 — State leak across files: in_triple_string must reset per file
+# ===========================================================================
+
+
+def test_bug1_multifile_state_leak_waiver_detected() -> None:
+    """BUG 1: in_triple_string MUST reset at every new-file boundary in the diff.
+
+    Attack: file A adds an unclosed opening triple-quote (opening `\"\"\"` with no
+    matching closing `\"\"\"` in the same hunk). Without a reset, in_triple_string
+    stays True into file B so the @manual on an added def in file B is skipped.
+
+    After the fix: in_triple_string resets to False at every `diff --git ` (or
+    `+++ `) boundary, so the @manual in file B IS detected (HARD fail).
+
+    Red-green: this test FAILS against the current code (state leaks from A to B,
+    @manual is skipped). It PASSES after the fix (state is reset per file).
+    """
+    # File A: adds an UNCLOSED opening docstring (no closing \"\"\" in the hunk)
+    # File B: adds a @manual decorator on a public def
+    diff = (
+        "diff --git a/app/file_a.py b/app/file_a.py\n"
+        "--- a/app/file_a.py\n"
+        "+++ b/app/file_a.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+def func_a():\n"
+        '+    """\n'  # opens triple-string, never closed in this hunk
+        "diff --git a/app/file_b.py b/app/file_b.py\n"
+        "--- a/app/file_b.py\n"
+        "+++ b/app/file_b.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+@manual\n"
+        "+def func_b():\n"
+        "+    pass\n"
+    )
+    found = _detect_self_waivers_in_diff(diff)
+    assert found, (
+        "BUG 1: @manual in file B must be detected even if file A left an unclosed "
+        "triple-string — in_triple_string must reset at every file boundary"
+    )
+    assert any("@manual" in s for s in found), found
+
+
+def test_bug1_multifile_state_leak_evaluate_hard_fails() -> None:
+    """BUG 1 integration: evaluate() sees the @manual across a 2-file diff → HARD fail.
+
+    This is the integration-level version of test_bug1_multifile_state_leak_waiver_detected.
+    The same two-file diff is fed through evaluate(); result.ok must be False and
+    the failure must mention self-waiver/@manual.
+    """
+    file_a = 'def func_a():\n    """\n    unclosed docstring start\n'
+    file_b = "def func_b():\n    pass\n"
+    ep_code = "if __name__ == '__main__':\n    pass\n"
+
+    files = {
+        "app/file_a.py": file_a,
+        "app/file_b.py": file_b,
+        "app/entry.py": ep_code,
+    }
+
+    diff = (
+        "diff --git a/app/file_a.py b/app/file_a.py\n"
+        "--- a/app/file_a.py\n"
+        "+++ b/app/file_a.py\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+def func_a():\n"
+        '+    """\n'
+        "diff --git a/app/file_b.py b/app/file_b.py\n"
+        "--- a/app/file_b.py\n"
+        "+++ b/app/file_b.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+@manual\n"
+        "+def func_b():\n"
+        "+    pass\n"
+    )
+
+    result = evaluate(
+        diff_text=diff,
+        file_reader=make_reader(files),
+        pyproject_text="",
+        allowlist_lines=[],
+        source_files=list(files.keys()),
+    )
+    assert (
+        not result.ok
+    ), "BUG 1: @manual in file B must be a HARD fail — state must not leak from file A"
+    combined = " ".join(result.hard_failures).lower()
+    assert "manual" in combined or "waiver" in combined, (
+        "failure must mention @manual/self-waiver: " + str(result.hard_failures)
+    )
+
+
+# ===========================================================================
+# 23. BUG 2 — Removed-line state corruption: `-` lines must NOT update state
+# ===========================================================================
+
+
+def test_bug2_removed_line_triplequote_does_not_flip_state() -> None:
+    """BUG 2: Removed (`-`) lines must NOT affect the triple-string toggle.
+
+    Attack: a diff REMOVES a line containing `\"\"\"` and then ADDS a `@manual` on the
+    next line. Without the fix, the removed `\"\"\"` flips in_triple_string to True and
+    the subsequent `@manual` on an added line is treated as 'inside a string' and skipped.
+
+    After the fix: `-` lines are ignored for state-tracking purposes, so the removed
+    `\"\"\"` has no effect. The `@manual` on the added line IS detected (HARD fail).
+
+    Red-green: FAILS against current code (removed `\"\"\"` corrupts state, @manual skipped).
+    PASSES after the fix (-lines ignored).
+    """
+    # The diff removes a line with \"\"\" and then adds @manual on the next line
+    diff = (
+        "diff --git a/app/attack_mod.py b/app/attack_mod.py\n"
+        "--- a/app/attack_mod.py\n"
+        "+++ b/app/attack_mod.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        '-    """\n'  # REMOVED line containing triple-quote — must NOT flip state
+        "+@manual\n"  # ADDED waiver line — must be detected despite removed \"\"\"
+        "+def attacked_fn():\n"
+        "+    pass\n"
+    )
+    found = _detect_self_waivers_in_diff(diff)
+    assert found, (
+        "BUG 2: @manual on an added line must be detected even if the preceding "
+        "removed line contained a triple-quote — removed lines must not affect state"
+    )
+    assert any("@manual" in s for s in found), found
+
+
+def test_bug2_removed_line_noqa_deadcode_variant() -> None:
+    """BUG 2 variant: removed `\"\"\"` before `# noqa: deadcode` — must still be detected.
+
+    Same structural attack as test_bug2_removed_line_triplequote_does_not_flip_state
+    but using `# noqa: deadcode` instead of `@manual`.
+    """
+    diff = (
+        "diff --git a/app/attack2_mod.py b/app/attack2_mod.py\n"
+        "--- a/app/attack2_mod.py\n"
+        "+++ b/app/attack2_mod.py\n"
+        "@@ -1,2 +1,3 @@\n"
+        '-    """\n'  # REMOVED line with triple-quote
+        "+def attacked2():  # noqa: deadcode\n"  # added waiver — must be detected
+        "+    pass\n"
+    )
+    found = _detect_self_waivers_in_diff(diff)
+    assert found, (
+        "BUG 2: # noqa: deadcode on an added line must be detected even if preceding "
+        "removed line contained a triple-quote"
+    )
+
+
+def test_bug2_genuine_added_triple_string_still_suppresses_marker() -> None:
+    """BUG 2 positive case: a @manual genuinely inside an added multi-line string
+    (opening AND closing triple-quotes both on ADDED lines of the SAME file,
+    marker between them) is correctly NOT flagged.
+
+    This confirms the triple-string suppression still works after Bug 2 fix — we only
+    stop tracking removed lines, not added ones.
+    """
+    diff = (
+        "diff --git a/app/docstring_mod.py b/app/docstring_mod.py\n"
+        "--- a/app/docstring_mod.py\n"
+        "+++ b/app/docstring_mod.py\n"
+        "@@ -0,0 +1,6 @@\n"
+        "+def func():\n"
+        '+    """\n'  # ADDED opening triple-quote
+        "+    This mentions @manual as documentation text.\n"  # inside docstring
+        "+    Use @manual in docs to describe...\n"  # inside docstring
+        '+    """\n'  # ADDED closing triple-quote
+        "+    return 1\n"
+    )
+    found = _detect_self_waivers_in_diff(diff)
+    assert not found, (
+        "Positive case: @manual text inside a genuine added triple-string "
+        "(both opening and closing on added lines of same file) must NOT be flagged; "
+        "got: " + str(found)
+    )
+
+
 def test_first_party_decorator_factory_call_is_wired() -> None:
     """Reviewer-raised scenario: a first-party decorator FACTORY used as @my_tool()
     (called with parentheses) must NOT be flagged as dead code; only the truly-dead

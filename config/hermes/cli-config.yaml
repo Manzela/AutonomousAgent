@@ -77,8 +77,9 @@ mcp_servers:
     # Sidecar HTTP MCP service (deploy/docker-compose.yml `github-mcp`).
     # Runs ghcr.io/github/github-mcp-server in HTTP mode on port 8003,
     # authenticated via the GITHUB_PERSONAL_ACCESS_TOKEN sops-encrypted
-    # secret. All toolsets enabled (--toolsets all): repos, pull_requests,
-    # issues, actions, code_security, dependabot, secret_protection, etc.
+    # secret. Toolsets RESTRICTED (SP-00f.1, C17) to the pre-authorized class:
+    # repos, issues, pull_requests, actions (code_security / secret_protection /
+    # orgs / users etc. are EXCLUDED). PAT->App-token swap is SP-00f.2.
     type: http
     url: http://github-mcp:8003
   context7:

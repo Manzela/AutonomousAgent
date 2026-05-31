@@ -296,16 +296,22 @@ services:
   #
   # Official server image from github/github-mcp-server. Hermes connects
   # via HTTP MCP protocol (matches Context7 pattern, simpler than stdio).
-  # Toolset = `all`: actions, code_security, copilot, dependabot, discussions,
-  # gists, git, issues, labels, notifications, orgs, projects, pull_requests,
-  # repos, secret_protection, security_advisories, stargazers, users.
-  # Required PAT scopes: repo, workflow, read:org, security_events.
+  # Toolsets RESTRICTED (SP-00f.1, C17) to the pre-authorized standing class:
+  #   repos, issues, pull_requests, actions.
+  # Deliberately EXCLUDED (over-broad / outside the §4.1 standing class):
+  #   code_security, secret_protection, orgs, users, copilot, dependabot,
+  #   discussions, gists, notifications, projects, security_advisories, stargazers.
+  # NOTE (SP-00f.2, tracked): the credential is STILL the broad classic PAT
+  #   (repo, workflow, read:org, security_events). Swapping it for a short-lived
+  #   least-priv GitHub-App installation token (App 3920713) needs harness
+  #   token-vending + refresh (this server reads the token ONCE at startup) and
+  #   lands with SP-05/§5.1. Do NOT run autonomously before SP-00f.2 closes.
 
   github-mcp:
     # Pinned by digest. Resolved 2026-05-19.
     image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
-    command: ["http", "--port", "8003", "--toolsets", "all"]
+    command: ["http", "--port", "8003", "--toolsets", "repos,issues,pull_requests,actions"]
     # HIGH-7: capability hardening for GitHub MCP (holds a live GitHub PAT).
     cap_drop: [ALL]
     security_opt:

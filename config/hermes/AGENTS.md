@@ -11,7 +11,7 @@ The shell sandbox mounts `workspace` as `/workspace`. Treat that as the persiste
 You have access to:
 - **File reads** (in-process, host FS read-only mounts)
 - **Shell commands** via the `shell-sandbox` Docker container (`--cap-drop=ALL --network=none --read-only`; only `/workspace` is writable)
-- **GitHub MCP** via `github-mcp` sidecar (HTTP, port 8003) — authenticated via PAT with `repo` + `workflow` + `read:org` + `security_events` scopes. ALL toolsets enabled: actions, code_security, copilot, dependabot, discussions, gists, git, issues, labels, notifications, orgs, projects, pull_requests, repos, secret_protection, security_advisories, stargazers, users.
+- **GitHub MCP** via `github-mcp` sidecar (HTTP, port 8003). Toolsets are RESTRICTED (SP-00f.1, C17) to the pre-authorized standing class: **repos, issues, pull_requests, actions** — code_security, secret_protection, orgs, users, gists, discussions, dependabot, etc. are NOT available. (The auth credential is still a broad PAT pending the least-priv GitHub-App token swap in SP-00f.2.)
 - **Context7 MCP** for live library/framework documentation
 - LLM access: routed through LiteLLM proxy → Vertex AI Anthropic Claude (Opus 4.7 default; Sonnet 4.6 fallback; Gemini 3.1 Pro for long-context once mesh ships)
 

@@ -1,0 +1,55 @@
+# Acceptance — SP-00f.1 · Restrict github-mcp toolsets to the pre-authorized class (C17)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Scope: the TOOL-EXPOSURE half of SP-00f. The CREDENTIAL half (retire the broad
+# classic PAT -> short-lived least-priv GitHub-App installation token; negative-
+# permission proof; "no classic PAT in compose/sops"; token TTL<2h) is SP-00f.2,
+# which needs harness token-vending + refresh (github-mcp reads the token once at
+# startup) and lands with SP-05/§5.1. SP-00f stays OPEN until SP-00f.2 closes.
+#
+# Source: PRD §6 EPIC 0 SP-00f ("replace GitHub-MCP `--toolsets all` ... with a
+# pre-authorized-only toolset; `grep -rn 'toolsets.*all' deploy/` empty").
+
+task: SP-00f.1
+title: "Restrict github-mcp --toolsets all -> pre-authorized class (repos,issues,pull_requests,actions)"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: no-toolsets-all-in-deploy
+    description: >
+      The PRD's literal SP-00f check: `--toolsets all` (or a toolset value of `all`)
+      is gone from deploy/ (command AND comments). Non-vacuous: the unmodified base
+      compose has `--toolsets all` and FAILS this (see evidence/SP-00f.1-red.txt).
+    cmd: |
+      if grep -rniE 'toolsets[^a-z]*all' deploy/ ; then
+        echo "FAIL: 'toolsets all' still present in deploy/"; exit 1
+      fi
+      echo "OK: no 'toolsets all' in deploy/"
+    expect_exit: 0
+
+  - id: github-mcp-uses-pre-authorized-set
+    description: >
+      The github-mcp command enables EXACTLY the C17 pre-authorized standing class.
+    cmd: |
+      grep -qF '"--toolsets", "repos,issues,pull_requests,actions"' deploy/docker-compose.yml
+    expect_exit: 0
+
+  - id: github-mcp-command-excludes-dangerous-toolsets
+    description: >
+      The github-mcp command line enables NONE of the over-broad toolsets outside the
+      §4.1 standing class (admin/secrets/org/user surfaces).
+    cmd: |
+      cmdline="$(grep -E '"--toolsets"' deploy/docker-compose.yml)"
+      for bad in code_security secret_protection orgs users dependabot gists discussions notifications copilot stargazers security_advisories projects; do
+        if printf '%s' "$cmdline" | grep -q "$bad"; then
+          echo "FAIL: dangerous toolset '$bad' enabled in the github-mcp command"; exit 1
+        fi
+      done
+      echo "OK: github-mcp command excludes all over-broad toolsets"
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/acceptance-frozen.yml
+  artifact: acceptance-frozen-evidence (re-runs this via run_acceptance.py)

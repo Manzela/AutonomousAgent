@@ -49,6 +49,14 @@ def test_parse_junit_counts_sums_multiple_suites():
     assert c["passed"] == 3  # 5 - 1 - 0 - 1
 
 
+def test_parse_junit_counts_raises_clean_error_on_malformed_xml():
+    """Malformed junitxml must fail the gate cleanly (ValueError), not crash with ParseError."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        pmc.parse_junit_counts("<testsuite tests=")  # truncated / not well-formed
+
+
 def test_canonical_test_truth_line_is_stable():
     line = pmc.canonical_test_truth(pmc.parse_junit_counts(JUNIT))
     assert line == "collected=10 passed=4 failed=2 skipped=3 errors=1"
@@ -72,6 +80,17 @@ def test_extract_section_matches_contract_annotated_header():
     assert "collected=1" in pmc.extract_section(md, "Test Truth")
     # must NOT over-match a different header that merely starts with the same letters
     assert pmc.extract_section("## Evidenced\nx\n", "Evidence") is None
+
+
+def test_extract_section_ignores_headers_inside_a_code_fence():
+    """A '## ...' line INSIDE the Evidence code block must not terminate the section early."""
+    md = "## Evidence\n```bash\n# example:\n## not a real header\npytest -q\n```\n## Next\nx\n"
+    body = pmc.extract_section(md, "Evidence")
+    assert "## not a real header" in body  # captured, not treated as a boundary
+    assert "pytest -q" in body
+    assert "Next" not in body  # the real next header still terminates it
+    ok, _ = pmc.check_evidence_present(md)
+    assert ok is True  # the fenced command is still detected
 
 
 def test_extract_fenced_blocks():

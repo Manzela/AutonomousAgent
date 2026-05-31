@@ -57,7 +57,7 @@ jobs:
       - name: Write PR body to a file (env-passed, not interpolated)
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: printf '%s' "$PR_BODY" > pr_body.md
+        run: printf -- '%s' "$PR_BODY" > pr_body.md
 
       - name: Emit authoritative test-truth (C7, advisory until SP-00c)
         run: |

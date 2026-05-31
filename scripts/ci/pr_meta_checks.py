@@ -26,15 +26,25 @@ _FENCE_RE = re.compile(r"^\s*```")
 
 
 def parse_junit_counts(xml_text: str) -> dict[str, int]:
-    """Sum every <testsuite> in a junitxml; derive passed = tests - failures - errors - skipped."""
-    root = ET.fromstring(xml_text)
+    """Sum every <testsuite> in a junitxml; derive passed = tests - failures - errors - skipped.
+
+    Raises ValueError (not a raw ParseError/crash) on malformed XML or non-integer count
+    attributes, so the CI gate fails cleanly with a legible message.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise ValueError(f"malformed junitxml: {e}") from e
     suites = list(root.iter("testsuite"))
     tests = failures = errors = skipped = 0
     for s in suites:
-        tests += int(s.get("tests", 0) or 0)
-        failures += int(s.get("failures", 0) or 0)
-        errors += int(s.get("errors", 0) or 0)
-        skipped += int(s.get("skipped", 0) or 0)
+        try:
+            tests += int(s.get("tests", 0) or 0)
+            failures += int(s.get("failures", 0) or 0)
+            errors += int(s.get("errors", 0) or 0)
+            skipped += int(s.get("skipped", 0) or 0)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"non-integer junitxml count attribute: {e}") from e
     passed = tests - failures - errors - skipped
     return {
         "collected": tests,
@@ -53,16 +63,26 @@ def canonical_test_truth(counts: dict[str, int]) -> str:
 
 
 def extract_section(md: str, header: str) -> str | None:
-    """Return the body of a `## <header>` section (up to the next `## ` header), or None."""
+    """Return the body of a `## <header>` section (up to the next `## ` header), or None.
+
+    Code-fence-aware: a `## ...` line INSIDE a ``` fenced block is section content, not a
+    boundary (so an Evidence block containing shell comments like `## note` does not truncate).
+    """
     collecting = False
+    in_fence = False
     body: list[str] = []
+    target = header.strip().lower()
     for line in md.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            if collecting:
+                body.append(line)
+            continue
         m = _HEADER_RE.match(line)
-        if m:
+        if m and not in_fence:
             if collecting:
                 break  # next section starts
             htext = m.group(1).strip().lower()
-            target = header.strip().lower()
             # Match the exact header OR a §4-annotated one ("## Evidence (C1)"), but not a
             # different header that merely shares a prefix ("## Evidenced").
             if htext == target or htext.startswith(target + " "):
@@ -137,8 +157,12 @@ def main(argv: list[str]) -> int:
     )
     args = ap.parse_args(argv)
 
-    with open(args.junitxml) as fh:
-        counts = parse_junit_counts(fh.read())
+    try:
+        with open(args.junitxml) as fh:
+            counts = parse_junit_counts(fh.read())
+    except (OSError, ValueError) as e:
+        print(f"::error::pr-meta-checks: cannot read/parse junitxml: {e}")
+        return 1
 
     if args.emit_test_truth:
         print(canonical_test_truth(counts))

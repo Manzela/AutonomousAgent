@@ -1,0 +1,180 @@
+# Acceptance — SP-00h · license + new-dep allowlist gate (blocking)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Assertions are stdlib + the gate script only (run_acceptance.py re-runs them, C1).
+# Each "detects-*" assertion is a self-contained red-green: it creates a deliberately-
+# broken temp input, runs the gate, and exits 0 ONLY IF the gate returned non-zero (C2/C12).
+#
+# Scope (honest):
+#   - Covers: unpinned added deps, typosquat detection, disallowed-license headers in
+#     added source files.
+#   - NOT in scope here: vuln/CVE scanning (OSV-Scanner + Dependabot already cover this).
+#   - Advisory: resolved-env pip-licenses scan (full blocking tracked under SP-G1).
+#
+# Operator-gated (documented, not faked):
+#   Adding "license-dep-gate / license-dep-gate" to required_status_checks via
+#   `gh api repos/Manzela/AutonomousAgent/branches/main/protection` requires admin
+#   scope and must be executed manually after the first successful CI run.
+#
+# Source: PRD §6 EPIC 0 SP-00h.
+
+task: SP-00h
+title: "license + new-dep allowlist gate (blocking) — GPL/AGPL/unpinned/typosquat blocked in PR diff"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: detects-unpinned-added-dep
+    description: >
+      Self-contained red-green (C2/C12): a diff that ADDS a bare (unpinned) dep to
+      [project.dependencies] must make the gate FAIL (exit non-zero). This assertion
+      exits 0 only if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/bad_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project.dependencies]
+      +  "bare-unpinned-dep",
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/bad_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: unpinned dep not caught by gate"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected unpinned added dep"
+    expect_exit: 0
+
+  - id: detects-gpl-license-in-added-source
+    description: >
+      Self-contained red-green (C2/C12): an added Python source file carrying a
+      GPL SPDX-License-Identifier header must make the gate FAIL. Exits 0 only if
+      the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      # Empty pyproject diff (no dep changes)
+      printf '' > "$tmp/empty_diff.txt"
+      # Added source file with disallowed GPL header
+      printf '# SPDX-License-Identifier: GPL-3.0-only\nimport os\n' \
+        > "$tmp/gpl_file.py"
+      printf '%s\n' "$tmp/gpl_file.py" > "$tmp/added_files.txt"
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/empty_diff.txt" \
+           --added-files "$tmp/added_files.txt" >/dev/null 2>&1; then
+        echo "FAIL: GPL header not caught by gate"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected GPL-licensed added source file"
+    expect_exit: 0
+
+  - id: detects-agpl-license-in-added-source
+    description: >
+      Self-contained red-green (C2/C12): an added source file with AGPL SPDX header
+      must be rejected. Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '' > "$tmp/empty_diff.txt"
+      printf '# SPDX-License-Identifier: AGPL-3.0-or-later\nimport sys\n' \
+        > "$tmp/agpl_file.py"
+      printf '%s\n' "$tmp/agpl_file.py" > "$tmp/added_files.txt"
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/empty_diff.txt" \
+           --added-files "$tmp/added_files.txt" >/dev/null 2>&1; then
+        echo "FAIL: AGPL header not caught by gate"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected AGPL-licensed added source file"
+    expect_exit: 0
+
+  - id: detects-all-rights-reserved-prose
+    description: >
+      Self-contained red-green (C2/C12): a file with an 'All Rights Reserved'
+      prose copyright notice (no SPDX header) must be rejected. Exits 0 only
+      if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '' > "$tmp/empty_diff.txt"
+      printf '# Copyright 2025 Evil Corp. All Rights Reserved.\nimport os\n' \
+        > "$tmp/rights_file.py"
+      printf '%s\n' "$tmp/rights_file.py" > "$tmp/added_files.txt"
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/empty_diff.txt" \
+           --added-files "$tmp/added_files.txt" >/dev/null 2>&1; then
+        echo "FAIL: 'All Rights Reserved' not caught by gate"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected 'All Rights Reserved' file"
+    expect_exit: 0
+
+  - id: detects-typosquat-added-dep
+    description: >
+      Self-contained red-green (C2/C12): a dep named 'requuests' (1-edit from
+      'requests', not in allowlist) added to pyproject.toml must cause the gate to
+      FAIL. Exits 0 only if the gate returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/typosquat_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project.dependencies]
+      +  "requuests>=2.28",
+      DIFF
+      if python3 scripts/ci/license_dep_gate.py \
+           --pyproject-diff "$tmp/typosquat_diff.txt" \
+           --added-files /dev/null >/dev/null 2>&1; then
+        echo "FAIL: typosquat dep not caught by gate"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: gate correctly rejected typosquat dep 'requuests'"
+    expect_exit: 0
+
+  - id: accepts-clean-pinned-dep-and-mit-source
+    description: >
+      Green control: a diff adding a pinned dep from the allowlist + a source file
+      with an MIT SPDX header passes the gate (exit 0). Proves the gate is not
+      trivially always-fail.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cat > "$tmp/clean_diff.txt" << 'DIFF'
+      --- a/pyproject.toml
+      +++ b/pyproject.toml
+       [project.dependencies]
+      +  "pyyaml>=6.0",
+      DIFF
+      printf '# SPDX-License-Identifier: MIT\nimport os\n' > "$tmp/clean_file.py"
+      printf '%s\n' "$tmp/clean_file.py" > "$tmp/added_files.txt"
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/clean_diff.txt" \
+        --added-files "$tmp/added_files.txt"
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: accepts-empty-diff-no-added-files
+    description: >
+      Green control: a PR that touches no pyproject.toml and no source files passes
+      trivially (exit 0).
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '' > "$tmp/empty_diff.txt"
+      python3 scripts/ci/license_dep_gate.py \
+        --pyproject-diff "$tmp/empty_diff.txt" \
+        --added-files /dev/null
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/license-dep-gate.yml
+  artifact: license-dep-gate (unit tests + acceptance re-run + advisory pip-licenses scan)
+
+# OPERATOR-GATED post-merge step (documented here for traceability):
+# After this workflow merges and has its first green run, the repo operator must run:
+#
+#   gh api repos/Manzela/AutonomousAgent/branches/main/protection \
+#     -X PATCH \
+#     --field 'required_status_checks[contexts][]=license-dep-gate / license-dep-gate'
+#
+# This wires the gate as a required_status_check. It requires admin scope and
+# CANNOT be automated from a per-PR GITHUB_TOKEN. Until this step is executed,
+# the gate runs on every PR but is NOT blocking merges to main.

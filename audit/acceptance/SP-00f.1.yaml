@@ -1,17 +1,18 @@
-# Acceptance — SP-00f.1 · Restrict github-mcp toolsets to the pre-authorized class (C17)
+# Acceptance — SP-00f.1 · COARSE github-mcp toolset reduction (PARTIAL, not the full C17 boundary)
 #
 # C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
-# Scope: the TOOL-EXPOSURE half of SP-00f. The CREDENTIAL half (retire the broad
-# classic PAT -> short-lived least-priv GitHub-App installation token; negative-
-# permission proof; "no classic PAT in compose/sops"; token TTL<2h) is SP-00f.2,
-# which needs harness token-vending + refresh (github-mcp reads the token once at
-# startup) and lands with SP-05/§5.1. SP-00f stays OPEN until SP-00f.2 closes.
+# Scope (honest, per the C9 review): this drops 12 over-broad toolsets (orgs / users /
+# secret_protection / code_security / etc.) — a real surface cut — but `--toolsets` is
+# GROUP-granular, so the KEPT groups (repos / pull_requests / actions) still expose some
+# GATED/write tools (create_repository, merge_pull_request, run_workflow). The
+# AUTHORITATIVE C17 boundary is the least-priv App TOKEN (SP-00f.2) + the per-role TOOL
+# allowlist (SP-05); the broad classic PAT is still present. SP-00f stays OPEN until those.
 #
 # Source: PRD §6 EPIC 0 SP-00f ("replace GitHub-MCP `--toolsets all` ... with a
 # pre-authorized-only toolset; `grep -rn 'toolsets.*all' deploy/` empty").
 
 task: SP-00f.1
-title: "Restrict github-mcp --toolsets all -> pre-authorized class (repos,issues,pull_requests,actions)"
+title: "Coarse github-mcp toolset reduction (PARTIAL) — drop over-broad toolsets; full C17 boundary = SP-00f.2 + SP-05"
 driver: V
 phase: gate-0
 run_from: repo_root
@@ -48,6 +49,18 @@ assertions:
         fi
       done
       echo "OK: github-mcp command excludes all over-broad toolsets"
+    expect_exit: 0
+
+  - id: docs-acknowledge-partial-scope-and-risk
+    description: >
+      Anti-overclaim honesty guard (the C9 finding): the compose comment MUST acknowledge
+      the residual GATED/write leak AND carry the do-not-run-autonomously warning, so this
+      PARTIAL cut can never be silently re-framed as the full C17 boundary.
+    cmd: |
+      grep -q 'create_repository' deploy/docker-compose.yml \
+        && grep -qi 'do not run autonomously' deploy/docker-compose.yml \
+        && grep -qi 'SP-00f.2' deploy/docker-compose.yml \
+        && grep -qi 'PARTIAL' deploy/docker-compose.yml
     expect_exit: 0
 
 proof:

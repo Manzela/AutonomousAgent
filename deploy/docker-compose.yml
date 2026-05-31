@@ -296,16 +296,19 @@ services:
   #
   # Official server image from github/github-mcp-server. Hermes connects
   # via HTTP MCP protocol (matches Context7 pattern, simpler than stdio).
-  # Toolsets RESTRICTED (SP-00f.1, C17) to the pre-authorized standing class:
+  # Toolsets reduced (SP-00f.1) from the full set to a COARSE first cut:
   #   repos, issues, pull_requests, actions.
-  # Deliberately EXCLUDED (over-broad / outside the §4.1 standing class):
-  #   code_security, secret_protection, orgs, users, copilot, dependabot,
-  #   discussions, gists, notifications, projects, security_advisories, stargazers.
-  # NOTE (SP-00f.2, tracked): the credential is STILL the broad classic PAT
-  #   (repo, workflow, read:org, security_events). Swapping it for a short-lived
-  #   least-priv GitHub-App installation token (App 3920713) needs harness
-  #   token-vending + refresh (this server reads the token ONCE at startup) and
-  #   lands with SP-05/§5.1. Do NOT run autonomously before SP-00f.2 closes.
+  # This drops the clearly out-of-scope surfaces: code_security, secret_protection,
+  #   orgs, users, copilot, dependabot, discussions, gists, notifications, projects,
+  #   security_advisories, stargazers.
+  # ⚠ PARTIAL — this is NOT the full C17 boundary. `--toolsets` is group-granular, so the
+  #   KEPT groups still expose some GATED/write tools: repos -> create_repository /
+  #   fork_repository / delete_file; pull_requests -> merge_pull_request; actions ->
+  #   run_workflow / rerun_workflow. The AUTHORITATIVE C17 boundary is the least-priv App
+  #   TOKEN (SP-00f.2) + the per-role TOOL allowlist (SP-05) — both still pending.
+  # ⚠ The credential is STILL the broad classic PAT (repo, workflow, read:org,
+  #   security_events), so those leaked tools would currently SUCCEED (201, not 403).
+  #   DO NOT run autonomously until SP-00f.2 closes.
 
   github-mcp:
     # Pinned by digest. Resolved 2026-05-19.

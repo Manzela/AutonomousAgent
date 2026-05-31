@@ -1,3 +1,5 @@
-== SP-00f.1 GREEN: post-change github-mcp command ==
-314:    command: ["http", "--port", "8003", "--toolsets", "repos,issues,pull_requests,actions"]
--> no 'toolsets all'; restricted to repos,issues,pull_requests,actions
+== SP-00f.1 GREEN: post-change github-mcp command (COARSE/PARTIAL) ==
+304:  # ⚠ PARTIAL — this is NOT the full C17 boundary. `--toolsets` is group-granular, so the
+317:    command: ["http", "--port", "8003", "--toolsets", "repos,issues,pull_requests,actions"]
+-> no 'toolsets all'; dropped 12 over-broad toolsets (orgs/users/secret_protection/code_security/...).
+-> PARTIAL: kept groups still expose create_repository/merge_pull_request/run_workflow (documented + warned); real C17 boundary = SP-00f.2 token + SP-05 per-role allowlist.

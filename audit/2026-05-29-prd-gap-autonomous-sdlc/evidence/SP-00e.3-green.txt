@@ -1,3 +1,3 @@
-== SP-00e.3 GREEN: real first-party tree (app + lib) imports clean ==
-== import-hygiene: 111 modules | ok=111 ModuleNotFoundError=0 warn=0 => PASS ==
+== SP-00e.3 GREEN: real first-party RUNTIME tree (app + lib, tests excluded) imports clean ==
+== import-hygiene: 76 modules | ok=76 ModuleNotFoundError=0 warn=0 => PASS ==
 exit=0

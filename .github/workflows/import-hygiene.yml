@@ -37,8 +37,11 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
 
-      - name: uv sync --frozen (clean-container deps from the locked set)
-        run: uv sync --frozen
+      - name: uv sync --frozen (locked set + runtime extras a2a/gcp, NOT dev)
+        # a2a (fastapi/cachetools/pyjwt) + gcp (asyncpg/pgvector/aiplatform) are the
+        # RUNTIME extras some first-party modules top-level-import. The heavy `dev` extra
+        # (pytest/garak/pyrit/ml) is intentionally excluded — test modules are out of scope.
+        run: uv sync --frozen --extra a2a --extra gcp
 
       - name: Import every first-party module (fail on ModuleNotFoundError, C5)
         run: uv run --frozen python scripts/ci/import_hygiene.py --roots app,lib

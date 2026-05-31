@@ -38,7 +38,7 @@ def discover_modules(roots: list[str], base: str) -> list[str]:
     for root in roots:
         for py in (base_path / root).rglob("*.py"):
             rel = py.relative_to(base_path)
-            if "__pycache__" in rel.parts:
+            if "__pycache__" in rel.parts or _is_test_path(rel):
                 continue
             parts = list(rel.with_suffix("").parts)
             if parts and parts[-1] == "__init__":
@@ -46,6 +46,16 @@ def discover_modules(roots: list[str], base: str) -> list[str]:
             if parts:
                 mods.add(".".join(parts))
     return sorted(mods)
+
+
+def _is_test_path(rel: pathlib.Path) -> bool:
+    """Tests are NOT runtime modules: they need the dev group + pytest/conftest context, and
+    importing them standalone is meaningless to C5 (which targets the runtime import path).
+    Excludes any module under a `tests/` dir, or named test_*/*_test/conftest."""
+    if "tests" in rel.parts:
+        return True
+    stem = rel.stem
+    return stem.startswith("test_") or stem.endswith("_test") or stem == "conftest"
 
 
 def classify_import_error(exc: BaseException) -> str:

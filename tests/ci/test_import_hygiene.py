@@ -42,3 +42,17 @@ def test_classify_plain_import_error_is_warn():
 
 def test_classify_runtime_error_is_warn():
     assert ih.classify_import_error(RuntimeError("needs a live service")) == "warn"
+
+
+def test_discover_modules_excludes_test_modules(tmp_path):
+    """Tests are not runtime modules (need the dev group); they must be excluded from C5 scope."""
+    pkg = tmp_path / "pkg"
+    (pkg / "tests").mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "core.py").write_text("")
+    (pkg / "conftest.py").write_text("")  # excluded
+    (pkg / "thing_test.py").write_text("")  # excluded (*_test)
+    (pkg / "tests" / "__init__.py").write_text("")  # excluded (under tests/)
+    (pkg / "tests" / "test_x.py").write_text("")  # excluded
+    got = ih.discover_modules(["pkg"], str(tmp_path))
+    assert got == ["pkg", "pkg.core"]

@@ -46,6 +46,16 @@ lib.a2a.auth:verify_token
 # (`cp = Checkpoint(...)`) on the durability resume path. Verified reachable 2026-06-01.
 lib.durability.checkpoint:Checkpoint
 
+# lib/durability/__init__.py:register is the plugin entrypoint invoked DYNAMICALLY by the
+# hermes plugin loader (it imports the plugin module declared in plugin.yaml, then calls
+# register(ctx) to wire the hooks: pre_tool_call / post_tool_call / on_session_start /
+# on_session_end). All 7 lib/* plugins follow this identical contract (memory, a2a,
+# observability, evaluators, kanban, anchors, durability); the AST callgraph cannot trace
+# the loader's dynamic register(ctx) dispatch. SP-14 modified register() to wire the F34/F35
+# detectors + trajectory shipper, making it a changed public symbol — it is genuinely
+# reachable, not dead. Operator-reviewed (2026-06-01).
+lib.durability:register
+
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

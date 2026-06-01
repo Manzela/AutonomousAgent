@@ -1,6 +1,6 @@
 """Durability plugin: failure-matrix-driven retry policy, checkpoint-resume (P1-3),
-and REJECTED-inject (P1-4). P1-6 lands the real hook bodies here; P1-3 and P1-4
-fill the on_session_start stubs in subsequent PRs.
+REJECTED-inject (P1-4), and SP-14 runtime detector wiring (F34 LoopDetector +
+F35 StallDetector + TrajectoryShipper).
 
 All hook callbacks use the ``**kwargs`` Hermes contract (see
 ``hermes-agent/hermes_cli/plugins.py:1253`` — ``invoke_hook`` calls ``cb(**kwargs)``).
@@ -9,6 +9,24 @@ Hermes passes ``on_session_start`` kwargs ``session_id``, ``model``, ``platform`
 raised ``TypeError("got an unexpected keyword argument 'session_id'")`` which was
 silently swallowed at WARN level. This file now mirrors ``lib/observability/__init__.py``
 which got the kwargs contract right from day one (PR #52).
+
+SP-14 wiring notes:
+- ``_SP14_LOOP_DETECTOR`` (LoopDetector, F34) and ``_SP14_STALL_DETECTOR``
+  (StallDetector, F35) are module-level singletons instantiated once. Tests
+  inject replacements via ``monkeypatch.setattr``.
+- ``_SP14_TRAJECTORY_SHIPPER`` is None by default; production wires it from
+  config (bucket + template from limits.yaml). Tests inject a fake shipper.
+  ``on_session_end`` is a no-op if ``_SP14_TRAJECTORY_SHIPPER`` is None (safe
+  default until the operator deploys with a real GCS bucket).
+- StallDetector periodic-watchdog ``.check()`` on a timer is DEFERRED to
+  SP-27 (monitor loop). Only the event-driven call at ``post_tool_call`` is
+  wired here: ``record_activity`` is called on every tool call and ``check``
+  is called immediately after to detect sessions that went idle between calls.
+- ``_sp14_dispatch_f_code`` is a thin wrapper around
+  ``lib.durability.handlers.dispatch`` — tests patch it to avoid needing the
+  full handler stack.
+- ``_SP14_SESSION_EVENTS`` accumulates per-session tool-call event dicts so
+  ``on_session_end`` can ship a complete trajectory.
 """
 
 import logging
@@ -22,6 +40,79 @@ from lib.durability import failure_matrix, trichotomy, escalation, checkpoint, r
 __all__ = ["register", "failure_matrix", "trichotomy", "escalation", "checkpoint", "resume"]
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# SP-14 module-level singletons — LoopDetector (F34), StallDetector (F35),
+# TrajectoryShipper. Tests replace these via monkeypatch.setattr.
+# ---------------------------------------------------------------------------
+from lib.durability.runtime_detectors import (  # noqa: E402 — after __all__
+    LoopDetector as _LoopDetector,
+    StallDetector as _StallDetector,
+)
+
+_SP14_LOOP_DETECTOR: _LoopDetector = _LoopDetector()
+_SP14_STALL_DETECTOR: _StallDetector = _StallDetector()
+# TrajectoryShipper is None until wired by an operator config (bucket + template
+# must exist). on_session_end is a no-op when this is None.
+_SP14_TRAJECTORY_SHIPPER: Optional[Any] = None
+
+# Per-session accumulated tool-call events for trajectory shipping.
+# Keyed by session_id; cleaned up in on_session_end.
+_SP14_SESSION_EVENTS: Dict[str, List[Dict[str, Any]]] = {}
+_SP14_SESSION_EVENTS_LOCK = threading.Lock()
+
+# Dedup set for detector-failure log suppression. Entries are
+# (session_id, detector_name) tuples; a session's entries are discarded
+# in _sp14_ship_on_session_end so the set stays bounded across sessions.
+# Guarded by the existing lock — same concurrency idiom as _SP14_SESSION_EVENTS.
+_SP14_DETECTOR_FAILURE_SEEN: set = set()
+
+
+def _sp14_log_detector_failure(detector: str, session_id: str, exc: BaseException) -> None:
+    """Log a detector exception at WARNING on the first occurrence per (session_id, detector),
+    and at DEBUG on subsequent occurrences — so a persistent fault is operator-visible
+    exactly once without flooding the logs.
+
+    Never raises — safe to call from bare ``except`` blocks in the hook callbacks.
+    """
+    key = (session_id, detector)
+    with _SP14_SESSION_EVENTS_LOCK:
+        first_time = key not in _SP14_DETECTOR_FAILURE_SEEN
+        if first_time:
+            _SP14_DETECTOR_FAILURE_SEEN.add(key)
+
+    if first_time:
+        logger.warning(
+            "SP-14 %s failed for session %s (fail-open): %s",
+            detector,
+            session_id,
+            exc,
+        )
+    else:
+        logger.debug(
+            "SP-14 %s failed for session %s (repeated, fail-open): %s",
+            detector,
+            session_id,
+            exc,
+        )
+
+
+def _sp14_dispatch_f_code(f_code: str, **kwargs: Any) -> None:
+    """Thin dispatch wrapper so tests can patch this without importing handlers.
+
+    Fail-open: any exception from the handler stack is caught and logged so
+    a broken handler can never crash the agent loop.
+    """
+    try:
+        from lib.durability.handlers import dispatch
+
+        dispatch(f_code, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — never block the agent loop
+        logger.warning(
+            "durability SP-14: dispatch(%s) failed: %s",
+            f_code,
+            exc,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -58,10 +149,20 @@ def register(ctx):
     # the error first (and emits its OTel span) before we durably checkpoint.
     ctx.register_hook("post_tool_call", _p1_3_checkpoint_on_tool_call)
 
+    # SP-14: F34 LoopDetector + F35 StallDetector (event-driven, not timer).
+    # MUST register AFTER checkpoint hook so detector fires are recorded in
+    # the checkpoint state for post-restart replay.
+    ctx.register_hook("post_tool_call", _sp14_detect_on_tool_call)
+
     # P1-3 + P1-4 hooks (stubs; sessions c + d fill in)
     # ORDER MATTERS: resume must run first so REJECTED-inject can read active TaskSpec
     ctx.register_hook("on_session_start", _p1_3_resume_session)  # session-c fills
     ctx.register_hook("on_session_start", _p1_4_inject_rejected)  # session-d fills
+
+    # SP-14: ship trajectory on session end.
+    # Registered last so all other on_session_end handlers (e.g. evaluators'
+    # feedback flush) run before we snapshot the trajectory.
+    ctx.register_hook("on_session_end", _sp14_ship_on_session_end)
 
 
 def _p1_3_checkpoint_on_tool_call(
@@ -268,3 +369,164 @@ def _p1_4_inject_rejected(**kwargs: Any) -> None:
     except Exception as exc:  # noqa: BLE001 — never block session start
         logger.warning("P1-4 REJECTED inject failed (non-fatal): %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# SP-14 hook implementations
+# ---------------------------------------------------------------------------
+
+
+def _sp14_detect_on_tool_call(
+    tool_name: Optional[str] = None,
+    args: Optional[Dict[str, Any]] = None,
+    result: Any = None,
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    duration_ms: Optional[float] = None,
+    **_: Any,
+) -> None:
+    """SP-14 post_tool_call: run F34 LoopDetector + F35 StallDetector (event-driven).
+
+    Called on every tool call AFTER the checkpoint hook so detector fire events
+    are captured in the checkpoint state.
+
+    F34 (LoopDetector): fires when the same (tool_name, args) fingerprint repeats
+    N times consecutively in the same session. On fire, ``_sp14_dispatch_f_code``
+    routes to ``interrupt_with_loop_feedback`` (FAIL_SOFT — injects loop-break
+    hint; does NOT BLOCKED/halt the agent).
+
+    F35 (StallDetector, event-driven only): ``record_activity`` resets the idle
+    timer; ``check`` fires F35 when the session has been idle past the timeout.
+    NOTE: the periodic-watchdog path (``.check()`` on a timer) is DEFERRED to
+    SP-27 (monitor loop). Only the event-driven call site is wired here —
+    meaning a truly frozen session (no tool calls arriving) will not be detected
+    until a tool call eventually arrives. SP-27 will close that gap.
+
+    Session events are also accumulated in ``_SP14_SESSION_EVENTS`` for later
+    shipping by ``_sp14_ship_on_session_end``.
+
+    Fail-open: any exception is caught and logged at DEBUG so a broken detector
+    can never crash the agent loop.
+    """
+    if not session_id:
+        return None
+
+    # Accumulate event for trajectory shipping.
+    event: Dict[str, Any] = {
+        "tool_name": tool_name,
+        "args": args,
+        "result": str(result)
+        if not isinstance(result, (str, int, float, bool, type(None)))
+        else result,
+        "tool_call_id": tool_call_id,
+        "task_id": task_id,
+        "duration_ms": duration_ms,
+        "timestamp": time.time(),
+    }
+    with _SP14_SESSION_EVENTS_LOCK:
+        _SP14_SESSION_EVENTS.setdefault(session_id, []).append(event)
+
+    try:
+        # F34 — LoopDetector
+        f34 = _SP14_LOOP_DETECTOR.record_tool_call(
+            session_id=session_id,
+            tool_name=tool_name or "",
+            args=args,
+        )
+        if f34:
+            _sp14_dispatch_f_code(
+                f34,
+                session_id=session_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — never block the agent loop
+        _sp14_log_detector_failure("LoopDetector", session_id, exc)
+
+    try:
+        # F35 — StallDetector (event-driven).
+        # CHECK before record_activity so we observe the stale last_activity_s
+        # that was set on the previous tool call. record_activity resets the timer
+        # to now() — if we called it first, check() would always see elapsed ~= 0.
+        f35 = _SP14_STALL_DETECTOR.check(session_id=session_id)
+        _SP14_STALL_DETECTOR.record_activity(session_id=session_id)
+        if f35:
+            _sp14_dispatch_f_code(
+                f35,
+                session_id=session_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            )
+    except Exception as exc:  # noqa: BLE001 — never block the agent loop
+        _sp14_log_detector_failure("StallDetector", session_id, exc)
+
+    return None
+
+
+def _sp14_ship_on_session_end(
+    session_id: str = "",
+    **_: Any,
+) -> None:
+    """SP-14 on_session_end: ship the accumulated session trajectory via TrajectoryShipper.
+
+    Calls ``TrajectoryShipper.ship_trajectory(session_id, trajectory)`` where
+    ``trajectory`` is the list of tool-call event dicts accumulated by
+    ``_sp14_detect_on_tool_call`` during the session lifetime.
+
+    If ``_SP14_TRAJECTORY_SHIPPER`` is None (the default — operator has not yet
+    configured a GCS bucket), this hook is a no-op. This is the safe default for
+    environments without GCS, including the unit-test harness when no shipper is
+    injected.
+
+    Session events are cleaned up from ``_SP14_SESSION_EVENTS`` after shipping
+    regardless of whether shipping succeeded, to bound memory growth on long-
+    running processes hosting many sessions.
+
+    Fail-open: any exception from the shipper (including
+    ``ModelArmorSanitizeUnavailable``) is caught and logged at WARNING so a
+    single bad session cannot crash the agent process. The shipper itself handles
+    F37 dispatch internally for ``ModelArmorSanitizeUnavailable``.
+    """
+    if not session_id:
+        return None
+
+    with _SP14_SESSION_EVENTS_LOCK:
+        trajectory = _SP14_SESSION_EVENTS.pop(session_id, [])
+        # Discard dedup-set entries for this session so the set stays bounded
+        # across many sessions (sessions end; the set would grow otherwise).
+        _SP14_DETECTOR_FAILURE_SEEN.discard((session_id, "LoopDetector"))
+        _SP14_DETECTOR_FAILURE_SEEN.discard((session_id, "StallDetector"))
+
+    # Reset detector state so completed sessions don't accumulate stale entries.
+    # NOTE: set_task_state(in_progress=False) was removed — it is redundant
+    # because reset() calls _sessions.pop(session_id) which discards the entry
+    # entirely, making any preceding in_progress flag change a no-op.
+    try:
+        _SP14_STALL_DETECTOR.reset(session_id=session_id)
+        _SP14_LOOP_DETECTOR.reset(session_id=session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("SP-14 detector cleanup failed for session %s: %s", session_id, exc)
+
+    shipper = _SP14_TRAJECTORY_SHIPPER
+    if shipper is None:
+        logger.debug(
+            "SP-14: _SP14_TRAJECTORY_SHIPPER is None; skipping trajectory ship for session %s",
+            session_id,
+        )
+        return None
+
+    try:
+        shipper.ship_trajectory(session_id, trajectory)
+        logger.info(
+            "SP-14: shipped trajectory for session=%s events=%d",
+            session_id,
+            len(trajectory),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-open; shipper handles F37 internally
+        logger.warning(
+            "SP-14: trajectory ship failed for session=%s: %s",
+            session_id,
+            exc,
+        )
+    return None

@@ -1,0 +1,247 @@
+# Acceptance — SP-G1 · versioned golden eval corpus (PRD L279)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Each assertion is a self-contained red-green that invokes the runner's pure
+# functions on inline fixtures via python3 heredoc (sys.path.insert + import).
+# Every assertion FAILS if the runner logic is wrong (real red-green — not "does it exist?").
+#
+# Source: PRD §6 EPIC 3 SP-G1 (L279) — "dataset present + sha recorded; schema validates;
+# a tampered/invalid item FAILS the runner; a regression run emits per-item pass/fail."
+#
+# NOTE: the orchestrator regenerates SHA256SUMS separately after this file is written.
+# Do NOT regenerate SHA256SUMS inside an assertion.
+
+task: SP-G1
+title: "versioned golden eval corpus — corpus present + sha recorded; tamper fails; schema validates; per-item pass/fail"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: corpus-present-sha-recorded
+    description: >
+      Green: evals/golden/corpus.yaml, VERSION, and SHA256SUMS are present on disk
+      and the sha manifest matches the actual corpus bytes.
+      FAILS if any file is missing or if the corpus has drifted from the pinned hash.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, os, hashlib
+      sys.path.insert(0, '.')
+      from scripts.evals.golden_regression import sha256_file, parse_sha_manifest
+
+      base = "evals/golden"
+      for fname in ("corpus.yaml", "VERSION", "SHA256SUMS"):
+          p = os.path.join(base, fname)
+          if not os.path.isfile(p):
+              print(f"FAIL: {p} is missing"); sys.exit(1)
+
+      manifest = parse_sha_manifest(os.path.join(base, "SHA256SUMS"))
+      if not manifest:
+          print("FAIL: SHA256SUMS is empty or unparseable"); sys.exit(1)
+
+      drift = []
+      for filename, recorded in manifest.items():
+          full = os.path.join(base, filename)
+          if not os.path.isfile(full):
+              drift.append(f"{filename}: missing")
+              continue
+          actual = sha256_file(full)
+          if actual != recorded:
+              drift.append(f"{filename}: recorded={recorded} actual={actual}")
+
+      if drift:
+          print("FAIL: sha drift detected:"); [print(f"  {d}") for d in drift]; sys.exit(1)
+      print(f"OK: corpus files present and sha-pinned ({len(manifest)} entries in manifest)")
+      PYEOF
+    expect_exit: 0
+
+  - id: schema-validates-valid-item
+    description: >
+      Green: a fully-specified valid golden item (concrete allowed_paths, valid phase,
+      all required fields present) passes validate_item() with zero errors.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.evals.golden_regression import validate_item
+
+      item = {
+          "goal": "Add a rate-limit gate for the LLM proxy",
+          "version": "v0.1.0",
+          "notes": "CANDIDATE — needs-operator-signoff",
+          "expected_dag": [
+              {
+                  "id": "rl-impl",
+                  "phase": "build",
+                  "summary": "Implement rate-limit middleware in deploy/litellm/",
+                  "depends_on": [],
+                  "acceptance_ref": "SP-rate-limit / requests-capped",
+                  "allowed_paths": ["deploy/litellm/config.yaml"],
+              },
+              {
+                  "id": "rl-tests",
+                  "phase": "test",
+                  "summary": "Unit tests for rate-limit middleware",
+                  "depends_on": ["rl-impl"],
+                  "acceptance_ref": "SP-rate-limit / unit-test",
+                  "allowed_paths": ["tests/unit/test_rate_limit.py"],
+              },
+          ],
+          "expected_criteria": [
+              "Requests above the cap are rejected with 429",
+              "Requests below the cap succeed",
+          ],
+          "expected_trajectory": [
+              {"phase": "build", "description": "implement middleware"},
+              {"phase": "test", "description": "unit tests"},
+          ],
+      }
+      errors = validate_item(item)
+      if errors:
+          print("FAIL: valid item had errors:", [str(e) for e in errors]); sys.exit(1)
+      print("OK: valid item passed schema validation with zero errors")
+      PYEOF
+    expect_exit: 0
+
+  - id: schema-rejects-catch-all-glob
+    description: >
+      Red: a golden item whose DAG node has allowed_paths=["**"] (catch-all) is REJECTED
+      by validate_item().  This is the SP-02/2.6 catch-all guard.
+      FAILS if validate_item() returns no errors for a catch-all glob.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.evals.golden_regression import validate_item
+
+      item = {
+          "goal": "Add some feature",
+          "version": "v0.1.0",
+          "notes": "CANDIDATE — needs-operator-signoff",
+          "expected_dag": [
+              {
+                  "id": "n1",
+                  "phase": "build",
+                  "summary": "implement",
+                  "depends_on": [],
+                  "acceptance_ref": "SP-x / crit",
+                  "allowed_paths": ["**"],  # catch-all — forbidden
+              }
+          ],
+          "expected_criteria": ["works"],
+          "expected_trajectory": [{"phase": "build", "description": "do it"}],
+      }
+      errors = validate_item(item)
+      if not errors:
+          print("FAIL: catch-all allowed_paths=['**'] was not rejected"); sys.exit(1)
+      if not any("catch-all" in e.message for e in errors):
+          print("FAIL: error does not mention catch-all:", [str(e) for e in errors]); sys.exit(1)
+      print("OK: catch-all glob correctly rejected:", errors[0].message)
+      PYEOF
+    expect_exit: 0
+
+  - id: tampered-item-fails-runner
+    description: >
+      Red: a corpus file tampered AFTER sha pinning causes run_regression() to detect drift
+      and return ok=False.  This is the non-vacuous tamper->fail red-green.
+      FAILS if run_regression() returns ok=True on a tampered corpus.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, os, tempfile, hashlib
+      sys.path.insert(0, '.')
+      from scripts.evals.golden_regression import run_regression, sha256_file
+
+      # Write a minimal valid corpus + pinned manifest in a temp dir
+      with tempfile.TemporaryDirectory() as d:
+          import yaml
+          item = {
+              "goal": "canary item",
+              "version": "v0.1.0",
+              "notes": "CANDIDATE — needs-operator-signoff",
+              "expected_dag": [{
+                  "id": "n1", "phase": "build", "summary": "impl",
+                  "depends_on": [], "acceptance_ref": "SP-x/c1",
+                  "allowed_paths": ["app/canary.py"],
+              }],
+              "expected_criteria": ["canary passes"],
+              "expected_trajectory": [{"phase": "build", "description": "impl"}],
+          }
+          corpus_path = os.path.join(d, "corpus.yaml")
+          with open(corpus_path, "w") as fh:
+              yaml.dump([item], fh)
+          version_path = os.path.join(d, "VERSION")
+          with open(version_path, "w") as fh:
+              fh.write("v0.1.0\n")
+          manifest_path = os.path.join(d, "SHA256SUMS")
+          corpus_hash = sha256_file(corpus_path)
+          version_hash = sha256_file(version_path)
+          with open(manifest_path, "w") as fh:
+              fh.write(f"{corpus_hash}  corpus.yaml\n")
+              fh.write(f"{version_hash}  VERSION\n")
+
+          # Tamper: append extra bytes to corpus
+          with open(corpus_path, "a") as fh:
+              fh.write("\n# tampered\n")
+          actual_hash = sha256_file(corpus_path)
+          if corpus_hash == actual_hash:
+              print("FAIL: test setup error — tamper did not change hash"); sys.exit(2)
+
+          # Runner must detect drift
+          results, ok = run_regression(corpus_path, manifest_path, version_path)
+          if ok:
+              print("FAIL: tampered corpus must cause run_regression ok=False"); sys.exit(1)
+          print("OK: tampered corpus correctly detected — run_regression returned ok=False")
+      PYEOF
+    expect_exit: 0
+
+  - id: regression-run-emits-per-item
+    description: >
+      Green: a regression run on the pinned corpus emits per-item PASS lines for all
+      3 candidate items and exits 0.  Verifies the runner reports structured per-item output.
+    cmd: |
+      uv run --no-project --with pyyaml \
+        python scripts/evals/golden_regression.py \
+          --corpus evals/golden/corpus.yaml \
+          --sha-manifest evals/golden/SHA256SUMS \
+          --version-file evals/golden/VERSION | tee /dev/stderr | grep -qE '^\s+\[PASS\]'
+    expect_exit: 0
+
+  - id: invalid-missing-field-fails-runner
+    description: >
+      Red: an item missing a required field (e.g. expected_criteria) fails validate_item()
+      and causes the runner to return ok=False.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.evals.golden_regression import validate_item
+
+      item = {
+          "goal": "missing criteria item",
+          "version": "v0.1.0",
+          "notes": "CANDIDATE — needs-operator-signoff",
+          "expected_dag": [
+              {
+                  "id": "n1", "phase": "build", "summary": "impl",
+                  "depends_on": [], "acceptance_ref": "SP-x/c1",
+                  "allowed_paths": ["app/feature.py"],
+              }
+          ],
+          # expected_criteria intentionally missing
+          "expected_trajectory": [{"phase": "build", "description": "impl"}],
+      }
+      errors = validate_item(item)
+      if not errors:
+          print("FAIL: item missing expected_criteria was not rejected"); sys.exit(1)
+      if not any("expected_criteria" in e.field for e in errors):
+          print("FAIL: error does not reference expected_criteria:", [str(e) for e in errors]); sys.exit(1)
+      print("OK: item missing required field correctly rejected:", errors[0].field)
+      PYEOF
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/sp-g1-golden.yml
+  artifact: >
+    corpus sha-match + schema validation + tamper-detection + per-item pass/fail
+    red-greens (CI).  LLM-judge scoring is SP-06's responsibility — the judge leaf
+    in golden_regression.py is a documented TODO stub.

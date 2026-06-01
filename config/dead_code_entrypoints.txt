@@ -56,6 +56,16 @@ lib.durability.checkpoint:Checkpoint
 # reachable, not dead. Operator-reviewed (2026-06-01).
 lib.durability:register
 
+# app/adapters/gcp/sandbox.py:FirecrackerSandbox is an intentionally-UNWIRED SP-05 scaffold:
+# an AbstractSandbox subclass (GCP sandbox tier) whose __init__/run() raise NotImplementedError
+# until SP-05 builds the orchestrator sandbox-selection that will instantiate it. It is kept per
+# the CLAUDE.md builder-agent rule (keep the GCP subclass as a sibling; do NOT delete). H-06
+# corrected its is_production_grade flag (True->False), making it a changed public symbol the C4
+# gate checks; it has no runtime caller YET. Listed here as an operator-reviewed waiver — not a
+# live entrypoint, but legitimately-present-not-yet-wired code that must not be deleted. REMOVE
+# this line once SP-05 wires FirecrackerSandbox (it becomes genuinely reachable then).
+app.adapters.gcp.sandbox:FirecrackerSandbox
+
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

@@ -55,6 +55,10 @@ jobs:
             --tag autonomousagent/hermes:scan-${{ github.sha }} \
             .
 
+      - name: Trivy CVE table (diagnostic)
+        run: |
+          ./trivy image --format table --severity CRITICAL,HIGH --ignore-unfixed --pkg-types os,library autonomousagent/hermes:scan-${{ github.sha }} || true
+
       - name: Run Trivy vulnerability scanner
         run: |
           ./trivy image \

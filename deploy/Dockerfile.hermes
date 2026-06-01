@@ -75,6 +75,18 @@ RUN uv pip install --no-cache "psycopg[binary]>=3.1"
 # No-op when GCS_SNAPSHOT_BUCKET is unset.
 RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 
+# Security: the `python -m venv` seed + setuptools ship build-only tooling (jaraco.context,
+# wheel) with fixable CRITICAL/HIGH CVEs that the trivy image scan flags — CVE-2026-23949
+# (jaraco.context <6.1.0, path traversal) and CVE-2026-24049 (wheel <0.46.2, priv-esc).
+# uv installs the normalized hyphenated name but can leave the old DOTTED dist-info behind,
+# so explicitly uninstall first, reinstall the patched versions, then purge any stale <6 /
+# <0.46 dist-info directories. Build-only tooling, unused at agent runtime.
+RUN uv pip uninstall jaraco.context wheel 2>/dev/null || true; \
+    uv pip install --no-cache "jaraco.context>=6.1.0" "wheel>=0.46.2"; \
+    rm -rf /app/.venv/lib/python3.11/site-packages/jaraco.context-5*.dist-info \
+           /app/.venv/lib/python3.11/site-packages/jaraco_context-5*.dist-info \
+           /app/.venv/lib/python3.11/site-packages/wheel-0.4[0-5]*.dist-info 2>/dev/null || true
+
 # ============================================================
 # Stage 2: runtime
 # Lean image — only runtime system packages + the pre-built venv.
@@ -86,11 +98,15 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 # Runtime system tools required by the hermes agent at execution time.
-# NOTE: git, curl, ripgrep, ffmpeg are called by the agent as subprocess tools
-# (code search, file fetches, voice). Once hermes no longer shells out to these,
+# NOTE: git, curl, ripgrep are called by the agent as subprocess tools (code search,
+# file fetches). ffmpeg (a speculative "voice"/media tool) was REMOVED 2026-06-01: it is
+# UNUSED in the codebase (0 functional refs) and its large dependency tree carried
+# CRITICAL/HIGH CVEs that trivy flags as fixable but Debian-stable has not backported, so
+# `apt-get upgrade` cannot clear them. Re-add `ffmpeg` here if the agent gains a real
+# media-processing capability. Once hermes no longer shells out to these,
 # this block can be removed and the base switched to distroless.
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-      git curl ca-certificates ripgrep ffmpeg \
+      git curl ca-certificates ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtualenv from the builder stage.

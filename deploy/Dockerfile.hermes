@@ -15,7 +15,7 @@
 # (see audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C3).
 # Digest resolved 2026-05-19 against python:3.11-slim on Docker Hub.
 ARG PYTHON_VERSION=3.11
-ARG BASE_IMAGE=python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834
+ARG BASE_IMAGE=python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
 # ============================================================
 # Stage 1: builder
@@ -23,7 +23,7 @@ ARG BASE_IMAGE=python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fe
 # Carries uv, git, and apt build tools — none of which land in
 # the runtime stage.
 # ============================================================
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS builder
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -80,7 +80,7 @@ RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 # Lean image — only runtime system packages + the pre-built venv.
 # No uv, no build tooling, no source trees.
 # ============================================================
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS runtime
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

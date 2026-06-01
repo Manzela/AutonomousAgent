@@ -833,3 +833,200 @@ class TestDunderContains:
         """)
         violations = find_sentinel_violations(src, "app/contains_nonfp.py")
         assert not violations, f"__contains__ with non-sentinel must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 7 (round-2): keyword argument in re.* calls
+#   re.search(pattern="DONE", string=out)  ->  flagged
+#   re.fullmatch(pattern=MARKER, string=x)  ->  flagged (via alias)
+# ===========================================================================
+class TestReKeywordArgs:
+    def test_re_search_pattern_kwarg_flagged(self):
+        """re.search(pattern='DONE', string=out) -> violation (keyword arg)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            import re
+            def check(out):
+                if re.search(pattern={sentinel!r}, string=out):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_kw.py")
+        assert violations, f"re.search with keyword pattern= must be flagged. src=\n{src}"
+
+    def test_re_fullmatch_alias_kwarg_flagged(self):
+        """MARKER = 'DONE'; re.fullmatch(pattern=MARKER, string=x) -> violation."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            import re
+            MARKER = {sentinel!r}
+            def check(x):
+                if re.fullmatch(pattern=MARKER, string=x):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_kw_alias.py")
+        assert (
+            violations
+        ), f"re.fullmatch with keyword pattern=MARKER (alias) must be flagged. src=\n{src}"
+
+    def test_method_endswith_non_sentinel_kwarg_no_fp(self):
+        """re.search(pattern='not_a_sentinel', string=x) -> NOT flagged."""
+        src = textwrap.dedent("""\
+            import re
+            def check(x):
+                if re.search(pattern="not_a_sentinel", string=x):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_kw_nofp.py")
+        assert not violations, f"Non-sentinel keyword pattern= must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 8 (round-2): `import re as <alias>` module alias
+#   import re as regex; regex.search("DONE", x)  ->  flagged
+# ===========================================================================
+class TestImportReAsAlias:
+    def test_import_re_as_alias_search_flagged(self):
+        """import re as regex; regex.search('DONE', x) -> violation."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            import re as regex
+            def check(x):
+                if regex.search({sentinel!r}, x):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_alias_mod.py")
+        assert violations, f"regex.search (import re as regex) must be flagged. src=\n{src}"
+
+    def test_import_re_plain_attribute_still_flagged(self):
+        """import re; re.search('DONE', x) -> still flagged (regression guard)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            import re
+            def check(x):
+                if re.search({sentinel!r}, x):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_plain.py")
+        assert violations, f"re.search (plain import re) must still be flagged. src=\n{src}"
+
+    def test_import_re_as_alias_keyword_arg_flagged(self):
+        """import re as regex; regex.search(pattern='DONE', string=x) -> violation (alias + kwarg)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            import re as regex
+            def check(x):
+                if regex.search(pattern={sentinel!r}, string=x):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_alias_kw.py")
+        assert (
+            violations
+        ), f"regex.search with keyword arg (import re as regex) must be flagged. src=\n{src}"
+
+    def test_unrelated_module_alias_not_flagged(self):
+        """import something as regex; regex.search('DONE', x) -> NOT flagged (not re)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            import something as regex
+            def check(x):
+                if regex.search({sentinel!r}, x):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_unrelated.py")
+        assert not violations, f"Non-re module alias must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 9 (round-2): MatchMapping keys
+#   case {"DONE": v}:  ->  flagged (key is a sentinel)
+#   case {"other": v}: ->  NOT flagged
+# ===========================================================================
+class TestMatchMappingKeys:
+    def test_match_mapping_done_key_flagged(self):
+        """match x: case {'DONE': v}: -> violation (MatchMapping key)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            def check(x):
+                match x:
+                    case {{{sentinel!r}: v}}:
+                        break
+        """)
+        violations = find_sentinel_violations(src, "app/match_map.py")
+        assert violations, f"MatchMapping key 'DONE' must be flagged. src=\n{src}"
+
+    def test_match_mapping_compound_sentinel_key_flagged(self):
+        """match d: case {'GOAL_COMPLETE': v}: -> violation."""
+        sentinel = "GOAL" + "_COMPLETE"
+        src = textwrap.dedent(f"""\
+            def check(d):
+                match d:
+                    case {{{sentinel!r}: v}}:
+                        return v
+        """)
+        violations = find_sentinel_violations(src, "app/match_map2.py")
+        assert violations, f"MatchMapping compound sentinel key must be flagged. src=\n{src}"
+
+    def test_match_mapping_non_sentinel_key_not_flagged(self):
+        """match d: case {'other': v}: -> NOT flagged."""
+        src = textwrap.dedent("""\
+            def check(d):
+                match d:
+                    case {"other": v}:
+                        return v
+        """)
+        violations = find_sentinel_violations(src, "app/match_map_nofp.py")
+        assert not violations, f"Non-sentinel MatchMapping key must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 10 (round-2): MatchClass patterns
+#   case Resp(status="DONE"):  ->  flagged (MatchClass kwd_pattern)
+#   case C("DONE"):            ->  flagged (MatchClass positional pattern)
+# ===========================================================================
+class TestMatchClassPatterns:
+    def test_match_class_kwd_pattern_flagged(self):
+        """match r: case Resp(status='DONE'): -> violation (MatchClass kwd_pattern)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            def check(r):
+                match r:
+                    case Resp(status={sentinel!r}):
+                        break
+        """)
+        violations = find_sentinel_violations(src, "app/match_cls.py")
+        assert violations, f"MatchClass kwd_pattern 'DONE' must be flagged. src=\n{src}"
+
+    def test_match_class_positional_pattern_flagged(self):
+        """match r: case C('DONE'): -> violation (MatchClass positional sub-pattern)."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            def check(r):
+                match r:
+                    case C({sentinel!r}):
+                        break
+        """)
+        violations = find_sentinel_violations(src, "app/match_cls_pos.py")
+        assert violations, f"MatchClass positional pattern 'DONE' must be flagged. src=\n{src}"
+
+    def test_match_class_compound_kwd_flagged(self):
+        """match r: case R(msg='GOAL_COMPLETE'): -> violation."""
+        sentinel = "GOAL" + "_COMPLETE"
+        src = textwrap.dedent(f"""\
+            def check(r):
+                match r:
+                    case R(msg={sentinel!r}):
+                        return True
+        """)
+        violations = find_sentinel_violations(src, "app/match_cls2.py")
+        assert violations, f"MatchClass kwd_pattern compound sentinel must be flagged. src=\n{src}"
+
+    def test_match_class_non_sentinel_not_flagged(self):
+        """match r: case Resp(status='ok'): -> NOT flagged."""
+        src = textwrap.dedent("""\
+            def check(r):
+                match r:
+                    case Resp(status="ok"):
+                        return True
+        """)
+        violations = find_sentinel_violations(src, "app/match_cls_nofp.py")
+        assert not violations, f"MatchClass with non-sentinel must NOT be flagged: {violations}"

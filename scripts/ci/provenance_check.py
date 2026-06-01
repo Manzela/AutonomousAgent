@@ -185,7 +185,12 @@ def extract_structured_add_paths(evidence_section: str) -> list[str]:
             if m:
                 raw = m.group(1).strip()
                 path = _strip_path_decoration(raw)
-                if _is_valid_path_token(path):
+                # Structured ``A\t<path>`` entries come from real ``git diff
+                # --name-status`` output, so the path is authoritative even when
+                # extensionless (LICENSE, Makefile, Dockerfile). Do NOT apply the
+                # prose path-token filter here — that filter only exists to avoid
+                # matching prose words in the ADVISORY tier.
+                if path and not path.isspace():
                     seen[path] = None
 
     return list(seen.keys())

@@ -14,10 +14,13 @@ Sentinels:
 AST-AWARE detection: flags a sentinel string-literal ONLY when it is used as a
 BRANCH/TERMINATION operand:
   - operand of ast.Compare (==, !=, in, not in), OR
-  - argument to .endswith/.startswith/.find/.index/__contains__ method call, OR
-  - argument to re.search / re.match / re.fullmatch (both `re.X` and bare `X`
-    when imported via `from re import X [as Y]`), OR
-  - a match/case pattern value (ast.MatchValue).
+  - argument to .endswith/.startswith/.find/.index/__contains__ method call
+    (positional OR keyword arguments), OR
+  - argument to re.search / re.match / re.fullmatch (both `re.X` / alias.X
+    for `import re as alias`, and bare `X` when imported via
+    `from re import X [as Y]`) — positional OR keyword arguments, OR
+  - a match/case pattern: MatchValue, MatchOr, MatchAs, MatchSequence,
+    MatchMapping keys, MatchClass positional + keyword sub-patterns.
 
 Additionally resolves:
   - Named-constant aliases: `NAME = <sentinel-literal>` at any scope causes
@@ -36,6 +39,23 @@ Path scope: ONLY app/ and lib/ are scanned.  Excluded: scripts/, tests/,
 **/tests/**, test_*.py, conftest.py, and this gate's own files.
 
 STDLIB ONLY — no third-party imports.
+
+Threat-model boundary
+---------------------
+This gate is a GUARDRAIL against NATURAL/ACCIDENTAL model-sentinel termination:
+the readable forms a well-meaning developer writes (string literals, named
+constants, BinOp folds, f-strings, re.* calls, match/case patterns).  It is
+NOT a defence against DELIBERATE runtime obfuscation — getattr-based dispatch,
+exec(), base64-decoded markers, dynamic string assembly, char-by-char building,
+or any technique that reconstructs the sentinel at runtime outside static AST
+reach.  No purely static gate can stop a determined evader, and that is
+explicitly OUT OF SCOPE (same rationale as the C3 substring-lint being advisory
+rather than blocking).  Covered forms: Compare operands (Eq/NotEq/In/NotIn),
+method-call positional + keyword args (.endswith/.startswith/.find/.index/
+.__contains__), re.*/alias.* positional + keyword args, MatchValue, MatchOr,
+MatchAs, MatchSequence, MatchMapping keys + value-patterns, MatchClass
+positional + keyword sub-patterns, named-constant aliases, BinOp string folds,
+constant f-strings.
 """
 
 from __future__ import annotations
@@ -231,24 +251,42 @@ def _build_aliases(tree: ast.AST) -> Dict[str, str]:
     return {k: v for k, v in raw.items() if _is_sentinel_string(v)}
 
 
-def _build_re_local_names(tree: ast.AST) -> frozenset[str]:
-    """Return the set of local names that were imported from the ``re`` module
-    and are in ``_RE_FUNCTIONS``.
+def _build_re_local_names(tree: ast.AST) -> tuple[frozenset[str], frozenset[str]]:
+    """Return a pair of frozensets for re-module detection.
+
+    Returns:
+        (re_bare_names, re_module_aliases)
+
+    re_bare_names: local names of individual re functions imported via
+        ``from re import search``, ``from re import search as rsrch``, etc.
+        These are bare Name calls: ``search(...)`` or ``rsrch(...)``.
+
+    re_module_aliases: local names bound to the ``re`` MODULE itself via
+        ``import re`` (→ {"re"}) or ``import re as regex`` (→ {"regex"}).
+        These are used as the object in Attribute calls: ``regex.search(...)``.
 
     Handles:
-      - ``from re import search``          → {"search"}
-      - ``from re import search as rsrch`` → {"rsrch"}
-      - ``from re import search, match``   → {"search", "match"}
+      - ``from re import search``          → bare_names: {"search"}
+      - ``from re import search as rsrch`` → bare_names: {"rsrch"}
+      - ``from re import search, match``   → bare_names: {"search", "match"}
+      - ``import re``                      → module_aliases: {"re"}
+      - ``import re as regex``             → module_aliases: {"regex"}
     """
-    names: set[str] = set()
+    bare_names: set[str] = set()
+    module_aliases: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "re":
             for alias in node.names:
                 orig = alias.name
                 if orig in _RE_FUNCTIONS:
                     local = alias.asname if alias.asname else orig
-                    names.add(local)
-    return frozenset(names)
+                    bare_names.add(local)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "re":
+                    local = alias.asname if alias.asname else "re"
+                    module_aliases.add(local)
+    return frozenset(bare_names), frozenset(module_aliases)
 
 
 def _lineno_has_escape(lines: list[str], lineno: int) -> bool:
@@ -271,15 +309,18 @@ class _SentinelVisitor(ast.NodeVisitor):
       1. ast.Compare node — any sentinel string as a comparator (left or right) with
          operators: Eq, NotEq, In, NotIn.
       2. ast.Call node representing a METHOD call:
-           <anything>.endswith(sentinel)
-           <anything>.startswith(sentinel)
-           <anything>.find(sentinel)
-           <anything>.index(sentinel)
-           <anything>.__contains__(sentinel)
+           <anything>.endswith(sentinel)   — positional or keyword arg
+           <anything>.startswith(sentinel) — positional or keyword arg
+           <anything>.find(sentinel)       — positional or keyword arg
+           <anything>.index(sentinel)      — positional or keyword arg
+           <anything>.__contains__(sentinel) — positional or keyword arg
       3. ast.Call node representing re.search / re.match / re.fullmatch:
-           re.search(sentinel, ...)   — Attribute form
-           search(sentinel, ...)      — bare Name form (from re import search)
-      4. ast.Match node — any MatchValue whose .value resolves to a sentinel.
+           re.search(sentinel, ...)        — Attribute form, positional or keyword arg
+           regex.search(sentinel, ...)     — Attribute form via `import re as regex`
+           search(sentinel, ...)           — bare Name form (from re import search)
+      4. ast.Match node — MatchValue, MatchOr, MatchAs, MatchSequence,
+         MatchMapping keys + value-patterns, MatchClass positional + keyword
+         sub-patterns.
     """
 
     def __init__(
@@ -287,12 +328,14 @@ class _SentinelVisitor(ast.NodeVisitor):
         lines: list[str],
         filename: str,
         aliases: Dict[str, str],
-        re_local_names: frozenset[str],
+        re_bare_names: frozenset[str],
+        re_module_aliases: frozenset[str],
     ) -> None:
         self._lines = lines
         self._filename = filename
         self._aliases = aliases
-        self._re_local_names = re_local_names
+        self._re_bare_names = re_bare_names
+        self._re_module_aliases = re_module_aliases
         self.violations: list[str] = []
 
     def _add_violation(self, lineno: int) -> None:
@@ -320,29 +363,31 @@ class _SentinelVisitor(ast.NodeVisitor):
 
     # ---- Method calls: .endswith/.startswith/.find/.index/__contains__ ------
 
+    def _check_args_and_keywords(self, node: ast.Call, lineno: int) -> None:
+        """Check both positional args[0] and all keyword values for a sentinel."""
+        if node.args:
+            self._check_node(node.args[0], node.args[0].lineno)
+        for kw in node.keywords:
+            self._check_node(kw.value, lineno)
+
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Attribute):
             method_name = node.func.attr
             if method_name in _TERMINATION_METHODS:
-                # First positional argument is the pattern/needle
-                if node.args:
-                    arg = node.args[0]
-                    self._check_node(arg, arg.lineno)
+                # First positional argument or any keyword value is the pattern/needle
+                self._check_args_and_keywords(node, node.lineno)
 
-            # Check re.search / re.match / re.fullmatch: re.<func>(sentinel, text)
+            # Check re.search / re.match / re.fullmatch:
+            #   re.<func>(sentinel, ...)     — `re` or any `import re as alias` name
             if method_name in _RE_FUNCTIONS:
-                # Verify the object is `re` (Name node with id 're')
-                if isinstance(node.func.value, ast.Name) and node.func.value.id == "re":
-                    if node.args:
-                        arg = node.args[0]
-                        self._check_node(arg, arg.lineno)
+                obj = node.func.value
+                if isinstance(obj, ast.Name) and obj.id in self._re_module_aliases:
+                    self._check_args_and_keywords(node, node.lineno)
 
         # Bare Name call — covers `from re import search` then `search(...)`.
         elif isinstance(node.func, ast.Name):
-            if node.func.id in self._re_local_names:
-                if node.args:
-                    arg = node.args[0]
-                    self._check_node(arg, arg.lineno)
+            if node.func.id in self._re_bare_names:
+                self._check_args_and_keywords(node, node.lineno)
 
         self.generic_visit(node)
 
@@ -370,12 +415,23 @@ class _SentinelVisitor(ast.NodeVisitor):
         elif hasattr(ast, "MatchAs") and isinstance(pattern, ast.MatchAs):  # type: ignore[attr-defined]
             if pattern.pattern is not None:  # type: ignore[attr-defined]
                 self._visit_match_pattern(pattern.pattern)  # type: ignore[attr-defined]
-        # MatchSequence / MatchMapping: recurse into sub-patterns
+        # MatchSequence: recurse into sub-patterns
         elif hasattr(ast, "MatchSequence") and isinstance(pattern, ast.MatchSequence):  # type: ignore[attr-defined]
             for p in pattern.patterns:  # type: ignore[attr-defined]
                 self._visit_match_pattern(p)
+        # MatchMapping: check KEYS (dict-key literals) AND recurse value-patterns
+        #   e.g. case {"DONE": v}: — "DONE" is a key node, not a MatchValue
         elif hasattr(ast, "MatchMapping") and isinstance(pattern, ast.MatchMapping):  # type: ignore[attr-defined]
-            for p in pattern.patterns:  # type: ignore[attr-defined]
+            for key_node in getattr(pattern, "keys", []):  # type: ignore[attr-defined]
+                self._check_node(key_node, key_node.lineno)
+            for p in getattr(pattern, "patterns", []):  # type: ignore[attr-defined]
+                self._visit_match_pattern(p)
+        # MatchClass: recurse positional sub-patterns AND keyword sub-patterns
+        #   e.g. case Resp(status="DONE"): or case C("DONE"):
+        elif hasattr(ast, "MatchClass") and isinstance(pattern, ast.MatchClass):  # type: ignore[attr-defined]
+            for p in getattr(pattern, "patterns", []):  # type: ignore[attr-defined]
+                self._visit_match_pattern(p)
+            for p in getattr(pattern, "kwd_patterns", []):  # type: ignore[attr-defined]
                 self._visit_match_pattern(p)
 
 
@@ -401,8 +457,8 @@ def find_sentinel_violations(source: str, filename: str) -> list[str]:
 
     lines = source.splitlines()
     aliases = _build_aliases(tree)
-    re_local_names = _build_re_local_names(tree)
-    visitor = _SentinelVisitor(lines, filename, aliases, re_local_names)
+    re_bare_names, re_module_aliases = _build_re_local_names(tree)
+    visitor = _SentinelVisitor(lines, filename, aliases, re_bare_names, re_module_aliases)
     visitor.visit(tree)
     return visitor.violations
 

@@ -189,6 +189,29 @@ assertions:
       PYEOF
     expect_exit: 0
 
+  - id: c11-structured-extensionless-path
+    description: >
+      C9 r2: a structured A<TAB>LICENSE entry (extensionless) that predates base is
+      recognized as a claimed-add and HARD-FAILS — the structured tier trusts the
+      authoritative git name-status path without the prose extension filter.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import extract_structured_add_paths, evaluate
+      evidence = "git diff --name-status:\n```\nA\tLICENSE\n```\n"
+      paths = extract_structured_add_paths(evidence)
+      if "LICENSE" not in paths:
+          print("FAIL: extensionless LICENSE not recognized in structured tier:", paths); sys.exit(1)
+      r = evaluate(evidence, set(), lambda p: True)
+      if r.ok:
+          print("FAIL: extensionless structured credit-taking not blocked:", r.failures); sys.exit(1)
+      if not any("LICENSE" in f for f in r.failures):
+          print("FAIL: failure must name LICENSE:", r.failures); sys.exit(1)
+      print("OK: extensionless structured path recognized + blocked:", r.failures[0])
+      PYEOF
+    expect_exit: 0
+
   - id: a-fail-goal-complete-in-compare
     description: >
       Red: `if "GOAL_COMPLETE" in llm_output: break` -> flagged.
@@ -546,6 +569,130 @@ assertions:
       v = find_sentinel_violations(src, "app/check_nonfp.py")
       assert not v, f"Non-sentinel alias falsely flagged: {v}"
       print("OK: non-sentinel alias not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: p-re-keyword-arg-detected
+    description: >
+      Red: re.search(pattern="DONE", string=out) — sentinel passed as keyword arg
+      -> flagged. If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      import re
+      def check(out):
+          if re.search(pattern={sentinel!r}, string=out):
+              return True
+      """)
+      v = find_sentinel_violations(src, "app/re_kw.py")
+      if not v:
+          print("FAIL: re.search keyword pattern= not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: q-import-re-as-alias-detected
+    description: >
+      Red: import re as regex; regex.search("DONE", x) — module alias -> flagged.
+      If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      import re as regex
+      def check(x):
+          if regex.search({sentinel!r}, x):
+              return True
+      """)
+      v = find_sentinel_violations(src, "app/re_alias_mod.py")
+      if not v:
+          print("FAIL: regex.search (import re as regex) not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: r-match-mapping-key-detected
+    description: >
+      Red: match x: case {"DONE": v}: — MatchMapping key is a sentinel -> flagged.
+      If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      def check(x):
+          match x:
+              case {{{sentinel!r}: v}}:
+                  break
+      """)
+      v = find_sentinel_violations(src, "app/match_map.py")
+      if not v:
+          print("FAIL: MatchMapping key sentinel not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: s-match-class-kwd-pattern-detected
+    description: >
+      Red: match r: case Resp(status="DONE"): — MatchClass kwd_pattern -> flagged.
+      If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      def check(r):
+          match r:
+              case Resp(status={sentinel!r}):
+                  break
+      """)
+      v = find_sentinel_violations(src, "app/match_cls.py")
+      if not v:
+          print("FAIL: MatchClass kwd_pattern sentinel not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: t-no-fp-non-sentinel-kwarg-and-mapping-key
+    description: >
+      Green: re.search(pattern="not_a_sentinel", string=x) AND case {"other": v}:
+      -> neither flagged. If any violation returned, assertion FAILS (false positive).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src_kw = textwrap.dedent("""
+      import re
+      def check(x):
+          if re.search(pattern="not_a_sentinel", string=x):
+              return True
+      """)
+      src_map = textwrap.dedent("""
+      def check(d):
+          match d:
+              case {"other": v}:
+                  return v
+      """)
+      for label, src, fname in [
+          ("re-kwarg non-sentinel", src_kw, "app/re_kw_nofp.py"),
+          ("match-mapping non-sentinel key", src_map, "app/match_map_nofp.py"),
+      ]:
+          v = find_sentinel_violations(src, fname)
+          if v:
+              print(f"FAIL: {label} incorrectly flagged: {v}"); sys.exit(1)
+      print("OK: non-sentinel keyword arg and non-sentinel mapping key not flagged")
       PYEOF
     expect_exit: 0
 

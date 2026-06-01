@@ -95,8 +95,11 @@ against `adapters/inmemory/`; staging + prod run against `adapters/gcp/`.
 ## Audit reviewer model class rule
 
 Every P0/P1 fix produced by an LLM agent MUST be reviewed by an LLM of a different model class.
-Same-vendor counts as same-class (Opus reviewing Sonnet → ALLOWED; Opus reviewing Opus → FORBIDDEN; Claude → Gemini → ALLOWED).
+A different MODEL counts as a different class — the class is the specific model (operator-resolved 2026-06-01).
+(Opus reviewing Sonnet → ALLOWED; Opus reviewing Opus → FORBIDDEN; Claude → Gemini → ALLOWED.)
+Vendor-sameness alone does NOT make same-class.
 The reviewer model is recorded in the PR description under `Reviewer model:` (line literal). PR template enforces.
+Machine-enforced by `.github/workflows/c9-reviewer-class-gate.yml` (C-04).
 
 ## Audit rubric immutability
 

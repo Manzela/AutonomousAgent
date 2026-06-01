@@ -238,10 +238,11 @@ def handle_get(
         _emit_credentials(cached)
         return 0
 
-    # Need a fresh token.
+    # Need a fresh token. Call _default_mint_fn() DIRECTLY (not via a variable)
+    # so the static call-graph traces its body — and the read_app_config() within
+    # it — keeping those symbols reachable for the C4 dead-code gate.
     try:
-        effective_mint = mint_fn if mint_fn is not None else _default_mint_fn
-        itok = effective_mint()
+        itok = mint_fn() if mint_fn is not None else _default_mint_fn()
         token: str = itok.token
         expires_at: datetime.datetime = itok.expires_at
     except Exception as exc:  # noqa: BLE001

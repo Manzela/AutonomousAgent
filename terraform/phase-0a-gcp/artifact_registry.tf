@@ -18,14 +18,12 @@
 # cannot be re-pointed to a different digest. This prevents a tag-swap attack
 # from bypassing the cosign verify-at-deploy gate.
 # Requires google provider >= 5.19.0 (locked at 5.45.2 in .terraform.lock.hcl).
-# Note: buildcache tags (hermes:buildcache, shell-sandbox:buildcache) are written
-# once per build and overwritten on each push — with immutable_tags=true these
-# will fail to update on a second build for the same tag. To avoid this, CI uses
-# a content-addressable key via BuildKit cache manifests (mode=max). AR rejects
-# an overwrite only if the manifest digest changes; identical-content rebuilds
-# produce the same digest and are accepted. If buildcache becomes problematic,
-# migrate cache-to/cache-from to a separate mutable-tags registry or use
-# type=gha (GitHub Actions cache) instead.
+#
+# immutable_tags is repository-scoped — it applies to EVERY tag in this repo,
+# including any `:buildcache` tag that BuildKit would try to overwrite on each
+# build. There is no per-tag exemption. To keep build caches out of this repo
+# entirely, CI uses type=gha (GitHub Actions cache) with per-image scopes
+# (scope=hermes, scope=shell-sandbox). No AR tag writes occur for caching.
 
 resource "google_artifact_registry_repository" "autonomousagent_images" {
   project       = var.project_id

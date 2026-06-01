@@ -140,9 +140,10 @@ jobs:
 
       # ------------------------------------------------------------------
       # Build and push hermes image.
-      # Cache: inline layer cache stored as a separate manifest tag
-      # (:buildcache-hermes) so subsequent builds on the same base layer
-      # are fast without needing an external cache backend.
+      # Cache: GitHub Actions cache (type=gha) with a per-image scope so
+      # hermes and shell-sandbox don't collide. type=gha writes no tags to
+      # AR, which is required because immutable_tags=true is repo-scoped
+      # and would reject any `:buildcache` overwrite on the second build.
       # ------------------------------------------------------------------
       - name: Build and push hermes
         id: build_hermes
@@ -154,8 +155,8 @@ jobs:
           push: true
           tags: |
             ${{ env.AR_REPO }}/hermes:${{ steps.meta.outputs.tag }}
-          cache-from: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache
-          cache-to: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache,mode=max
+          cache-from: type=gha,scope=hermes
+          cache-to: type=gha,mode=max,scope=hermes
           provenance: mode=max
           sbom: true
 
@@ -172,8 +173,8 @@ jobs:
           push: true
           tags: |
             ${{ env.AR_REPO }}/shell-sandbox:${{ steps.meta.outputs.tag }}
-          cache-from: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache
-          cache-to: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache,mode=max
+          cache-from: type=gha,scope=shell-sandbox
+          cache-to: type=gha,mode=max,scope=shell-sandbox
           provenance: mode=max
           sbom: true
 

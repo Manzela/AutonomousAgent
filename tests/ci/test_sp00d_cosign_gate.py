@@ -93,6 +93,29 @@ def test_no_mutable_latest_tag_in_deploy_workflow():
     )
 
 
+def test_no_registry_buildcache_in_deploy_workflow():
+    """H-19a review: immutable_tags=true is repo-scoped — any :buildcache registry
+    ref in cache-from/cache-to would fail on the second content-changing build.
+    Verify all BuildKit cache directives use type=gha, not type=registry."""
+    wf_path = Path(".github/workflows/phase-0a-deploy.yml")
+    assert wf_path.exists()
+
+    raw_text = wf_path.read_text()
+
+    # No line may contain a registry :buildcache ref in a cache-from/cache-to value.
+    # The only allowed mention of "buildcache" is inside prose comments.
+    registry_buildcache_lines = [
+        f"  line {i + 1}: {line.rstrip()}"
+        for i, line in enumerate(raw_text.splitlines())
+        if "buildcache" in line and ("cache-from:" in line or "cache-to:" in line)
+    ]
+    assert not registry_buildcache_lines, (
+        "Registry :buildcache reference found in a cache-from/cache-to directive — "
+        "immutable_tags=true is repo-scoped and will reject the overwrite. "
+        "Use type=gha instead.\n" + "\n".join(registry_buildcache_lines)
+    )
+
+
 def test_deploy_pulls_by_digest():
     """H-19a: the deploy job must thread HERMES_DIGEST and SANDBOX_DIGEST from the
     build job into the remote script and pull images by digest, not by tag."""

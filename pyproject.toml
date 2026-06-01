@@ -100,7 +100,7 @@ a2a = [
   "jcs>=0.2",
   # Distributed jti replay cache — Redis-backed per
   # docs/superpowers/specs/2026-05-25-redis-jti-replay-cache-design.md
-  "redis[asyncio]>=5.0,<8",
+  "redis[asyncio]>=5.0,<9",
 ]
 
 [tool.setuptools.packages.find]

@@ -35,6 +35,17 @@ app.a2a_canary.main
 # see a compose-string uvicorn launch as an entrypoint. Operator-reviewed (2026-06-01).
 lib.a2a.server
 
+# lib/a2a/auth.py:verify_token is the JWT auth guard CALLED at lib/a2a/server.py:202
+# (`identity = await verify_token(token_str, ...)`) inside the @app.post handler chain — it IS
+# reachable via the lib.a2a.server uvicorn entrypoint. The callgraph cannot trace the
+# FastAPI handler→helper await path once the stream/subscribe decorators carry response_model=None.
+# Verified reachable (grep: server.py imports + calls it) 2026-06-01.
+lib.a2a.auth:verify_token
+
+# lib/durability/checkpoint.py:Checkpoint is INSTANTIATED at lib/durability/__init__.py:131
+# (`cp = Checkpoint(...)`) on the durability resume path. Verified reachable 2026-06-01.
+lib.durability.checkpoint:Checkpoint
+
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

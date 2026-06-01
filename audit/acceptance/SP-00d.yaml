@@ -1,0 +1,92 @@
+# Acceptance — SP-00d · cosign verify-at-deploy supply-chain gate
+#
+# Source: PRD §6 EPIC 0 SP-00d — "cosign verify-at-deploy supply-chain gate"
+# Fixes the registry/digest mismatch by signing the AR image in the deploy pipeline.
+
+task: SP-00d
+title: "cosign verify-at-deploy supply-chain gate — block unsigned; verify AR digest"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: deploy-depends-on-scans
+    description: >
+      Red-green: deploy job MUST depend on build-and-push AND all security scans.
+    cmd: |
+      python3 - <<'PYEOF'
+      import yaml, sys
+      with open('.github/workflows/phase-0a-deploy.yml', 'r') as f:
+          wf = yaml.safe_load(f)
+      deploy_job = wf.get('jobs', {}).get('deploy', {})
+      needs = deploy_job.get('needs', [])
+      expected = ['build-and-push', 'osv-scanner', 'trivy', 'scorecard']
+      missing = [j for j in expected if j not in needs]
+      if missing:
+          print(f"FAIL: deploy job missing dependencies: {missing}")
+          sys.exit(1)
+      print("OK: deploy job depends on all scan jobs")
+      PYEOF
+    expect_exit: 0
+
+  - id: deploy-verifies-signatures
+    description: >
+      Red-green: deploy job MUST verify image signatures using cosign with pinned workflow identity.
+    cmd: |
+      python3 - <<'PYEOF'
+      import yaml, sys
+      with open('.github/workflows/phase-0a-deploy.yml', 'r') as f:
+          wf = yaml.safe_load(f)
+      steps = wf.get('jobs', {}).get('deploy', {}).get('steps', [])
+      verify_step = next((s for s in steps if s.get('name') == 'Verify image signatures'), None)
+      if not verify_step:
+          print("FAIL: 'Verify image signatures' step not found in deploy job")
+          sys.exit(1)
+      run_cmd = verify_step.get('run', '')
+      if 'cosign verify' not in run_cmd:
+          print("FAIL: 'cosign verify' not found in step 'Verify image signatures'")
+          sys.exit(1)
+      # Ensure it targets THIS workflow
+      if 'phase-0a-deploy' not in run_cmd:
+          print("FAIL: workflow name 'phase-0a-deploy' not found in verify command")
+          sys.exit(1)
+      # Ensure it verifies BOTH images
+      if 'HERMES_IMAGE' not in run_cmd or 'SANDBOX_IMAGE' not in run_cmd:
+          print("FAIL: verify step does not seem to target both images")
+          sys.exit(1)
+      print("OK: deploy job verifies image signatures")
+      PYEOF
+    expect_exit: 0
+
+  - id: build-and-push-signs-images
+    description: >
+      Red-green: build-and-push job MUST sign images after push using the AR digest.
+    cmd: |
+      python3 - <<'PYEOF'
+      import yaml, sys
+      with open('.github/workflows/phase-0a-deploy.yml', 'r') as f:
+          wf = yaml.safe_load(f)
+      steps = wf.get('jobs', {}).get('build-and-push', {}).get('steps', [])
+      sign_steps = [s for s in steps if s.get('run') and 'cosign sign' in s.get('run', '')]
+      if len(sign_steps) < 2:
+          print(f"FAIL: expected at least 2 cosign sign commands, found {len(sign_steps)}")
+          sys.exit(1)
+      # Check AR digest usage
+      run_text = "\n".join(s.get('run', '') for s in sign_steps)
+      if 'steps.build_hermes.outputs.digest' not in run_text:
+          print("FAIL: cosign sign not using build_hermes digest output")
+          sys.exit(1)
+      print("OK: build-and-push job signs images using digests")
+      PYEOF
+    expect_exit: 0
+
+  - id: actions-are-sha-pinned
+    description: >
+      Red-green: every 'uses:' in phase-0a-deploy.yml MUST be pinned to a 40-char SHA.
+    cmd: |
+      ./scripts/check-sha-pinning.sh .github/workflows
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/phase-0a-deploy.yml
+  artifact: supply-chain verify-at-deploy gate (cosign)

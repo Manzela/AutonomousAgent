@@ -1,9 +1,12 @@
-# SP-00e.4 — test-integrity-gate (Executor Contract C6, anti-reward-hacking).
+# SP-00e.4 / SP-00e.7 — test-integrity-gate (Executor Contract C6, anti-reward-hacking).
 #
 # ImpossibleBench: agents cheat by deleting/weakening tests. This fails a PR that deletes a
 # test function or net-removes assertions (in TEST paths) UNLESS the PR body carries a
-# `## Test Changes` block (which the C9 reviewer approves). Coverage-floor enforcement
-# (coverage-baseline.json) is a separate C6 piece deferred until SP-00c gives a CI-green suite.
+# `## Test Changes` block (which the C9 reviewer approves).
+#
+# SP-00e.7 extends this with a coverage-floor check: runs pytest --cov to produce
+# coverage.xml, then checks that line_rate and branch_rate stay at/above
+# config/coverage-baseline.json. A drop requires an approved `## Test Changes` block.
 #
 # CODEOWNERS guards .github/, so this gate-config is reviewed by the operator + Gemini (C9).
 name: test-integrity-gate
@@ -39,13 +42,18 @@ jobs:
 
       - name: Gate machinery unit tests (committed red-green)
         run: |
-          uv run --no-project --with pytest \
-            python -m pytest tests/ci/test_test_integrity_gate.py -q
+          uv run --no-project --with pytest --with pytest-cov \
+            python -m pytest tests/ci/test_test_integrity_gate.py tests/ci/test_coverage_floor.py -q
 
       - name: Re-run SP-00e.4 acceptance (C1)
         run: |
           uv run --no-project --with pyyaml \
             python scripts/ci/run_acceptance.py audit/acceptance/SP-00e.4.yaml
+
+      - name: Re-run SP-00e.7 acceptance (C1)
+        run: |
+          uv run --no-project --with pyyaml --with pytest-cov \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00e.7.yaml
 
       - name: --strict-markers committed in pyproject (C6)
         run: grep -q 'strict-markers' pyproject.toml
@@ -55,7 +63,25 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: printf -- '%s' "$PR_BODY" > pr_body.md
 
-      - name: test-integrity-gate (diff of TEST paths vs PR body)
+      - name: Run unit suite with coverage (produces coverage.xml for floor check)
+        # Must install project deps so `import lib.*` and `import app.*` succeed.
+        # Uses the SAME resolution as the `unit-tests` job in ci.yml:
+        #   uv venv .venv → uv sync --frozen --extra dev/gcp/a2a
+        # so measured coverage matches the baseline's capture env. pytest-cov is a
+        # CI-only measurement tool, NOT a locked project dep — install it ephemerally
+        # into the synced venv so `uv sync --frozen` stays consistent with uv.lock
+        # (declaring it in pyproject without re-locking would break the frozen sync).
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv sync --frozen --extra dev --extra gcp --extra a2a
+          uv pip install pytest-cov
+          pytest tests/unit/ tests/ci/ \
+            --cov=lib --cov=app --cov-branch \
+            --cov-report=xml:coverage.xml \
+            -q --no-header
+
+      - name: test-integrity-gate (diff of TEST paths vs PR body + coverage floor)
         run: |
           BASE="${{ github.event.pull_request.base.sha }}"
           HEAD="${{ github.event.pull_request.head.sha }}"
@@ -65,4 +91,8 @@ jobs:
           git diff "${BASE}...${HEAD}" -- \
             ':(glob)**/tests/**' ':(glob)**/test_*.py' ':(glob)**/*_test.py' ':(glob)**/conftest.py' \
             > test_diff.patch || true
-          python3 scripts/ci/test_integrity_gate.py --diff-file test_diff.patch --pr-body pr_body.md
+          python3 scripts/ci/test_integrity_gate.py \
+            --diff-file test_diff.patch \
+            --pr-body pr_body.md \
+            --coverage-xml coverage.xml \
+            --coverage-baseline config/coverage-baseline.json

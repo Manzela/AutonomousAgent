@@ -755,6 +755,31 @@ def _post_llm_call(
     return None
 
 
+def _llm_request_cost_usd(
+    model: str, prompt_tokens: int, completion_tokens: int
+) -> Optional[float]:
+    """Per-request cost in USD from the LiteLLM pricing map (the maintained
+    ``model_prices_and_context_window`` data LiteLLM ships; already a dependency via
+    the judge panel). Returns ``None`` — and the caller records NOTHING — when LiteLLM
+    cannot price ``model`` (unknown model, missing dep, or bad token counts), so an
+    unpriced model yields an ABSENT datapoint rather than a fabricated cost. SP-O1:
+    cost claims (SP-23 / U-9 / SP-R2 budget) must be SOURCED, never invented.
+    """
+    try:
+        import litellm  # lazy: keep the observability import light + runtime-optional
+
+        prompt_cost, completion_cost = litellm.cost_per_token(
+            model=model,
+            prompt_tokens=max(0, int(prompt_tokens)),
+            completion_tokens=max(0, int(completion_tokens)),
+        )
+        total = float(prompt_cost) + float(completion_cost)
+        return total if total >= 0.0 else None
+    except Exception as exc:  # noqa: BLE001  unknown model / litellm absent / bad data
+        logger.debug("llm.call.cost: LiteLLM could not price %r: %s", model, exc)
+        return None
+
+
 def _post_api_request(
     session_id: Optional[str] = None,
     usage: Optional[Dict[str, Any]] = None,
@@ -832,6 +857,13 @@ def _post_api_request(
                     _token_input_counter.add(in_tok, _metric_attrs)
                 if _token_output_counter is not None and out_tok:
                     _token_output_counter.add(out_tok, _metric_attrs)
+                # SP-O1: per-request cost (USD) from the LiteLLM pricing map. Sourced,
+                # never fabricated — an unpriced model records NOTHING (an absent
+                # datapoint beats a wrong cost claim; SP-23 / U-9 / SP-R2 read this).
+                if _llm_call_cost_hist is not None and response_model:
+                    _cost_usd = _llm_request_cost_usd(str(response_model), in_tok, out_tok)
+                    if _cost_usd is not None:
+                        _llm_call_cost_hist.record(_cost_usd, _metric_attrs)
 
             # J9 wiring — feed the per-request prompt-token count into the
             # F-CONTEXT detector. Uses ``in_tok`` (the current request's

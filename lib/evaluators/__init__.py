@@ -112,17 +112,33 @@ def _on_post_tool_call(
     t.start()
 
 
-def _on_pre_llm_call(session_id: str = "", messages: list | None = None, **_: Any) -> None:
-    """Drain the feedback queue and prepend judge feedback to the prompt."""
+def _on_pre_llm_call(
+    session_id: str = "",
+    conversation_history: list | None = None,
+    # Legacy alias: some callers use ``messages`` (old kwarg name).  Accept
+    # both so in-process unit tests written against the old signature still
+    # pass while the real Hermes dispatch path (conversation_history) works.
+    messages: list | None = None,
+    **_: Any,
+) -> None:
+    """Drain the feedback queue and prepend judge feedback to the prompt.
+
+    Hermes fires ``pre_llm_call`` with ``conversation_history`` (see
+    ``hermes-agent/agent/conversation_loop.py`` line ~509).  The hook
+    receives that list by reference and may mutate it in-place; the agent
+    core reads back the (possibly modified) list before the API call.
+    """
+    # Prefer the canonical Hermes kwarg; fall back to the legacy alias.
+    target = conversation_history if conversation_history is not None else messages
     feedback = drain_pending_feedback(session_id)
     if not feedback:
         return
     msg = format_feedback_message(feedback)
-    if messages is not None and msg:
+    if target is not None and msg:
         # Inject as a system-role message at the start of the next turn so
         # the agent sees "your last action was rejected because X" before
         # generating its next response.
-        messages.insert(0, {"role": "system", "content": msg})
+        target.insert(0, {"role": "system", "content": msg})
         logger.info("Injected %d feedback item(s) for session=%s", len(feedback), session_id)
 
 

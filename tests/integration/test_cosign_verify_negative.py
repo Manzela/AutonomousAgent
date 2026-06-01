@@ -244,8 +244,12 @@ def _push_and_get_local_digest(source_tag: str, dest_tag: str) -> str:
                 break
 
     if not digest_hex:
-        # Fallback: use the image config Id (content-addressable, not the manifest
-        # digest, but sufficient for a local insecure registry test).
+        # FAIL-SAFE ONLY — this path is effectively unreachable with registry:2
+        # because `docker push` always prints the manifest digest line for v2
+        # registries.  If hit, the config digest returned here is NOT the manifest
+        # digest: cosign verify uses the manifest digest, so the positive-control
+        # test (test_signed_image_verify_passes) WILL FAIL LOUDLY, surfacing the
+        # problem.  Do not silently swallow this case.
         id_result = subprocess.run(
             ["docker", "inspect", "--format", "{{.Id}}", dest_tag],
             capture_output=True,
@@ -416,19 +420,21 @@ def test_unsigned_image_verify_fails(pushed_images, cosign_keypair):
     # transient infra error) — gives a meaningful failure message if both legs
     # are unexpectedly zero.
     combined = (verify_result.stdout + verify_result.stderr).lower()
+    # Secondary guard: require a cosign-specific "no signature" phrase so a transient
+    # infra failure (registry down, network timeout) does not silently satisfy the
+    # non-zero check.  Intentionally EXCLUDES broad terms like "error" / "failed"
+    # which also match non-signature-absence conditions.
     signature_absent = any(
         kw in combined
         for kw in (
             "no matching signatures",
-            "error",
-            "failed",
             "no signatures found",
-            "invalid",
+            "no signature found",
         )
     )
     assert signature_absent, (
-        "cosign verify exited non-zero (good) but stderr/stdout did not contain any "
-        "expected error keyword — may be a transient infra failure rather than a real "
-        f"'no signature' rejection.\nstdout={verify_result.stdout!r}\n"
-        f"stderr={verify_result.stderr!r}"
+        "cosign verify exited non-zero (good) but stderr/stdout did not contain a "
+        "cosign-specific 'no signature' phrase — may be a transient infra failure "
+        "rather than a real signature-absence rejection.\n"
+        f"stdout={verify_result.stdout!r}\nstderr={verify_result.stderr!r}"
     )

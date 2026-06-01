@@ -696,6 +696,29 @@ assertions:
       PYEOF
     expect_exit: 0
 
+  - id: u-collection-membership-detected
+    description: >
+      C9 r3: natural multi-sentinel forms — `x in ["DONE", ...]` (list membership)
+      and `o.endswith(("DONE", ...))` (tuple of suffixes) — are flagged via
+      List/Set/Tuple unwrap; a lowercase/non-sentinel collection is NOT (no FP).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      flag_list = textwrap.dedent('def c(x):\n    if x in ["DONE", "other"]:\n        return True\n')
+      flag_tuple = textwrap.dedent('def c(o):\n    if o.endswith(("DONE", "X")):\n        return True\n')
+      nofp = textwrap.dedent('def c(x):\n    if x in ["done", "other"]:\n        return True\n')
+      if not find_sentinel_violations(flag_list, "app/u1.py"):
+          print("FAIL: list-membership sentinel not flagged"); sys.exit(1)
+      if not find_sentinel_violations(flag_tuple, "app/u2.py"):
+          print("FAIL: endswith-tuple sentinel not flagged"); sys.exit(1)
+      if find_sentinel_violations(nofp, "app/u3.py"):
+          print("FAIL: lowercase 'done' in list falsely flagged"); sys.exit(1)
+      print("OK: collection-membership + tuple-suffix forms flagged; lowercase not flagged")
+      PYEOF
+    expect_exit: 0
+
   - id: substring-assert-on-output-warns
     description: >
       Red-green: assert <literal> in output -> warning emitted, exit still 0.

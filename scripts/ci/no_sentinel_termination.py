@@ -344,7 +344,17 @@ class _SentinelVisitor(ast.NodeVisitor):
             self.violations.append(f"{self._filename}:{lineno}: {line_text}")
 
     def _check_node(self, node: ast.AST, lineno: int) -> None:
-        """Flag if node resolves to a sentinel string."""
+        """Flag if node resolves to a sentinel string.
+
+        Unwraps List/Set/Tuple literals and checks each element, so the natural
+        multi-sentinel forms are covered too: ``x in ["DONE", "GOAL_COMPLETE"]``
+        (membership) and ``x.endswith(("DONE", "FINAL"))`` (str.endswith accepts a
+        tuple of suffixes). Recurses for nested collections.
+        """
+        if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+            for elt in node.elts:
+                self._check_node(elt, getattr(elt, "lineno", lineno))
+            return
         if _node_is_sentinel(node, self._aliases):
             self._add_violation(lineno)
 

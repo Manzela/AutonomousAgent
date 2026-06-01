@@ -1030,3 +1030,61 @@ class TestMatchClassPatterns:
         """)
         violations = find_sentinel_violations(src, "app/match_cls_nofp.py")
         assert not violations, f"MatchClass with non-sentinel must NOT be flagged: {violations}"
+
+
+class TestCollectionMembership:
+    """C9 r3: natural multi-sentinel forms — `x in [..]`/`{..}`/`(..)` membership and
+    `str.endswith((..))` tuple-of-suffixes — must be flagged via List/Set/Tuple unwrap."""
+
+    def test_in_list_sentinel_flagged(self):
+        """if x in ["DONE", "other"]: -> flagged (membership against a list literal)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x in ["DONE", "other"]:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/in_list.py")
+        assert violations, f"sentinel in a list-membership test must be flagged: {violations}"
+
+    def test_in_set_compound_sentinel_flagged(self):
+        """if x in {MINI_SWE_AGENT_FINAL_OUTPUT, ..}: -> flagged."""
+        sentinel = "MINI" + "_SWE_AGENT_FINAL_OUTPUT"
+        src = textwrap.dedent(f"""\
+            def check(x):
+                if x in {{{sentinel!r}, "z"}}:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/in_set.py")
+        assert (
+            violations
+        ), f"compound sentinel in a set-membership test must be flagged: {violations}"
+
+    def test_endswith_tuple_sentinel_flagged(self):
+        """o.endswith(("DONE", "X")): -> flagged (str.endswith accepts a tuple)."""
+        src = textwrap.dedent("""\
+            def check(o):
+                if o.endswith(("DONE", "X")):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/endswith_tuple.py")
+        assert violations, f"sentinel in a tuple-of-suffixes endswith must be flagged: {violations}"
+
+    def test_in_list_lowercase_not_flagged(self):
+        """if x in ["done", "other"]: -> NOT flagged (exact-case 'DONE' only)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x in ["done", "other"]:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/in_list_nofp.py")
+        assert not violations, f"lowercase 'done' in a list must NOT be flagged: {violations}"
+
+    def test_in_list_non_sentinel_not_flagged(self):
+        """if x in ["a", "b"]: -> NOT flagged (no sentinel present)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x in ["a", "b"]:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/in_list_nofp2.py")
+        assert not violations, f"non-sentinel list must NOT be flagged: {violations}"

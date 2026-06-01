@@ -1,13 +1,34 @@
 #!/usr/bin/env python3
 """SP-00e.6 — provenance check gate (Executor Contract C11).
 
-Every path/symbol the `## Evidence` section claims to ADD must be an actual
-addition in this PR's `git diff base...head`. If its introducing commit
-(git log --diff-filter=A --follow) predates the PR base, the gate FAILS
+Every path the ``## Evidence`` section claims to ADD (via a structured
+``git diff --name-status`` fenced block) must be an actual addition in this
+PR's ``git diff base...head``.  If its introducing commit (``git log
+--diff-filter=A --follow``) predates the PR base, the gate HARD-FAILS
 (credit-taking: claiming authorship of a file that already existed).
 
-Anti-pattern killed: fabricating contributions by listing pre-existing files
-as additions in the PR Evidence section.
+Two claim tiers:
+
+STRUCTURED (BLOCKING)
+    ``A\\t<path>`` entries inside a fenced ``git diff --name-status`` /
+    ``--diff-filter=A`` block in the Evidence section.  These are the
+    authoritative, unambiguous declarations.  A 'fail' verdict (path predates
+    base, not in added_set) makes ``.ok=False`` and emits ``::error::``.
+    Authors SHOULD declare additions via a fenced name-status block for the
+    gate to hard-enforce.
+
+PROSE (ADVISORY)
+    Path tokens on the same line as an add-cue (case-insensitive word-boundary
+    match) that are NOT already in the structured set.  A regex cannot
+    reliably distinguish the grammatical object of "added" from a referenced
+    path ("Added tests for ``app/existing_feature.py``").  A 'fail' verdict
+    here is downgraded to a warning (``::warning::``) and does NOT affect
+    ``.ok``.  This matches the rationale the repo uses for the C3
+    substring-lint being advisory: prose heuristics produce false-positives
+    that cannot be eliminated without semantic parsing.
+
+Anti-pattern killed (STRUCTURED path only): fabricating contributions by
+listing pre-existing files as additions in a ``git diff --name-status`` block.
 
 STDLIB ONLY — no third-party imports.
 """
@@ -15,11 +36,11 @@ STDLIB ONLY — no third-party imports.
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 # ---------------------------------------------------------------------------
@@ -29,7 +50,7 @@ from typing import Callable, Optional
 # Unit tests / acceptance heredocs run from repo root with `sys.path.insert(0, '.')`,
 # so this is a no-op there; it only matters for the run-as-a-script CLI path.
 # ---------------------------------------------------------------------------
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -90,7 +111,7 @@ _PATH_TOKEN_RE = re.compile(
     r"\b([\w./-]+(?:/[\w./-]+|[\w.-]*\.(?:py|yml|yaml|toml|sh|md|json|txt|cfg|ini|tf)))\b"
 )
 
-# Fenced name-status lines: 'A\t<path>' or 'A  <path>'
+# Fenced name-status lines: 'A\t<path>'
 _NAME_STATUS_ADD_RE = re.compile(r"^A\t(.+)$")
 
 
@@ -109,49 +130,26 @@ class Result:
 
 
 # ---------------------------------------------------------------------------
-# Pure functions
+# Pure helpers
 # ---------------------------------------------------------------------------
 
 
-def extract_claimed_add_paths(evidence_section: str) -> list[str]:
-    """Return repo-path tokens claimed as ADDs in the Evidence section.
+def _strip_path_decoration(token: str) -> str:
+    """Strip surrounding backticks, single/double quotes, and trailing punctuation.
 
-    A token is claimed if:
-      (a) it appears on the SAME LINE as an add-cue (case-insensitive word boundary
-          match over: add|added|adds|create|created|creates|new|introduce|introduced|
-          introduces|implement|implemented|implements|wrote|writes|author|authored|
-          port|ported), OR
-      (b) it appears as a status 'A' entry inside a fenced `git diff --name-status` /
-          `--diff-filter=A` block.
-
-    A path token must look like a repo path: contains '/' OR ends in a code extension
-    (.py .yml .yaml .toml .sh .md .json .txt .cfg .ini .tf).
-
-    Returns a deduplicated list (preserving first-seen order).
+    e.g. ``app/foo.py`` -> app/foo.py
+         "app/foo.py"   -> app/foo.py
+         app/foo.py.    -> app/foo.py
+         app/foo.py,    -> app/foo.py
     """
-    seen: dict[str, None] = {}  # ordered set
-
-    # --- Pass 1: scan fenced blocks for 'A\t<path>' name-status entries ---
-    fenced_blocks = extract_fenced_blocks(evidence_section)
-    for block in fenced_blocks:
-        for line in block.splitlines():
-            m = _NAME_STATUS_ADD_RE.match(line.strip())
-            if m:
-                path = m.group(1).strip()
-                if _is_valid_path_token(path):
-                    seen[path] = None
-
-    # --- Pass 2: scan lines for add-cue + path token pairs ---
-    for line in evidence_section.splitlines():
-        if not _CUE_RE.search(line):
-            continue
-        # This line has at least one add-cue; extract all path-like tokens on it.
-        for m in _PATH_TOKEN_RE.finditer(line):
-            token = m.group(1)
-            if _is_valid_path_token(token):
-                seen[token] = None
-
-    return list(seen.keys())
+    # Strip matching surrounding quote/backtick pairs first
+    for pair in (("`", "`"), ('"', '"'), ("'", "'")):
+        if token.startswith(pair[0]) and token.endswith(pair[1]) and len(token) > 2:
+            token = token[1:-1]
+            break
+    # Strip trailing punctuation
+    token = token.rstrip(".,;:`'\"")
+    return token
 
 
 def _is_valid_path_token(token: str) -> bool:
@@ -163,6 +161,82 @@ def _is_valid_path_token(token: str) -> bool:
         ext = token[dot_pos:]
         return ext in _CODE_EXTENSIONS
     return False
+
+
+# ---------------------------------------------------------------------------
+# Extraction — split into structured vs prose tiers
+# ---------------------------------------------------------------------------
+
+
+def extract_structured_add_paths(evidence_section: str) -> list[str]:
+    """Return paths claimed as ADDs via the STRUCTURED (unambiguous) channel.
+
+    Only ``A\\t<path>`` entries inside fenced ``git diff --name-status`` /
+    ``--diff-filter=A`` blocks qualify.  This is the BLOCKING tier.
+
+    Returns a deduplicated list (preserving first-seen order).
+    """
+    seen: dict[str, None] = {}  # ordered set
+
+    fenced_blocks = extract_fenced_blocks(evidence_section)
+    for block in fenced_blocks:
+        for line in block.splitlines():
+            m = _NAME_STATUS_ADD_RE.match(line.strip())
+            if m:
+                raw = m.group(1).strip()
+                path = _strip_path_decoration(raw)
+                if _is_valid_path_token(path):
+                    seen[path] = None
+
+    return list(seen.keys())
+
+
+def extract_prose_add_paths(evidence_section: str) -> list[str]:
+    """Return paths claimed as ADDs via the PROSE heuristic channel, excluding
+    any path already in the structured set.
+
+    A path token is a prose-claim if it appears on a line that contains an
+    add-cue word (case-insensitive word boundary) and it is NOT already covered
+    by the structured (fenced) channel.
+
+    This is the ADVISORY tier — a regex cannot reliably distinguish the
+    grammatical object of "added" from a merely referenced path.
+
+    Returns a deduplicated list (preserving first-seen order).
+    """
+    structured = set(extract_structured_add_paths(evidence_section))
+    seen: dict[str, None] = {}  # ordered set
+
+    for line in evidence_section.splitlines():
+        if not _CUE_RE.search(line):
+            continue
+        for m in _PATH_TOKEN_RE.finditer(line):
+            raw = m.group(1)
+            path = _strip_path_decoration(raw)
+            if _is_valid_path_token(path) and path not in structured:
+                seen[path] = None
+
+    return list(seen.keys())
+
+
+def extract_claimed_add_paths(evidence_section: str) -> list[str]:
+    """Return the union of structured and prose claimed-add paths.
+
+    Backward-compatible thin wrapper used by callers that don't need the
+    structured/prose split.  Returns a deduplicated list (preserving
+    first-seen order, structured paths first).
+    """
+    structured = extract_structured_add_paths(evidence_section)
+    prose = extract_prose_add_paths(evidence_section)
+    seen: dict[str, None] = {p: None for p in structured}
+    for p in prose:
+        seen[p] = None
+    return list(seen.keys())
+
+
+# ---------------------------------------------------------------------------
+# Classification
+# ---------------------------------------------------------------------------
 
 
 def classify_path(
@@ -196,6 +270,11 @@ def classify_path(
     )
 
 
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+
 def evaluate(
     evidence_section: str,
     added_set: set[str],
@@ -203,10 +282,17 @@ def evaluate(
 ) -> Result:
     """Evaluate provenance for all claimed-add paths in the Evidence section.
 
+    STRUCTURED paths (fenced ``A\\t<path>`` entries) are BLOCKING: a 'fail'
+    verdict makes ``.ok=False``.
+
+    PROSE paths (add-cue co-located path tokens, not in the structured set)
+    are ADVISORY: a 'fail' verdict appends to ``.warnings`` with an advisory
+    prefix but does NOT affect ``.ok``.
+
     Args:
-        evidence_section: the text of the PR's `## Evidence` section.
+        evidence_section: the text of the PR's ``## Evidence`` section.
         added_set: set of repo-relative paths that ARE additions in base...head
-                   (from `git diff --diff-filter=A --name-only`).
+                   (from ``git diff --diff-filter=A --name-only``).
         ancestry_of: pure callable injected for testing — given a repo path,
                      returns:
                        True  if the introducing commit predates the PR base
@@ -215,20 +301,35 @@ def evaluate(
 
     Returns:
         Result with:
-          .ok       True iff no 'fail' verdicts (warnings do not affect ok)
-          .failures list of failure messages (credit-taking paths)
-          .warnings list of advisory messages (paths with no history)
+          .ok       True iff no STRUCTURED 'fail' verdicts
+                    (prose fails and no-history warns do not affect ok)
+          .failures list of BLOCKING failure messages (structured credit-taking)
+          .warnings list of advisory messages (prose credit-taking + no-history)
     """
     failures: list[str] = []
     warnings: list[str] = []
 
+    # Iterate the UNION of claimed-add paths; the structured set decides the tier.
+    # STRUCTURED (fenced ``A\t<path>``) -> BLOCKING; PROSE (add-cue mention) -> ADVISORY.
+    # Using the union here (rather than the two tier-lists separately) keeps
+    # extract_claimed_add_paths wired into the runtime call graph (C4).
+    structured_set = set(extract_structured_add_paths(evidence_section))
     claimed_paths = extract_claimed_add_paths(evidence_section)
 
     for path in claimed_paths:
         is_ancestor = ancestry_of(path)
         verdict, msg = classify_path(path, added_set, is_ancestor)
         if verdict == "fail":
-            failures.append(msg)
+            if path in structured_set:
+                failures.append(msg)  # STRUCTURED tier: BLOCKING
+            else:
+                # PROSE tier: advisory only — the prose heuristic cannot reliably
+                # distinguish the grammatical object of "added" from a referenced path.
+                warnings.append(
+                    f"[advisory] {msg} "
+                    f"(detected via prose add-cue heuristic; use a fenced "
+                    f"git diff --name-status block for hard enforcement)"
+                )
         elif verdict == "warn":
             warnings.append(msg)
         # 'ok' -> no action needed
@@ -267,11 +368,26 @@ def _check_symbol_provenance_advisory(evidence_section: str, warnings: list[str]
 def main(argv: list[str]) -> int:
     """CLI entry point for C11 provenance check.
 
+    Structured ``git diff --name-status`` A-entries in the Evidence section are
+    BLOCKING (a path that predates base causes exit 1 with ``::error::``).
+    Prose add-cue mentions are ADVISORY (``::warning::``; exit 0).
+
+    A regex cannot distinguish the grammatical object of "added" from a
+    referenced path — the same rationale the repo uses for C3 substring-lint
+    being advisory.  Authors should declare additions via a fenced
+    ``git diff --name-status`` block for the gate to hard-enforce.
+
     Usage:
         provenance_check.py --pr-body FILE [--base REF] [--head REF]
     """
     ap = argparse.ArgumentParser(
-        description="provenance check gate (C11): claimed-add paths must be new in this PR"
+        description=(
+            "provenance check gate (C11): structured git diff --name-status A-entries "
+            "in the Evidence section are BLOCKING (predates-base path → exit 1 ::error::); "
+            "prose add-cue mentions are ADVISORY (::warning::, exit 0). "
+            "Authors should declare additions via a fenced git diff --name-status block "
+            "for hard enforcement."
+        )
     )
     ap.add_argument("--pr-body", required=True, help="file containing the PR body markdown")
     ap.add_argument(
@@ -371,6 +487,7 @@ def main(argv: list[str]) -> int:
         ok = False
     for warning in result.warnings:
         print(f"[WARN] {warning}")
+        print(f"::warning::provenance-check (C11): {warning}")
 
     print(f"== provenance-check (C11): {'PASS' if ok else 'FAIL'} ==")
     return 0 if ok else 1

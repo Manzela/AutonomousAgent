@@ -539,3 +539,297 @@ class TestMiniSweAgentSentinel:
         """)
         violations = find_sentinel_violations(src, "app/swe_runner.py")
         assert violations
+
+
+# ===========================================================================
+# EVASION 1: Named-constant alias — MARKER = "MINI_SWE_AGENT_FINAL_OUTPUT"
+#   then `if resp.endswith(MARKER): break`
+# ===========================================================================
+class TestNamedConstantAlias:
+    def test_alias_endswith_flagged(self):
+        """MARKER = sentinel_str; resp.endswith(MARKER) -> violation."""
+        sentinel = "MINI" + "_SWE_AGENT_FINAL_OUTPUT"
+        src = textwrap.dedent(f"""\
+            MARKER = {sentinel!r}
+
+            def run(resp):
+                if resp.endswith(MARKER):
+                    break
+        """)
+        violations = find_sentinel_violations(src, "app/runner.py")
+        assert violations, f"Named alias in endswith must be flagged. src=\n{src}"
+
+    def test_alias_in_compare_flagged(self):
+        """MARKER = sentinel_str; if resp == MARKER: return -> violation."""
+        sentinel = "GOAL" + "_COMPLETE"
+        src = textwrap.dedent(f"""\
+            _STOP = {sentinel!r}
+
+            def check(resp):
+                if resp == _STOP:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/check.py")
+        assert violations, f"Named alias in == compare must be flagged. src=\n{src}"
+
+    def test_alias_done_in_compare_flagged(self):
+        """TERM = 'DONE'; if x == TERM: break -> violation."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            TERM = {sentinel!r}
+
+            def check(x):
+                if x == TERM:
+                    break
+        """)
+        violations = find_sentinel_violations(src, "app/term.py")
+        assert violations, f"Named alias for DONE in == compare must be flagged. src=\n{src}"
+
+    def test_alias_to_non_sentinel_not_flagged(self):
+        """D = '.done' (not a sentinel); if x == D: ... -> NOT flagged."""
+        src = textwrap.dedent("""\
+            D = ".done"
+
+            def check(x):
+                if x == D:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/check_nonfp.py")
+        assert not violations, f"Alias to non-sentinel '.done' must NOT be flagged: {violations}"
+
+    def test_alias_lowercase_done_not_flagged(self):
+        """s = 'done' (lowercase); if x == s: ... -> NOT flagged."""
+        src = textwrap.dedent("""\
+            s = "done"
+
+            def check(x):
+                if x == s:
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/lower_done.py")
+        assert not violations, f"Alias to lowercase 'done' must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 2: BinOp concat — if x == "DO" + "NE": break
+# ===========================================================================
+class TestBinOpConcat:
+    def test_binop_concat_done_flagged(self):
+        """if x == "DO" + "NE": break -> violation (folds to DONE)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x == "DO" + "NE":
+                    break
+        """)
+        violations = find_sentinel_violations(src, "app/binop.py")
+        assert violations, f"BinOp concat 'DO'+'NE' == DONE must be flagged. src=\n{src}"
+
+    def test_binop_concat_compound_sentinel_flagged(self):
+        """if x == "GOAL" + "_COMPLETE": return -> violation."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x == "GOAL" + "_COMPLETE":
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/binop2.py")
+        assert violations, "BinOp concat folding to GOAL_COMPLETE must be flagged."
+
+    def test_binop_endswith_concat_flagged(self):
+        """resp.endswith("MINI" + "_SWE_AGENT_FINAL_OUTPUT") -> violation."""
+        src = textwrap.dedent("""\
+            def run(resp):
+                if resp.endswith("MINI" + "_SWE_AGENT_FINAL_OUTPUT"):
+                    break
+        """)
+        violations = find_sentinel_violations(src, "app/binop3.py")
+        assert violations, "BinOp concat in endswith must be flagged."
+
+    def test_binop_concat_non_sentinel_not_flagged(self):
+        """if x == "work" + "_done": ... -> NOT flagged (not a sentinel)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x == "work" + "_done":
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/binop_nonfp.py")
+        assert not violations, f"Non-sentinel concat must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 3: f-string with no interpolation — if x == f"DONE": break
+# ===========================================================================
+class TestFStringNoInterpolation:
+    def test_fstring_done_flagged(self):
+        """if x == f"DONE": break -> violation (pure constant f-string)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x == f"DONE":
+                    break
+        """)
+        violations = find_sentinel_violations(src, "app/fstr.py")
+        assert violations, "f-string f'DONE' with no interpolation must be flagged."
+
+    def test_fstring_compound_sentinel_flagged(self):
+        """if x == f"GOAL_COMPLETE": return -> violation."""
+        src = textwrap.dedent("""\
+            def check(x):
+                if x == f"GOAL_COMPLETE":
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/fstr2.py")
+        assert violations, "f-string f'GOAL_COMPLETE' with no interpolation must be flagged."
+
+    def test_fstring_with_real_interpolation_not_flagged(self):
+        """if x == f"DONE_{task_id}": -> NOT flagged (real interpolation)."""
+        src = textwrap.dedent("""\
+            def check(x, task_id):
+                if x == f"DONE_{task_id}":
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/fstr_interp.py")
+        assert not violations, f"f-string with real interpolation must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 4: match statement — match x: case "DONE": break
+# ===========================================================================
+class TestMatchStatement:
+    def test_match_done_case_flagged(self):
+        """match x: case 'DONE': break -> violation."""
+        src = textwrap.dedent("""\
+            def check(x):
+                match x:
+                    case "DONE":
+                        break
+        """)
+        violations = find_sentinel_violations(src, "app/match_check.py")
+        assert violations, "match/case 'DONE' must be flagged."
+
+    def test_match_compound_sentinel_flagged(self):
+        """match x: case 'GOAL_COMPLETE': return -> violation."""
+        src = textwrap.dedent("""\
+            def check(x):
+                match x:
+                    case "GOAL_COMPLETE":
+                        return True
+        """)
+        violations = find_sentinel_violations(src, "app/match_compound.py")
+        assert violations, "match/case compound sentinel must be flagged."
+
+    def test_match_non_sentinel_not_flagged(self):
+        """match x: case 'ok': return -> NOT flagged."""
+        src = textwrap.dedent("""\
+            def check(x):
+                match x:
+                    case "ok":
+                        return True
+                    case _:
+                        return False
+        """)
+        violations = find_sentinel_violations(src, "app/match_ok.py")
+        assert not violations, f"Non-sentinel match case must NOT be flagged: {violations}"
+
+    def test_match_lowercase_done_not_flagged(self):
+        """match x: case 'done': return -> NOT flagged (lowercase)."""
+        src = textwrap.dedent("""\
+            def check(x):
+                match x:
+                    case "done":
+                        return True
+        """)
+        violations = find_sentinel_violations(src, "app/match_lower.py")
+        assert not violations, f"Lowercase 'done' in match case must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 5: bare `from re import search` then `search("DONE", output)`
+# ===========================================================================
+class TestFromReImport:
+    def test_from_re_import_search_flagged(self):
+        """from re import search; search('DONE', output) -> violation."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            from re import search
+
+            def check(output):
+                if search({sentinel!r}, output):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_bare.py")
+        assert violations, f"bare search() from 're' import must be flagged. src=\n{src}"
+
+    def test_from_re_import_match_flagged(self):
+        """from re import match; match('GOAL_COMPLETE', output) -> violation."""
+        sentinel = "GOAL" + "_COMPLETE"
+        src = textwrap.dedent(f"""\
+            from re import match
+
+            def check(output):
+                if match({sentinel!r}, output):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_bare_match.py")
+        assert violations, "bare match() from 're' import must be flagged."
+
+    def test_from_re_import_aliased_flagged(self):
+        """from re import search as re_search; re_search('DONE', output) -> violation."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            from re import search as re_search
+
+            def check(output):
+                if re_search({sentinel!r}, output):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/re_aliased.py")
+        assert violations, "aliased re.search from 're' import must be flagged."
+
+    def test_unrelated_function_named_search_not_flagged(self):
+        """search() from an unrelated module (not re) must NOT be flagged."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            from mylib import search
+
+            def check(output):
+                if search({sentinel!r}, output):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/mylib_search.py")
+        assert not violations, f"search() from non-re import must NOT be flagged: {violations}"
+
+
+# ===========================================================================
+# EVASION 6: __contains__ — output.__contains__("DONE")
+# ===========================================================================
+class TestDunderContains:
+    def test_dunder_contains_done_flagged(self):
+        """output.__contains__('DONE') -> violation."""
+        sentinel = "DONE"
+        src = textwrap.dedent(f"""\
+            def check(output):
+                if output.__contains__({sentinel!r}):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/contains.py")
+        assert violations, "__contains__('DONE') must be flagged."
+
+    def test_dunder_contains_compound_sentinel_flagged(self):
+        """output.__contains__('GOAL_COMPLETE') -> violation."""
+        sentinel = "GOAL" + "_COMPLETE"
+        src = textwrap.dedent(f"""\
+            def check(output):
+                if output.__contains__({sentinel!r}):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/contains2.py")
+        assert violations, "__contains__(compound_sentinel) must be flagged."
+
+    def test_dunder_contains_non_sentinel_not_flagged(self):
+        """output.__contains__('hello') -> NOT flagged."""
+        src = textwrap.dedent("""\
+            def check(output):
+                if output.__contains__("hello"):
+                    return True
+        """)
+        violations = find_sentinel_violations(src, "app/contains_nonfp.py")
+        assert not violations, f"__contains__ with non-sentinel must NOT be flagged: {violations}"

@@ -18,6 +18,8 @@ from scripts.ci.provenance_check import (
     classify_path,
     evaluate,
     extract_claimed_add_paths,
+    extract_prose_add_paths,
+    extract_structured_add_paths,
 )
 
 # ---------------------------------------------------------------------------
@@ -188,11 +190,11 @@ class TestClassifyPath:
 
 
 class TestEvaluate:
-    # (a) FAIL: credit-taking — Evidence claims "added lib/foo.py" but foo.py
-    # predates base (ancestry True, not in added_set).
+    # (a) FAIL: credit-taking — Evidence uses a STRUCTURED claim (fenced A\t<path>)
+    # for lib/foo.py which predates base (ancestry True, not in added_set).
     def test_fail_credit_taking(self):
-        """.ok is False naming lib/foo.py when introducing commit predates base."""
-        evidence = f"{ADD_CUE} lib/foo.py as shared utility"
+        """.ok is False naming lib/foo.py when fenced A-entry predates base (STRUCTURED)."""
+        evidence = "git diff --name-status output:\n" "```\n" "A\tlib/foo.py\n" "```\n"
         added_set = set()  # NOT in PR diff
 
         def ancestry_of(path: str) -> Optional[bool]:
@@ -266,8 +268,14 @@ class TestEvaluate:
         assert result.ok is False
         assert any("lib/old_thing.py" in f for f in result.failures)
 
-    def test_multiple_paths_mixed(self):
-        """Mixed bag: one ok, one fail, one warn."""
+    def test_multiple_paths_mixed_prose_all_advisory(self):
+        """Mixed bag (prose-only): all claims via prose add-cue -> all advisory, ok True.
+
+        old_thing.py predates base (would be FAIL in structured mode) -> advisory warning.
+        ghost.py has no history -> advisory warning.
+        new_gate.py is in added_set -> ok (no warning).
+        Since all three claims are via PROSE (no fenced block), .ok must be True.
+        """
         evidence = (
             f"{ADD_CUE} scripts/ci/new_gate.py fresh file\n"
             f"{ADD_CUE} lib/old_thing.py old file\n"
@@ -277,7 +285,33 @@ class TestEvaluate:
 
         def ancestry_of(path: str) -> Optional[bool]:
             if path == "lib/old_thing.py":
-                return True  # predates base
+                return True  # predates base -> would be BLOCKING if structured
+            if path == "scripts/ci/ghost.py":
+                return None  # no history
+            return False
+
+        result = evaluate(evidence, added_set, ancestry_of)
+        # PROSE-only claims: ok must be True even though one path predates base
+        assert result.ok is True
+        assert not result.failures
+        # Both problematic paths get advisory warnings
+        assert any("lib/old_thing.py" in w for w in result.warnings)
+        assert any("scripts/ci/ghost.py" in w for w in result.warnings)
+
+    def test_multiple_paths_mixed_structured_fails(self):
+        """Mixed bag with a STRUCTURED pre-existing path -> ok False."""
+        evidence = (
+            "```\n"
+            "A\tlib/old_thing.py\n"
+            "```\n"
+            f"{ADD_CUE} scripts/ci/new_gate.py fresh file\n"
+            f"{ADD_CUE} scripts/ci/ghost.py does not exist\n"
+        )
+        added_set = {"scripts/ci/new_gate.py"}
+
+        def ancestry_of(path: str) -> Optional[bool]:
+            if path == "lib/old_thing.py":
+                return True  # predates base — STRUCTURED -> BLOCKING
             if path == "scripts/ci/ghost.py":
                 return None  # no history
             return False
@@ -301,3 +335,128 @@ class TestEvaluate:
         result = evaluate(evidence, added_set, ancestry_of)
         # Symbol warnings must NOT affect ok
         assert result.ok is True
+
+    # NEW: prose credit-taking is ADVISORY only (core fix for the false-positive class)
+    def test_prose_credit_taking_is_advisory_not_blocking(self):
+        """PROSE-only claim of a pre-existing path -> .ok True (advisory), not FAIL.
+
+        Reviewer blocker: 'Added tests for app/existing_feature.py' co-locates
+        the add-cue with a pre-existing path. Gate must NOT hard-fail this case
+        because a regex cannot reliably distinguish the grammatical object of 'add'.
+        """
+        evidence = f"{ADD_CUE} tests for app/existing_feature.py"
+        added_set = set()  # NOT a new file in this PR
+
+        def ancestry_of(path: str) -> Optional[bool]:
+            return True  # predates base — would be BLOCKING if treated as structured
+
+        result = evaluate(evidence, added_set, ancestry_of)
+        # Prose claim must NOT block: .ok stays True
+        assert result.ok is True
+        # But there must be an advisory warning mentioning the path
+        assert any("app/existing_feature.py" in w for w in result.warnings)
+
+    # NEW: structured credit-taking still blocks (regression guard)
+    def test_structured_credit_taking_still_blocks(self):
+        """STRUCTURED fenced A-entry of a pre-existing path -> .ok False (BLOCKING).
+
+        This is the anti-credit-taking guarantee: if the Evidence section has
+        a fenced git diff --name-status block listing a path as 'A' but that
+        path predates base, the gate HARD-FAILS.
+        """
+        evidence = "git diff --name-status output:\n" "```\n" "A\tapp/existing_feature.py\n" "```\n"
+        added_set = set()  # NOT a new file in this PR
+
+        def ancestry_of(path: str) -> Optional[bool]:
+            return True  # predates base
+
+        result = evaluate(evidence, added_set, ancestry_of)
+        assert result.ok is False
+        assert any("app/existing_feature.py" in f for f in result.failures)
+
+
+# ===========================================================================
+# 4. extract_structured_add_paths and extract_prose_add_paths
+# ===========================================================================
+
+
+class TestExtractStructuredAddPaths:
+    def test_fenced_a_tab_entry_is_structured(self):
+        """A\\tpath in a fenced block is a structured claim."""
+        evidence = "```\nA\tscripts/ci/new_gate.py\nM\tother.py\n```\n"
+        paths = extract_structured_add_paths(evidence)
+        assert "scripts/ci/new_gate.py" in paths
+        assert "other.py" not in paths
+
+    def test_prose_line_is_not_structured(self):
+        """A prose line with add cue + path is NOT in the structured set."""
+        evidence = f"{ADD_CUE} scripts/ci/new_gate.py as the gate"
+        paths = extract_structured_add_paths(evidence)
+        assert "scripts/ci/new_gate.py" not in paths
+
+    def test_empty_evidence_returns_empty(self):
+        """No fenced blocks -> empty structured set."""
+        evidence = f"{ADD_CUE} scripts/ci/new_gate.py as the gate"
+        paths = extract_structured_add_paths(evidence)
+        assert paths == []
+
+
+class TestExtractProseAddPaths:
+    def test_prose_add_cue_path_is_prose(self):
+        """A prose add-cue line produces a path in the prose set."""
+        evidence = f"{ADD_CUE} scripts/ci/new_gate.py as the gate"
+        paths = extract_prose_add_paths(evidence)
+        assert "scripts/ci/new_gate.py" in paths
+
+    def test_structured_path_excluded_from_prose(self):
+        """A path already in the structured set is excluded from prose results."""
+        evidence = (
+            "```\n"
+            "A\tscripts/ci/new_gate.py\n"
+            "```\n"
+            f"{ADD_CUE} scripts/ci/new_gate.py referenced here too\n"
+        )
+        # new_gate.py is in the structured set, so prose should NOT include it
+        prose_paths = extract_prose_add_paths(evidence)
+        assert "scripts/ci/new_gate.py" not in prose_paths
+
+    def test_no_cue_produces_no_prose_paths(self):
+        """Line without add cue produces no prose paths."""
+        evidence = "reuses scripts/ci/pr_meta_checks.py for parsing"
+        paths = extract_prose_add_paths(evidence)
+        assert "scripts/ci/pr_meta_checks.py" not in paths
+
+
+# ===========================================================================
+# 5. Backtick / quote stripping (F4)
+# ===========================================================================
+
+
+class TestBacktickQuoteStripping:
+    def test_backtick_wrapped_path_normalized(self):
+        """A path wrapped in backticks in a prose line is stripped and claimed."""
+        evidence = f"{ADD_CUE} `app/foo.py` to handle edge cases"
+        paths = extract_claimed_add_paths(evidence)
+        assert "app/foo.py" in paths
+        assert "`app/foo.py`" not in paths
+
+    def test_trailing_punctuation_stripped(self):
+        """Trailing period/comma/semicolon stripped from path token."""
+        evidence = f"{ADD_CUE} app/foo.py. Also updated other things."
+        paths = extract_claimed_add_paths(evidence)
+        assert "app/foo.py" in paths
+        assert "app/foo.py." not in paths
+
+    def test_quoted_path_normalized(self):
+        """A path wrapped in double quotes is stripped to bare path."""
+        evidence = f'{ADD_CUE} "app/bar.py" for new feature'
+        paths = extract_claimed_add_paths(evidence)
+        assert "app/bar.py" in paths
+        assert '"app/bar.py"' not in paths
+
+    def test_backtick_path_in_structured_fenced_block(self):
+        """Backticks inside a fenced block A-entry are stripped for structured paths."""
+        evidence = "```\nA\t`scripts/ci/gate.py`\n```\n"
+        paths = extract_structured_add_paths(evidence)
+        assert "scripts/ci/gate.py" in paths
+        assert "`scripts/ci/gate.py`" not in paths

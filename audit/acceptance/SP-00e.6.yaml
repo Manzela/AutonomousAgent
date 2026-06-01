@@ -19,30 +19,6 @@ run_from: repo_root
 
 assertions:
   # --- provenance ---
-  - id: c11-fail-credit-taking
-    description: >
-      Red: Evidence claims "added lib/foo.py" but foo.py predates base (ancestry True,
-      not in added_set) -> evaluate().ok is False naming lib/foo.py.
-      If evaluate() returns ok=True the assertion FAILS (wrong logic).
-    cmd: |
-      python3 - <<'PYEOF'
-      import sys
-      sys.path.insert(0, '.')
-      from scripts.ci.provenance_check import evaluate
-
-      ADD_CUE = "add" + "ed"
-      evidence = f"{ADD_CUE} lib/foo.py as shared utility"
-      added_set = set()
-      def ancestry_of(path): return True
-      r = evaluate(evidence, added_set, ancestry_of)
-      if r.ok:
-          print("FAIL: credit-taking lib/foo.py was not caught"); sys.exit(1)
-      if not any("lib/foo.py" in f for f in r.failures):
-          print("FAIL: failure message must name lib/foo.py:", r.failures); sys.exit(1)
-      print("OK: credit-taking correctly detected:", r.failures[0])
-      PYEOF
-    expect_exit: 0
-
   - id: c11-pass-genuine-add
     description: >
       Green: Evidence says "created scripts/ci/new_gate.py" and it IS in added_set
@@ -140,6 +116,79 @@ assertions:
       PYEOF
     expect_exit: 0
   # --- no_sentinel ---
+  - id: c11-structured-fail-credit-taking
+    description: >
+      Red: Evidence has a fenced git diff --name-status block with 'A<TAB>lib/foo.py'
+      but lib/foo.py predates base (ancestry True, not in added_set) ->
+      evaluate().ok is False naming lib/foo.py (STRUCTURED tier is BLOCKING).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      evidence = (
+          "git diff --name-status output:\n"
+          "```\n"
+          "A\tlib/foo.py\n"
+          "```\n"
+      )
+      added_set = set()
+      def ancestry_of(path): return True
+      r = evaluate(evidence, added_set, ancestry_of)
+      if r.ok:
+          print("FAIL: structured credit-taking lib/foo.py was not caught"); sys.exit(1)
+      if not any("lib/foo.py" in f for f in r.failures):
+          print("FAIL: failure message must name lib/foo.py:", r.failures); sys.exit(1)
+      print("OK: structured credit-taking correctly detected:", r.failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-prose-credit-taking-is-advisory
+    description: >
+      Red-green: a PROSE-only add-cue claim with ancestry True and path NOT in
+      added_set -> evaluate().ok is True (advisory only) AND a warning names the path.
+      Proves the same-line prose heuristic no longer hard-blocks legit PRs (C9 F1).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      ADD_CUE = "add" + "ed"
+      evidence = f"{ADD_CUE} lib/foo.py as shared utility"
+      added_set = set()
+      def ancestry_of(path): return True
+      r = evaluate(evidence, added_set, ancestry_of)
+      if not r.ok:
+          print("FAIL: prose credit-taking must be advisory, not blocking:", r.failures); sys.exit(1)
+      if not any("lib/foo.py" in w for w in r.warnings):
+          print("FAIL: advisory warning must name lib/foo.py:", r.warnings); sys.exit(1)
+      print("OK: prose credit-taking is advisory — ok=True, warning emitted:", r.warnings[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-backtick-path-stripping
+    description: >
+      Green: a backtick-wrapped path in prose is normalized (decoration stripped)
+      to the bare repo path and claimed (C9 F4 robustness).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import extract_claimed_add_paths
+
+      ADD_CUE = "add" + "ed"
+      evidence = f"{ADD_CUE} `app/foo.py` to handle edge cases"
+      paths = extract_claimed_add_paths(evidence)
+      if "app/foo.py" not in paths:
+          print("FAIL: backtick-wrapped path not normalized:", paths); sys.exit(1)
+      if any("`" in p for p in paths):
+          print("FAIL: backtick form still present:", paths); sys.exit(1)
+      print("OK: backtick path correctly stripped:", paths)
+      PYEOF
+    expect_exit: 0
+
   - id: a-fail-goal-complete-in-compare
     description: >
       Red: `if "GOAL_COMPLETE" in llm_output: break` -> flagged.
@@ -389,6 +438,117 @@ assertions:
       PYEOF
     expect_exit: 0
   # --- substring ---
+  - id: i-alias-endswith-detected
+    description: >
+      C9 F2: a named-constant alias bound to a sentinel, used in .endswith, is flagged
+      (the idiomatic form the literal-only detector missed).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "MINI" + "_SWE_AGENT_FINAL_OUTPUT"
+      src = f'MARKER = {sentinel!r}\ndef run(resp):\n    if resp.endswith(MARKER):\n        return True\n'
+      v = find_sentinel_violations(src, "app/runner.py")
+      assert v, f"alias endswith not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: j-binop-fold-detected
+    description: >
+      C9 F2: a BinOp string concat that folds to a sentinel is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = 'def check(x):\n    if x == "DO" + "NE":\n        return True\n'
+      v = find_sentinel_violations(src, "app/binop.py")
+      assert v, f"BinOp concat not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: k-fstring-fold-detected
+    description: >
+      C9 F2: a pure-constant f-string folding to a sentinel is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = 'def check(x):\n    if x == f"DONE":\n        return True\n'
+      v = find_sentinel_violations(src, "app/fstr.py")
+      assert v, f"f-string DONE not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: l-match-case-detected
+    description: >
+      C9 F3: a match/case whose pattern is a sentinel MatchValue is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "GOAL" + "_COMPLETE"
+      src = f'def check(x):\n    match x:\n        case {sentinel!r}:\n            return True\n'
+      v = find_sentinel_violations(src, "app/match.py")
+      assert v, f"match/case sentinel not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: m-from-re-import-detected
+    description: >
+      C9 F3: a bare search() imported via `from re import search` is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = f'from re import search\ndef check(output):\n    if search({sentinel!r}, output):\n        return True\n'
+      v = find_sentinel_violations(src, "app/re_bare.py")
+      assert v, f"bare re.search not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: n-dunder-contains-detected
+    description: >
+      C9 F3: a `.__contains__(sentinel)` call is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = f'def check(output):\n    if output.__contains__({sentinel!r}):\n        return True\n'
+      v = find_sentinel_violations(src, "app/contains.py")
+      assert v, f"__contains__ sentinel not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: o-alias-non-sentinel-no-fp
+    description: >
+      C9 F2 no-FP: a named-constant alias bound to a NON-sentinel (".done") is NOT flagged
+      (guards the lib/durability/resume.py baseline against the new alias resolution).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = 'D = ".done"\ndef check(x):\n    if x == D:\n        return True\n'
+      v = find_sentinel_violations(src, "app/check_nonfp.py")
+      assert not v, f"Non-sentinel alias falsely flagged: {v}"
+      print("OK: non-sentinel alias not flagged")
+      PYEOF
+    expect_exit: 0
+
   - id: substring-assert-on-output-warns
     description: >
       Red-green: assert <literal> in output -> warning emitted, exit still 0.

@@ -13,6 +13,7 @@ Coverage plan:
   TC-10 ActionClassDowngradeError carries the right attributes
   TC-11 tag_untrusted helper produces correct UntrustedContent
   TC-12 TrustLevel enum has TRUSTED and UNTRUSTED members
+  TC-13 UntrustedContent is un-launderable: trust=TRUSTED at construction is pinned to UNTRUSTED
 """
 
 from __future__ import annotations
@@ -330,3 +331,32 @@ class TestTagUntrusted:
     def test_none_input_converted_to_str(self) -> None:
         content = tag_untrusted(None, source="test")
         assert content.raw == "None"
+
+
+# ---------------------------------------------------------------------------
+# TC-13 — UntrustedContent is un-launderable (trust is always pinned UNTRUSTED)
+# ---------------------------------------------------------------------------
+
+
+class TestUntrustedContentUnlaunderable:
+    """UntrustedContent cannot be constructed as TRUSTED even if the caller tries.
+
+    The __post_init__ pins trust=UNTRUSTED unconditionally.  This closes the
+    launder vector: UntrustedContent(raw=..., source=..., trust=TrustLevel.TRUSTED)
+    must still yield an object whose .trust is TrustLevel.UNTRUSTED.
+    """
+
+    def test_explicit_trusted_is_pinned_to_untrusted(self) -> None:
+        """Passing trust=TRUSTED at construction must be silently corrected to UNTRUSTED."""
+        content = UntrustedContent(raw="payload", source="test", trust=TrustLevel.TRUSTED)
+        assert content.trust is TrustLevel.UNTRUSTED
+
+    def test_default_construction_still_untrusted(self) -> None:
+        """Default construction (no trust kwarg) must still be UNTRUSTED."""
+        content = UntrustedContent(raw="payload", source="test")
+        assert content.trust is TrustLevel.UNTRUSTED
+
+    def test_tag_untrusted_helper_still_untrusted(self) -> None:
+        """tag_untrusted convenience function must produce UNTRUSTED content."""
+        content = tag_untrusted("external payload", source="ci_log")
+        assert content.trust is TrustLevel.UNTRUSTED

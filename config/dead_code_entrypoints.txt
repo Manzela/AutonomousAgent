@@ -62,10 +62,13 @@ lib.durability:register
 # as lib.durability, lib.memory, etc. (see lib.durability:register comment above).
 # The AST callgraph cannot trace the plugin-loader path, so app.core.trust symbols
 # appear unreachable even though they are called at runtime via:
-#   plugin-loader → lib.anchors.register(ctx) → _on_pre_tool_call / _draft_from_intent
+#   plugin-loader → lib.anchors.register(ctx) → register_cli_command("new")
+#   → _handle_new_cli (~L415) → _draft_from_intent (~L360)
 #   → guard_action_class / tag_untrusted / UntrustedContent / ActionClass / TrustLevel
-# Verified reachable (grep: lib/anchors/__init__.py L13-19 imports + L375 calls guard_action_class
-# + L369 calls tag_untrusted). Operator-reviewed (2026-06-01).
+# NOTE: _on_pre_tool_call returns None (behind a TODO at ~L224) and does NOT call
+# _draft_from_intent; the real live path is the `hermes new` CLI command above.
+# Verified reachable (grep: lib/anchors/__init__.py L13-19 imports, L415-436 _handle_new_cli,
+# L360-412 _draft_from_intent calls guard_action_class + tag_untrusted). Operator-reviewed (2026-06-01).
 app.core.trust
 
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.

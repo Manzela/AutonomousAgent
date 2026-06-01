@@ -89,6 +89,19 @@ class UntrustedContent:
     source: str
     trust: TrustLevel = TrustLevel.UNTRUSTED
 
+    def __post_init__(self) -> None:
+        """Force trust to UNTRUSTED regardless of what the caller passed.
+
+        UntrustedContent must ALWAYS be UNTRUSTED — passing trust=TRUSTED at
+        construction is a usage error (it would create a trusted-wrapper around
+        untrusted material).  We pin the field unconditionally so the type
+        invariant "UntrustedContent.trust is always UNTRUSTED" holds even if a
+        caller accidentally or maliciously passes trust=TrustLevel.TRUSTED.
+
+        Note: object.__setattr__ bypass is inherent Python and out of scope.
+        """
+        object.__setattr__(self, "trust", TrustLevel.UNTRUSTED)
+
     # Prevent accidental __str__ / implicit str() use leaking the tag.
     def __str__(self) -> str:  # pragma: no cover
         return f"<UntrustedContent source={self.source!r} len={len(self.raw)}>"
@@ -203,11 +216,27 @@ def guard_action_class(
        restrictive as ``current``.  A downgrade raises ``ActionClassDowngradeError``.
        This encodes "the monitor may only escalate, never downgrade."
 
+    Caller obligation — ``derived_from_untrusted``:
+        This is a TAINT FLAG that the CALLER must set honestly.  The guard
+        enforces the rejection given an honest flag; it does NOT itself inspect
+        provenance or walk the call stack.  The caller MUST pass
+        ``derived_from_untrusted=True`` whenever the proposed action_class was
+        computed from, or influenced by, untrusted content (e.g. an issue body,
+        PR text, CI log, MCP/A2A response, user-supplied string).  Passing
+        ``False`` when the class actually came from untrusted content is a
+        violation of the C16 contract (standard taint-propagation posture:
+        honest flag → guard enforces; dishonest flag → caller is at fault).
+
+        v1 contract note: a future hardening is to have the guard accept the
+        ``UntrustedContent`` / provenance object directly so provenance can be
+        verified structurally.  For now the caller flag is the contract.
+
     Args:
         proposed:               The ActionClass to validate.
-        derived_from_untrusted: Set True when the action class was computed by
-                                inspecting any UntrustedContent, or any content
-                                whose provenance is not a static §4.1 lookup.
+        derived_from_untrusted: CALLER OBLIGATION — set True whenever the
+                                proposed action_class was computed from, or
+                                influenced by, any untrusted content.  See
+                                taint-propagation note above.
         untrusted_source:       Provenance label for the error message (the
                                 UntrustedContent.source, if available).
         current:                The existing ActionClass for this action in the

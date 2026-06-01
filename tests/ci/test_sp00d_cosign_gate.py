@@ -63,3 +63,70 @@ def test_workflow_permissions():
     # deploy needs id-token: write for GCP WIF auth
     deploy_job = wf["jobs"]["deploy"]
     assert deploy_job.get("permissions", {}).get("id-token") == "write"
+
+
+def test_no_mutable_latest_tag_in_deploy_workflow():
+    """H-19a: :latest must not appear in the build-push tags or anywhere the workflow
+    resolves image references. A mutable :latest tag enables a TOCTOU tag-swap that
+    can bypass the cosign verify gate.
+
+    This test reads the raw workflow YAML text (before safe_load strips comments) so
+    it also catches any :latest reference in inline shell scripts or comments that
+    would indicate a residual mutable-tag reference.
+    """
+    wf_path = Path(".github/workflows/phase-0a-deploy.yml")
+    assert wf_path.exists()
+
+    raw_text = wf_path.read_text()
+
+    # The only allowed occurrence of the string ":latest" is inside the
+    # docker-compose.gcp.override.yml guard string which is defined in that file,
+    # not in this workflow. Any occurrence here is a violation.
+    offending_lines = [
+        f"  line {i + 1}: {line.rstrip()}"
+        for i, line in enumerate(raw_text.splitlines())
+        if ":latest" in line
+    ]
+    assert not offending_lines, (
+        "Mutable ':latest' tag found in phase-0a-deploy.yml — use digest or :<sha> only.\n"
+        + "\n".join(offending_lines)
+    )
+
+
+def test_deploy_pulls_by_digest():
+    """H-19a: the deploy job must thread HERMES_DIGEST and SANDBOX_DIGEST from the
+    build job into the remote script and pull images by digest, not by tag."""
+    wf_path = Path(".github/workflows/phase-0a-deploy.yml")
+    with open(wf_path, "r") as f:
+        wf = yaml.safe_load(f)
+
+    deploy_job = wf["jobs"]["deploy"]
+    deploy_env = deploy_job.get("env", {})
+
+    # HERMES_DIGEST and SANDBOX_DIGEST must be wired from build-and-push outputs
+    assert "HERMES_DIGEST" in deploy_env, "HERMES_DIGEST not in deploy job env"
+    assert "SANDBOX_DIGEST" in deploy_env, "SANDBOX_DIGEST not in deploy job env"
+    assert (
+        "hermes_digest" in deploy_env["HERMES_DIGEST"]
+    ), "HERMES_DIGEST must reference build-and-push.outputs.hermes_digest"
+    assert (
+        "sandbox_digest" in deploy_env["SANDBOX_DIGEST"]
+    ), "SANDBOX_DIGEST must reference build-and-push.outputs.sandbox_digest"
+
+    # The IAP SSH step must pass the digests into the remote script
+    deploy_steps = deploy_job.get("steps", [])
+    ssh_step = next((s for s in deploy_steps if s.get("name") == "Deploy via IAP SSH"), None)
+    assert ssh_step is not None, "Deploy via IAP SSH step not found"
+
+    ssh_run = ssh_step.get("run", "")
+    # Digests must be forwarded as positional args to bash on the VM
+    assert "HERMES_DIGEST" in ssh_run, "HERMES_DIGEST not threaded into remote script"
+    assert "SANDBOX_DIGEST" in ssh_run, "SANDBOX_DIGEST not threaded into remote script"
+    # The VM must docker pull by digest, not by floating tag
+    assert "docker pull" in ssh_run, "remote script must docker pull by digest"
+    assert (
+        "@${HERMES_DIGEST}" in ssh_run or "@$HERMES_DIGEST" in ssh_run
+    ), "remote script must pull hermes by @digest reference"
+    assert (
+        "@${SANDBOX_DIGEST}" in ssh_run or "@$SANDBOX_DIGEST" in ssh_run
+    ), "remote script must pull shell-sandbox by @digest reference"

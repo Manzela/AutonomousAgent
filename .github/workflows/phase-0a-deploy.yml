@@ -154,7 +154,6 @@ jobs:
           push: true
           tags: |
             ${{ env.AR_REPO }}/hermes:${{ steps.meta.outputs.tag }}
-            ${{ env.AR_REPO }}/hermes:latest
           cache-from: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache
           cache-to: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache,mode=max
           provenance: mode=max
@@ -173,7 +172,6 @@ jobs:
           push: true
           tags: |
             ${{ env.AR_REPO }}/shell-sandbox:${{ steps.meta.outputs.tag }}
-            ${{ env.AR_REPO }}/shell-sandbox:latest
           cache-from: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache
           cache-to: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache,mode=max
           provenance: mode=max
@@ -365,25 +363,44 @@ jobs:
       # a file to the VM). Steps:
       #   1. Pull bootstrap tarball from GCS (contains compose + secrets mount
       #      stubs if needed — primarily ensures the compose file is current).
-      #   2. Run `docker compose pull` to fetch the new :latest images.
-      #   3. Restart the stack with zero-downtime rolling update.
+      #   2. Verify cosign signatures using the EXACT digests from the build job
+      #      (no tag→digest resolve on the VM — closes TOCTOU window).
+      #   3. Pull both images by digest, re-tag to :<sha> for compose resolution.
+      #   4. Restart the stack with zero-downtime rolling update.
       #
       # Note on bootstrap tarball: the tarball at the GCS path is the
       # canonical source of the compose file + config on the VM. CI does NOT
       # push a new tarball on every deploy — the tarball is updated manually
-      # when the compose file changes. `docker compose pull` + `up -d` is
-      # sufficient for image-only updates.
+      # when the compose file changes. digest-pull + `up -d` is sufficient
+      # for image-only updates.
       # ------------------------------------------------------------------
       - name: Deploy via IAP SSH
+        env:
+          HERMES_DIGEST: ${{ env.HERMES_DIGEST }}
+          SANDBOX_DIGEST: ${{ env.SANDBOX_DIGEST }}
         run: |
           gcloud compute ssh "$VM_NAME" \
             --zone="$GCP_ZONE" \
             --project="$GCP_PROJECT" \
             --tunnel-through-iap \
             --quiet \
-            --command="sudo bash -s" \
+            --command="sudo bash -s -- '$IMAGE_TAG' '$HERMES_DIGEST' '$SANDBOX_DIGEST'" \
             << 'REMOTE_SCRIPT'
           set -euo pipefail
+
+          IMAGE_TAG="$1"
+          HERMES_DIGEST="$2"
+          SANDBOX_DIGEST="$3"
+
+          # Validate digest format: must start with sha256: and be 71 chars total.
+          # Prevents a blank/injected value from reaching docker pull.
+          for digest_var in HERMES_DIGEST SANDBOX_DIGEST; do
+            digest_val="${!digest_var}"
+            if [[ ! "${digest_val}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "[deploy] ERROR: ${digest_var} has unexpected format: '${digest_val}'" >&2
+              exit 1
+            fi
+          done
 
           # Bootstrap lives at /opt/hermes/bootstrap/ on the VM.
           # Compose files: docker-compose.yml + docker-compose.gcp.override.yml
@@ -392,6 +409,7 @@ jobs:
           COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
           BOOTSTRAP_TARBALL="gs://autonomous-agent-2026-snapshots/bootstrap/hermes-bootstrap.tar.gz"
           EXPECTED_CONTAINERS=10
+          AR_BASE="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images"
 
           echo "[deploy] Refreshing bootstrap tarball from GCS..."
           gsutil -q cp "${BOOTSTRAP_TARBALL}" /tmp/hermes-bootstrap.tar.gz
@@ -421,20 +439,31 @@ jobs:
             rm -f /tmp/cosign_checksums.txt
           fi
 
-          # Verify both images built and signed in this workflow
-          for svc in "hermes" "shell-sandbox"; do
-            IMAGE_URI="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/${svc}:${IMAGE_TAG}"
-            DIGEST=$(gcloud container images describe "${IMAGE_URI}" --format="value(image_summary.digest)")
+          # Verify both images using the EXACT same digests that the CI build job
+          # produced and cosign-signed — no TOCTOU tag→digest resolve on the VM.
+          echo "[deploy] Verifying hermes@${HERMES_DIGEST}..."
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${AR_BASE}/hermes@${HERMES_DIGEST}"
 
-            echo "[deploy] Verifying signature for ${svc}..."
-            cosign verify \
-              --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/${svc}@${DIGEST}"
-          done
+          echo "[deploy] Verifying shell-sandbox@${SANDBOX_DIGEST}..."
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
 
-          echo "[deploy] Pulling new images..."
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
+          # Pull images by digest — the same digest that was cosign-verified above.
+          # This closes the TOCTOU window: no floating-tag resolution on the VM.
+          echo "[deploy] Pulling hermes by digest..."
+          docker pull "${AR_BASE}/hermes@${HERMES_DIGEST}"
+          echo "[deploy] Pulling shell-sandbox by digest..."
+          docker pull "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
+
+          # Re-tag with the SHA tag so docker-compose.gcp.override.yml IMAGE_TAG
+          # lookup resolves to the just-pulled (digest-verified) layers.
+          docker tag "${AR_BASE}/hermes@${HERMES_DIGEST}" "${AR_BASE}/hermes:${IMAGE_TAG}"
+          docker tag "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}" "${AR_BASE}/shell-sandbox:${IMAGE_TAG}"
 
           echo "[deploy] Pruning stopped containers (clears stale references)..."
           # Stopped/killed containers from prior chaos tests or failed deploys

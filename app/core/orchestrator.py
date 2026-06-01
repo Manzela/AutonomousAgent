@@ -232,10 +232,10 @@ async def _execute_via_a2a(
                 "a2a peer dispatch protocol error: task_id=%s peer=%s code=%d msg=%s",
                 request.task_id,
                 capability.peer_endpoint,
-                exc.code,  # type: ignore[union-attr]
+                exc.code,  # type: ignore[attr-defined]
                 exc,
             )
-            error_str = f"a2a_peer_error: code={exc.code} msg={exc}"  # type: ignore[union-attr]
+            error_str = f"a2a_peer_error: code={exc.code} msg={exc}"  # type: ignore[attr-defined]
         else:
             logger.error(
                 "a2a peer dispatch error: task_id=%s peer=%s error=%r",

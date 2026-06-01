@@ -154,7 +154,7 @@ def _p1_3_checkpoint_on_tool_call(
     return None
 
 
-def _p1_3_resume_session(**kwargs: Any) -> None:
+def _p1_3_resume_session(**kwargs: Any) -> Any:
     """P1-3 (session-c): on container start, scan /data/checkpoints/ for incomplete
     sessions and rehydrate the latest checkpoint per session.
 

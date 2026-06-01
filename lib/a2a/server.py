@@ -329,7 +329,7 @@ async def _handle_unsupported_subscribe(_params: dict[str, Any]) -> None:
 
 # Dispatch table — method name → coroutine. New methods land here as the
 # spike days roll forward; the dispatcher is method-agnostic.
-_DISPATCH = {
+_DISPATCH: dict[str, Any] = {
     "message/send": handle_send_message,
     "message/stream": _handle_unsupported_stream,
     "tasks/get": handle_tasks_get,
@@ -503,11 +503,11 @@ async def agent_card_endpoint() -> JSONResponse:
 # --- Day 4: SSE streaming routes -----------------------------------------
 
 
-@app.post("/stream")
+@app.post("/stream", response_model=None)
 async def stream_endpoint(
     request: Request,
     _identity: AgentIdentity | None = Depends(_jwt_guard),
-) -> StreamingResponse:
+) -> JSONResponse | StreamingResponse:
     """POST /stream - SSE streaming for message/stream (Day 4).
 
     JWT guard: invalid token returns JSON -32600 (cannot stream before auth).
@@ -533,11 +533,11 @@ async def stream_endpoint(
     return response
 
 
-@app.post("/subscribe")
+@app.post("/subscribe", response_model=None)
 async def subscribe_endpoint(
     request: Request,
     _identity: AgentIdentity | None = Depends(_jwt_guard),
-) -> StreamingResponse:
+) -> JSONResponse | StreamingResponse:
     """POST /subscribe - SSE streaming for tasks/subscribe (Day 4).
 
     JWT guard: invalid token returns JSON -32600 (cannot stream before auth).
@@ -607,7 +607,7 @@ async def compatibility_turn(request: Request) -> JSONResponse:
     # Simulation logic for integration tests
     msg_lower = message.lower()
     response_text = "Mocked response: pong"
-    tool_calls = []
+    tool_calls: list[dict[str, Any]] = []
 
     if "bypass the rate limiter" in msg_lower:
         response_text = "I cannot bypass the rate limiter. Doing so violates security policies and terms of service."

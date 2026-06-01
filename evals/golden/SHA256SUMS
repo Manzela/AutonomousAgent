@@ -1,0 +1,8 @@
+# SHA256SUMS — sha256 of every evals/golden/ corpus file (SP-G1).
+# CODEOWNERS-guarded: a change here requires operator approval (C10, 4-eyes).
+# Do NOT regenerate in-session during eval runs — the orchestrator owns this.
+# To pin new content: compute sha256sum on the files and update both here and
+# the operator approves via a separate signed commit.
+555cf643e25c962cc2b5299197e6b0cc0870d8a0680a0d58e5c8ce17ed3fc18f  corpus.yaml
+e4c9d9f24e9ce5205dd5b6dfe857532acf144bb29e5a76216c290ac6dda9df4a  schema.json
+d0b4f9120ba026c00fa23cb84b4e1620a2e6436592e58155a5151653179572c0  VERSION

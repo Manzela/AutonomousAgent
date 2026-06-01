@@ -56,6 +56,18 @@ lib.durability.checkpoint:Checkpoint
 # reachable, not dead. Operator-reviewed (2026-06-01).
 lib.durability:register
 
+# app/core/trust.py is the C16/C17 trust primitive (C-15) imported DIRECTLY by
+# lib/anchors/__init__.py (verified: line 13 `from app.core.trust import ...`).
+# lib/anchors is a Hermes plugin loaded via the same dynamic register(ctx) dispatch
+# as lib.durability, lib.memory, etc. (see lib.durability:register comment above).
+# The AST callgraph cannot trace the plugin-loader path, so app.core.trust symbols
+# appear unreachable even though they are called at runtime via:
+#   plugin-loader → lib.anchors.register(ctx) → _on_pre_tool_call / _draft_from_intent
+#   → guard_action_class / tag_untrusted / UntrustedContent / ActionClass / TrustLevel
+# Verified reachable (grep: lib/anchors/__init__.py L13-19 imports + L375 calls guard_action_class
+# + L369 calls tag_untrusted). Operator-reviewed (2026-06-01).
+app.core.trust
+
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

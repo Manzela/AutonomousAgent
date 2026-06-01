@@ -27,6 +27,14 @@
 # CMD ["python", "-m", "app.a2a_canary.main"] also launches it.
 app.a2a_canary.main
 
+# lib/a2a/server.py defines the A2A FastAPI ASGI app (`app = FastAPI(...)`) and is
+# launched at runtime by `uvicorn lib.a2a.server:app --host 0.0.0.0 --port 9001`
+# (deploy/docker-compose.yml:433). uvicorn imports the module, so its @app.post(...)
+# route handlers (e.g. compatibility_admin_limits "/v1/admin/limits", compatibility_turn
+# "/v1/turn") are framework-registered endpoints, not dead code — the gate just cannot
+# see a compose-string uvicorn launch as an entrypoint. Operator-reviewed (2026-06-01).
+lib.a2a.server
+
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

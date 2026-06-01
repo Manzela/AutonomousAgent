@@ -40,7 +40,10 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
-          submodules: false
+          # The hermes image build COPYs hermes-agent/uv.lock from the submodule,
+          # so the live-stack nightly must check it out (recursive). Without it the
+          # "Build hermes image" step fails: '"/hermes-agent/uv.lock": not found'.
+          submodules: recursive
 
       # ------------------------------------------------------------------
       # 2. Python + uv

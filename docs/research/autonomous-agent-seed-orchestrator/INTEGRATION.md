@@ -1,5 +1,21 @@
 # Integration into the AutonomousAgent build plan
 
+> **SP-22 tombstone notice (2026-06-01):** The seed MoE router (`seed/moe_router.py`),
+> PPO policy network (`seed/orchestrator.py` — `_policy_update_loop`, `SoftmaxBilinearRouter`),
+> reward model (`seed/reward_model.py`), and bootstrap loop (`seed/bootstrap.py`) are
+> **research artefacts only and will NOT be ported to `app/`**. The LangGraph-spine design
+> (PRD §3 + SP-00) supersedes the seed's asyncio task loops. See PRD §6 SP-22.
+>
+> **Traversal status of P-1..P-17 (as of SP-22):**
+> Traversed (implemented in `app/`): P-2 (`app/adapters/gcp/memory.py`), P-3
+> (`app/core/orchestrator.py`), P-9 (`app/adapters/gcp/embedder.py`).
+> Not yet traversed: P-1, P-4, P-5, P-6 (deferred), P-7, P-8, P-10, P-11,
+> P-12, P-13, P-14, P-15, P-16, P-17. See per-item notes below.
+>
+> **Note on "hallucinated Phase 7/8.5/10":** these phase number labels were
+> never present in this document; the PRD's SP-22 references them as a risk
+> pattern from a prior draft. Nothing to delete here.
+
 This document maps the seed orchestrator's modules onto the existing
 AutonomousAgent build state and identifies the work items needed to fold
 this research artefact into the production scope.
@@ -45,12 +61,12 @@ production:
 
 | ADR-0008 disposition | Effect on seed orchestrator |
 |---|---|
-| **$5K GPU + Unsloth-only** | The PPO update loop in `orchestrator._policy_update_loop` is currently NumPy. Production update must run on the $5K GPU under Unsloth; the bilinear `W_r` and policy heads must move to PyTorch. **Work item: P-1** |
-| **Postgres Phase 2** (Cloud SQL `db-custom-16-64000` + HNSW pgvector) | `AbstractMemoryStore` has one implementation (`InMemoryStore`). Production requires `PostgresStore` honouring the same contract, with HNSW (`m=16, ef=64`) per `memory/phase2_postgres_tier.md`. **Work item: P-2** |
-| **A2A PRIORITY** | The orchestrator's `_execute()` currently dispatches to local sandbox via `agent_module.run(request, ctx)`. A2A peer-execution requires `_execute()` to route across the A2A boundary when the chosen expert lives on a peer node. **Work item: P-3** |
-| **Firecracker H1** | `sandbox.py` ships `LocalSubprocessSandbox` only. Production requires `FirecrackerSandbox` (separate tier per `memory/h1_firecracker_scope.md`). **Work item: P-4** |
-| **J1 + Model Armor** | Spawn-generated modules are persisted to `module_store_dir` in `bootstrap.py`. Per `memory/persistence_trap_contract.md`, the J3 shipper MUST call Model Armor sanitize before any GCS upload. The bootstrap's `module_store_dir.write_text(source)` is local-only; the J3 shipper layer must wrap it. **Work item: P-5** |
-| **Governor Phase 3** | Per `memory/phase3_governor_design.md`, the governor is a standalone service that gates A2A traffic. The seed orchestrator's `_check_circuit_breakers` is a per-process breaker — the governor will subsume this once Q4 2026 trigger fires. **Work item: P-6 (deferred, not blocking)** |
+| **$5K GPU + Unsloth-only** | The PPO update loop in `orchestrator._policy_update_loop` is currently NumPy. Production update must run on the $5K GPU under Unsloth; the bilinear `W_r` and policy heads must move to PyTorch. **Work item: P-1** ⚠️ **TOMBSTONED** — seed MoE/PPO/reward not ported; see SP-22 notice above. |
+| **Postgres Phase 2** (Cloud SQL `db-custom-16-64000` + HNSW pgvector) | `AbstractMemoryStore` has one implementation (`InMemoryStore`). Production requires `PostgresStore` honouring the same contract, with HNSW (`m=16, ef=64`) per `memory/phase2_postgres_tier.md`. **Work item: P-2** ✅ **TRAVERSED** — `app/adapters/gcp/memory.py` (`CloudSqlPgvectorStore`). |
+| **A2A PRIORITY** | The orchestrator's `_execute()` currently dispatches to local sandbox via `agent_module.run(request, ctx)`. A2A peer-execution requires `_execute()` to route across the A2A boundary when the chosen expert lives on a peer node. **Work item: P-3** ✅ **TRAVERSED** — `app/core/orchestrator.py` (`execute()` A2A dispatch layer). |
+| **Firecracker H1** | `sandbox.py` ships `LocalSubprocessSandbox` only. Production requires `FirecrackerSandbox` (separate tier per `memory/h1_firecracker_scope.md`). **Work item: P-4** — not yet traversed. |
+| **J1 + Model Armor** | Spawn-generated modules are persisted to `module_store_dir` in `bootstrap.py`. Per `memory/persistence_trap_contract.md`, the J3 shipper MUST call Model Armor sanitize before any GCS upload. The bootstrap's `module_store_dir.write_text(source)` is local-only; the J3 shipper layer must wrap it. **Work item: P-5** — not yet traversed (bootstrap is tombstoned, but J3 shipper wrapping is still required for any GCS-persisted module). |
+| **Governor Phase 3** | Per `memory/phase3_governor_design.md`, the governor is a standalone service that gates A2A traffic. The seed orchestrator's `_check_circuit_breakers` is a per-process breaker — the governor will subsume this once Q4 2026 trigger fires. **Work item: P-6 (deferred, not blocking)** — not yet traversed. |
 
 ## Concrete work items
 
@@ -58,18 +74,24 @@ The following are sized to roughly match the granularity of the existing
 audit-plan task list. They are **not** filed as audit tasks yet — they're
 queued for prioritisation against the post-audit roadmap.
 
-### P-1. Port the policy network to PyTorch / Unsloth
+> **Traversal key (SP-22, 2026-06-01):**
+> ✅ TRAVERSED = implementation exists in `app/`
+> ⚠️ TOMBSTONED = seed module not ported; LangGraph-spine supersedes
+> — = not yet traversed; queued for future sprint
 
-- Replace `SoftmaxBilinearRouter`'s NumPy `ppo_update` with a PyTorch
-  implementation runnable under Unsloth.
-- Keep the bilinear contract — `e_k` shape and `W_r` invariance to expert
-  reordering — so `add_expert`/`remove_expert` semantics survive.
-- Mirror the `snapshot()` / `restore()` interface so the operator
-  workflow is unchanged.
-- **Acceptance.** A 24h burn-in run on the $5K GPU completes 1K PPO
-  updates with cumulative KL drift < 0.5 to the initial reference policy.
+### P-1. Port the policy network to PyTorch / Unsloth — ⚠️ TOMBSTONED
 
-### P-2. Implement `PostgresStore` (HNSW pgvector)
+> **SP-22 decision:** The seed MoE/PPO/reward model (`seed/moe_router.py`,
+> `seed/reward_model.py`, `seed/orchestrator.py` policy update loop) will NOT
+> be ported to `app/`. The LangGraph-spine (PRD §3, SP-00) is the production
+> orchestration backbone; the NumPy PPO loop is research provenance only.
+> The `seed/` files are preserved as-is for provenance — do not delete them.
+
+- ~~Replace `SoftmaxBilinearRouter`'s NumPy `ppo_update` with a PyTorch~~
+  ~~implementation runnable under Unsloth.~~ (tombstoned)
+- ~~Acceptance: 24h burn-in 1K PPO updates < 0.5 KL drift.~~ (tombstoned)
+
+### P-2. Implement `PostgresStore` (HNSW pgvector) — ✅ TRAVERSED
 
 - Subclass `AbstractMemoryStore` with the same contract:
   - `search()` rejects empty scopes
@@ -81,8 +103,10 @@ queued for prioritisation against the post-audit roadmap.
 - HNSW index: `m=16, ef=64` over the `embedding` column.
 - **Acceptance.** Property test: 10 projects × 1K records each, 100K random
   queries, zero cross-project leakage. Latency P95 ≤ 30ms for k=10 recall.
+- **Status:** Implemented in `app/adapters/gcp/memory.py` (`CloudSqlPgvectorStore`).
+  In-memory stub at `app/adapters/inmemory/memory.py`. Tests: `app/tests/test_cloud_sql_pgvector_store.py`.
 
-### P-3. A2A peer-execution dispatch
+### P-3. A2A peer-execution dispatch — ✅ TRAVERSED
 
 - Extend `AgentCapability` with a `peer_endpoint: str | None` field. When
   set, the orchestrator's `_execute()` routes the task across the A2A
@@ -93,16 +117,19 @@ queued for prioritisation against the post-audit roadmap.
 - **Acceptance.** Two-node test: project P with 3 agents, one local, two
   remote. Routing distribution roughly matches the local case after the
   same number of trajectories.
+- **Status:** Implemented in `app/core/orchestrator.py` (`execute()` function).
+  Tests: `app/tests/test_peer_dispatch.py`.
 
-### P-4. Firecracker sandbox tier
+### P-4. Firecracker sandbox tier —
 
 - Implement `FirecrackerSandbox` per `memory/h1_firecracker_scope.md`:
   separate tier, not a `LocalSubprocessSandbox` replacement.
 - GCP N2 nested-virt hosts; ~$265/month per the memory note.
 - **Acceptance.** A2A peer-exec calls land in Firecracker microVM, not
   on the host kernel.
+- **Status:** Not yet traversed.
 
-### P-5. J3 shipper integration in bootstrap
+### P-5. J3 shipper integration in bootstrap —
 
 - Wrap `bootstrap.py`'s `out_path.write_text(source)` with a call to the
   Model Armor sanitize endpoint per the Persistence Trap contract:
@@ -112,14 +139,16 @@ queued for prioritisation against the post-audit roadmap.
   `memory/model_armor_j1_config.md`.
 - **Acceptance.** A canary string injected into a generated module
   triggers `halt.loud` telemetry and the module is NOT persisted to GCS.
+- **Status:** Not yet traversed (bootstrap tombstoned; shipper wrapping still required for any GCS module upload).
 
-### P-6. Governor service rationalisation (DEFERRED)
+### P-6. Governor service rationalisation (DEFERRED) —
 
 - The per-process `_check_circuit_breakers` is fine for single-node
   operation. Once Q4 2026 A2A traffic gates fire, the standalone Governor
   service per `memory/phase3_governor_design.md` subsumes this and the
   orchestrator's breakers become local soft-limits only.
 - **Trigger:** Q4 2026 A2A traffic threshold per the strategic disposition.
+- **Status:** Not yet traversed. Deferred per disposition.
 
 ## GCP-native adapter work items (P-7 .. P-17)
 
@@ -130,7 +159,7 @@ These items implement the hybrid pattern described in
 for tests.** Priority order is in §"Priority order for the GCP-native
 swaps" of the adapter plan; the items are listed here in numeric order.
 
-### P-7. Vertex AI Vector Search store (billion-scale tier)
+### P-7. Vertex AI Vector Search store (billion-scale tier) —
 
 - Subclass `AbstractMemoryStore` as `VertexVectorSearchStore`. Honours the
   same contract as P-2: `search()` rejects empty scopes, `gc_expired()`
@@ -139,8 +168,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
   that, the P-2 `CloudSqlPgvectorStore` is sufficient.
 - **Acceptance.** 100M random vectors across 100 projects; 10K queries;
   zero cross-project leakage; P95 ≤ 50ms for k=10 recall.
+- **Status:** Not yet traversed.
 
-### P-8. Cloud Run jobs sandbox tier (spawn-burst optimisation)
+### P-8. Cloud Run jobs sandbox tier (spawn-burst optimisation) —
 
 - Subclass `AbstractSandbox` as `CloudRunJobSandbox`. Complements P-4
   (Firecracker) — Firecracker for long-lived experts, Cloud Run jobs for
@@ -149,8 +179,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** 100 concurrent spawns complete within 60s; cold-start
   P95 ≤ 15s; no `network_allowed=True` accepted (same hard refusal as
   `LocalSubprocessSandbox`).
+- **Status:** Not yet traversed.
 
-### P-9. Vertex embeddings adapter
+### P-9. Vertex embeddings adapter — ✅ TRAVERSED
 
 - Subclass `AbstractEmbedder` as `VertexEmbeddingsEmbedder`, wrapping the
   current Vertex `text-embedding-005` (or successor) model.
@@ -159,8 +190,10 @@ swaps" of the adapter plan; the items are listed here in numeric order.
   `app/adapters/inmemory/` for CI.
 - **Acceptance.** Recall@10 on a domain-specific eval set improves by
   ≥30% over `HashingEmbedder`; per-embedding cost ≤ $0.0001.
+- **Status:** Implemented in `app/adapters/gcp/embedder.py` (`VertexEmbeddingsEmbedder`).
+  In-memory stub at `app/adapters/inmemory/embedder.py`. Tests: `app/adapters/gcp/tests/test_vertex_embedder.py`.
 
-### P-10. Cloud Trace + Cloud Logging + BigQuery telemetry
+### P-10. Cloud Trace + Cloud Logging + BigQuery telemetry —
 
 - Replace the seed's `TelemetrySink` with `CloudTraceTelemetry` that:
   - Emits OTEL spans to Cloud Trace
@@ -172,8 +205,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** A 24h burn-in run produces a complete trace for every
   task and a queryable BigQuery table of all judge scores. No telemetry
   drop on overflow.
+- **Status:** Not yet traversed.
 
-### P-11. Cloud KMS-backed VirtualContextManager
+### P-11. Cloud KMS-backed VirtualContextManager —
 
 - Subclass `VirtualContextManager` as `CloudKmsVcm`. HMAC operations use
   `MacSign`/`MacVerify` against a KMS HSM-backed key; the master secret
@@ -183,8 +217,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** Master secret is never present in a heap dump of the
   running orchestrator; key rotation completes without dropping any
   in-flight `VirtualContextHandle`.
+- **Status:** Not yet traversed.
 
-### P-12. Pub/Sub intake for `Orchestrator.submit()`
+### P-12. Pub/Sub intake for `Orchestrator.submit()` —
 
 - Add a sidecar consumer that pulls from a Pub/Sub topic and invokes
   `orchestrator.submit(request)`. The HTTP layer above publishes to the
@@ -194,8 +229,10 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** Kill the orchestrator mid-task; on restart, the
   in-flight task is re-delivered and completed exactly once
   (idempotency key on `request.task_id`).
+- **Status:** Not yet traversed. Note: SP-23 anti-trap — do NOT rebuild durable execution
+  on Pub/Sub+Cloud-Tasks; LangGraph checkpoint/resume supersedes the seed's `asyncio` loops.
 
-### P-13. Cloud Tasks + Cloud Scheduler for background loops
+### P-13. Cloud Tasks + Cloud Scheduler for background loops —
 
 - Replace the orchestrator's three `asyncio.Task` background loops
   (`_eviction_loop`, `_ephemeral_gc_loop`, `_policy_update_loop`) with
@@ -205,8 +242,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** 7-day continuous operation with N=3 simulated
   orchestrator restarts: zero missed eviction cycles, zero leaked
   ephemeral memory records.
+- **Status:** Not yet traversed. See also SP-23 anti-trap note above.
 
-### P-14. Workload Identity Federation
+### P-14. Workload Identity Federation —
 
 - Eliminate all service-account key files from the runtime environment.
   Pod-level identity via Workload Identity (GKE) or service identity
@@ -215,8 +253,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
   identity-bound IAM.
 - **Acceptance.** `find / -name '*.json' | xargs grep -l "service_account"`
   inside the running container returns zero results.
+- **Status:** Not yet traversed. SP-00b (WIF) is the prerequisite; currently gated.
 
-### P-15. Artifact Registry + Binary Authorization for sandbox images
+### P-15. Artifact Registry + Binary Authorization for sandbox images —
 
 - All Firecracker rootfs images and Cloud Run job container images are
   built and stored in Artifact Registry. Binary Authorization enforces
@@ -224,8 +263,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - Required for any multi-host sandbox tier (P-4 or P-8).
 - **Acceptance.** An unsigned image fails to deploy with a Binary
   Authorization policy violation in the audit log.
+- **Status:** Not yet traversed.
 
-### P-16. Three-judge Vertex ensemble (production reward model)
+### P-16. Three-judge Vertex ensemble (production reward model) —
 
 - Wire `VertexAnthropicJudge` (Claude Opus 4.7 via Vertex, already in
   `seed/api_client.py`), `VertexGeminiJudge` (Gemini 3.1 Pro via Vertex
@@ -237,8 +277,9 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** Per `seed/README.md` production checklist item 3: the
   ensemble's calibrated score on a 1K-task hold-out set has Spearman
   rank correlation ≥0.7 with human ground-truth labels.
+- **Status:** Not yet traversed.
 
-### P-17. VPC Service Controls perimeter
+### P-17. VPC Service Controls perimeter —
 
 - VPC SC perimeter around Vertex AI, Cloud SQL, Cloud Storage, Pub/Sub,
   Cloud Tasks, Artifact Registry, and Cloud KMS resources for the
@@ -249,6 +290,7 @@ swaps" of the adapter plan; the items are listed here in numeric order.
 - **Acceptance.** An access from outside the perimeter to any in-scope
   resource is logged as a denied request in the Access Context Manager
   audit log.
+- **Status:** Not yet traversed. Deferred until data-plane spans ≥2 GCP resources (after P-7, P-10, P-11, P-12, P-13).
 
 ## What is NOT changed by this seed
 

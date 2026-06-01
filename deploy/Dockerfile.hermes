@@ -23,7 +23,7 @@ ARG BASE_IMAGE=python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb84090897948
 # Carries uv, git, and apt build tools — none of which land in
 # the runtime stage.
 # ============================================================
-FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
+FROM python:3.13.13-slim@sha256:aa938a849bcb82dce8f49480f056ab82bf5c1c3ebc294f0430f37b6820e7f286 AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -92,7 +92,7 @@ RUN uv pip uninstall jaraco.context wheel 2>/dev/null || true; \
 # Lean image — only runtime system packages + the pre-built venv.
 # No uv, no build tooling, no source trees.
 # ============================================================
-FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS runtime
+FROM python:3.13.13-slim@sha256:aa938a849bcb82dce8f49480f056ab82bf5c1c3ebc294f0430f37b6820e7f286 AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

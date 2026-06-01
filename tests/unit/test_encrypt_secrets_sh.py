@@ -191,3 +191,55 @@ def test_failure_preserves_plaintext(workdir: Path):
         "Plaintext MUST be preserved when sops fails.\n"
         f"stdout={result.stdout}\nstderr={result.stderr}"
     )
+
+
+def _make_fake_sops_matching(tmp_path: Path, plaintext_content: str) -> Path:
+    """A fake sops whose --decrypt emits content MATCHING the plaintext, so the
+    idempotency check `diff -q` succeeds and the script takes the idempotent branch."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    sops_bin = bin_dir / "sops"
+    # printf the exact plaintext bytes on --decrypt; --encrypt is never reached here.
+    sops_bin.write_text(
+        "#!/usr/bin/env sh\n"
+        'if [ "$1" = "--decrypt" ]; then\n'
+        f"    printf '%s' '{plaintext_content}'\n"
+        "    exit 0\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    sops_bin.chmod(sops_bin.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return sops_bin
+
+
+def test_idempotency_removes_plaintext(workdir: Path):
+    """C9 (idempotent path): when the ciphertext already exists AND matches the
+    plaintext, the script exits 0 — and MUST still remove the redundant plaintext
+    (else the auto-delete promise only holds on first-run, not re-runs)."""
+    age_key = _make_fake_age_key(workdir)
+    _make_sops_yaml(workdir)
+
+    plaintext = workdir / "secrets" / "hermes-provider.env"
+    encrypted = workdir / "secrets" / "hermes-provider.env.sops"
+    # Pre-existing ciphertext so `[ -f "$OUTPUT_ENCRYPTED" ]` is true.
+    encrypted.write_text("encrypted-content\n")
+    fake_sops = _make_fake_sops_matching(workdir, plaintext.read_text())
+
+    env = {
+        **os.environ,
+        "PATH": f"{fake_sops.parent.resolve()}:{os.environ['PATH']}",
+        "SOPS_AGE_KEY_FILE": str(age_key),
+        "HOME": str(workdir),
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, cwd=str(workdir)
+    )
+
+    assert (
+        result.returncode == 0
+    ), f"Idempotent path must exit 0.\nstdout={result.stdout}\nstderr={result.stderr}"
+    assert encrypted.exists(), "Existing ciphertext must be left intact on the idempotent path."
+    assert not plaintext.exists(), (
+        "Plaintext MUST be removed even on the idempotent (already-encrypted) path.\n"
+        f"stdout={result.stdout}\nstderr={result.stderr}"
+    )

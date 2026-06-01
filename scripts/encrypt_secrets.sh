@@ -25,7 +25,11 @@ fi
 if [ -f "$OUTPUT_ENCRYPTED" ] \
    && SOPS_AGE_KEY_FILE="$KEY_FILE" sops --decrypt "$OUTPUT_ENCRYPTED" \
       | diff -q - "$INPUT_PLAINTEXT" >/dev/null 2>&1; then
-  echo "Encrypted file already matches plaintext — idempotent no-op." >&2
+  # SP-00b (C9): the ciphertext is VERIFIED to match the plaintext above, so the
+  # plaintext is redundant and must not be left on disk — remove it here too, else
+  # the auto-delete promise would only hold on first-run, not re-runs.
+  echo "Encrypted file already matches plaintext — removing redundant plaintext." >&2
+  rm -f -- "$INPUT_PLAINTEXT"
   exit 0
 fi
 
@@ -38,5 +42,5 @@ echo "Encrypted $INPUT_PLAINTEXT -> $OUTPUT_ENCRYPTED" >&2
 # SP-00b: delete the plaintext source automatically once encryption succeeded.
 # `set -euo pipefail` (top of file) guarantees this line is unreachable if the
 # sops --encrypt above exited non-zero, so plaintext is preserved on failure.
-rm -- "$INPUT_PLAINTEXT"
+rm -f -- "$INPUT_PLAINTEXT"
 echo "Deleted plaintext $INPUT_PLAINTEXT after successful encryption." >&2

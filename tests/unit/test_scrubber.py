@@ -129,3 +129,26 @@ def test_slack_false_positive_benign_xox_not_redacted(scrubber, text):
     ), f"False positive: benign text {text!r} was incorrectly redacted → {cleaned!r}"
     slack_hits = [h for h in hits if h.pattern_name == "slack_token"]
     assert slack_hits == [], f"False-positive slack_token hit on benign text {text!r}: {slack_hits}"
+
+
+# ---------------------------------------------------------------------------
+# C-16: A2A path — scrub_inbound_params redacts Slack tokens in nested dicts
+# ---------------------------------------------------------------------------
+
+
+def test_a2a_slack_token_redacted_in_nested_params() -> None:
+    """Slack bot token nested inside A2A message params MUST be redacted (C-16, #198).
+
+    This is the actual C-16 risk surface: a caller passing a Slack credential in
+    the A2A inbound params dict.  The a2a scrubber uses [REDACTED] (no type suffix).
+    Token is assembled from fragments so push-protection scanners are not triggered.
+    """
+    from lib.a2a.scrubber import scrub_inbound_params
+
+    token = "xoxb" + "-" + "123456789012" + "-" + "234567890123" + "-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+    params = {"message": {"parts": [{"text": f"auth header is {token} please process"}]}}
+
+    result = scrub_inbound_params(params)
+
+    assert token not in str(result), "Slack token MUST NOT appear verbatim after a2a scrub"
+    assert "[REDACTED]" in str(result), "a2a scrubber replacement marker must be present"

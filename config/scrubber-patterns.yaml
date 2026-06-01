@@ -38,6 +38,10 @@ patterns:
     replacement: '[REDACTED:telegram_bot_token]'
     severity: critical
   - name: slack_token
+    # Covers bot (xoxb-), app-level (xoxa-), user/legacy (xoxp-), refresh (xoxr-), service (xoxs-).
+    # xapp- (Socket Mode app), xoxe- (token rotation), xoxc- (client), xoxd- (cookie) are
+    # intentionally out of scope for this initial cut — document here so the omission is a
+    # decision, not an oversight. Re-add as separate patterns when those token types are observed.
     regex: '\bxox[baprs]-[A-Za-z0-9_-]{10,}(?:-[A-Za-z0-9_-]{10,})*\b'
     replacement: '[REDACTED:slack_token]'
     severity: critical

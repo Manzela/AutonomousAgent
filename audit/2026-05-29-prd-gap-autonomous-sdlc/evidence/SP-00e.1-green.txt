@@ -1,0 +1,3 @@
+== acceptance-frozen GREEN: committed tree ==
+== acceptance-frozen: PASS (2 acceptance file(s) match manifest) ==
+gate exit=0

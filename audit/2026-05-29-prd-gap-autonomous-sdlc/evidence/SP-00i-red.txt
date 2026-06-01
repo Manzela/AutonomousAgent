@@ -1,0 +1,4 @@
+== SP-00i RED: a ':latest' model ref ==
+::error::model-pin-gate: unpinned model ref: 'badregistry/some-model:latest'
+== model-pin-gate: scanned 1 config file(s), 1 model ref(s), 1 unpinned => FAIL ==
+exit=1

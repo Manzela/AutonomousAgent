@@ -1,0 +1,63 @@
+# Acceptance — SP-00 · Pin the spine
+#
+# C8 (Executor Operating Contract): immutable, machine-checkable acceptance.
+#   - Pass = EVERY assertion exits 0.
+#   - This file is sha256-pinned; its sha is recorded in the PRD §6 task table.
+#   - It MUST NOT be edited in the PR that claims SP-00 done (acceptance-frozen
+#     CI — built by SP-00e — recomputes the sha and fails on in-PR edits).
+#   - File:line anchors are resolved to symbols/patterns, never bare line numbers.
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 EPIC 0, row SP-00.
+#   "langgraph+langgraph-checkpoint are direct, version-pinned deps; the spine
+#    survives SP-22's garak deletion (langgraph reaches the repo ONLY via
+#    garak->langchain->langgraph -- sole path, verified)."
+
+task: SP-00
+title: "Pin the spine — langgraph + langgraph-checkpoint as direct, pinned deps"
+driver: P            # Product
+phase: gate-0
+run_from: repo_root  # all cmd assertions execute with CWD = git repo root
+
+assertions:
+  - id: langgraph-direct-pin
+    description: >
+      langgraph is a DIRECT, version-pinned dependency in [project.dependencies]
+      (a line of pyproject.toml, not merely transitive via garak/langchain).
+    cmd: |
+      grep -Eq '^[[:space:]]*"langgraph(==|>=)[0-9]' pyproject.toml
+    expect_exit: 0
+
+  - id: langgraph-checkpoint-direct-pin
+    description: >
+      langgraph-checkpoint is a DIRECT, version-pinned dependency in pyproject.toml.
+    cmd: |
+      grep -Eq '^[[:space:]]*"langgraph-checkpoint(==|>=)[0-9]' pyproject.toml
+    expect_exit: 0
+
+  - id: lock-clean
+    description: >
+      The committed uv.lock matches pyproject.toml exactly (no pending
+      resolution drift). `uv lock --check` exits 0 iff the lock is up to date.
+    cmd: |
+      uv lock --check
+    expect_exit: 0
+
+  - id: spine-survives-garak-removal
+    description: >
+      With garak removed from pyproject (exactly as SP-22 will do), langgraph
+      MUST remain in the re-resolved lock AND import — proving the spine no
+      longer depends on the garak->langchain->langgraph path. In CI the probe
+      additionally performs a non-dev `uv sync` + `import langgraph` (set
+      SP00_IMPORT_PROOF=1); locally it asserts the resolution-level invariant
+      offline against uv's cache.
+    cmd: |
+      scripts/ci/sp00_garak_removal_probe.sh
+    expect_exit: 0
+
+# Proof (C1/C7): the authoritative artifact is produced by the CI job
+# `.github/workflows/sp00-spine-pin.yml`, which RE-RUNS every assertion above and
+# uploads its output (+ the garak-free resolution) as the run artifact. Executor-
+# pasted numbers in the PR are advisory; the CI artifact is source of truth.
+proof:
+  ci_workflow: .github/workflows/sp00-spine-pin.yml
+  artifact: sp00-acceptance-evidence

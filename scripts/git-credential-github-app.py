@@ -192,11 +192,6 @@ def _default_mint_fn(**kwargs: Any):  # type: ignore[return]
     """
     from lib.github_auth import mint_installation_token  # noqa: PLC0415
 
-    if "app_id" not in kwargs or "installation_id" not in kwargs:
-        cfg_app_id, cfg_inst_id = read_app_config()
-        kwargs.setdefault("app_id", cfg_app_id or None)
-        kwargs.setdefault("installation_id", cfg_inst_id or None)
-
     return mint_installation_token(**kwargs)
 
 
@@ -238,11 +233,16 @@ def handle_get(
         _emit_credentials(cached)
         return 0
 
-    # Need a fresh token. Call _default_mint_fn() DIRECTLY (not via a variable)
-    # so the static call-graph traces its body — and the read_app_config() within
-    # it — keeping those symbols reachable for the C4 dead-code gate.
+    # Need a fresh token.
     try:
-        itok = mint_fn() if mint_fn is not None else _default_mint_fn()
+        if mint_fn is not None:
+            itok = mint_fn()
+        else:
+            # read_app_config() is called directly from this public, entrypoint-
+            # reachable function (main → handle_get) so the C4 dead-code gate sees
+            # it as live (the gate does not trace into the private _default_mint_fn).
+            app_id, installation_id = read_app_config()
+            itok = _default_mint_fn(app_id=app_id or None, installation_id=installation_id or None)
         token: str = itok.token
         expires_at: datetime.datetime = itok.expires_at
     except Exception as exc:  # noqa: BLE001

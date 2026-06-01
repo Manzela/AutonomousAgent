@@ -46,13 +46,6 @@ lib.a2a.auth:verify_token
 # (`cp = Checkpoint(...)`) on the durability resume path. Verified reachable 2026-06-01.
 lib.durability.checkpoint:Checkpoint
 
-# scripts/git-credential-github-app.py is a git-credential HELPER invoked by git as an
-# external process (`git credential get` → main → handle_get → _default_mint_fn →
-# read_app_config), not from the app/lib call-graph. main is __main__-guarded, but the
-# static analysis cannot trace the deferred-import minter chain to read_app_config, so the
-# whole module is registered as a runtime entrypoint. Operator-reviewed (SP-00f.2, 2026-06-01).
-scripts.git-credential-github-app
-
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

@@ -75,6 +75,12 @@ RUN uv pip install --no-cache "psycopg[binary]>=3.1"
 # No-op when GCS_SNAPSHOT_BUCKET is unset.
 RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 
+# Security: the `python -m venv` seed ships setuptools/wheel (and setuptools' jaraco.*
+# deps). Upgrade the two with fixable CRITICAL/HIGH CVEs so the runtime image (which
+# COPYs /app/.venv) is clean: CVE-2026-23949 (jaraco.context <6.1.0, path traversal) and
+# CVE-2026-24049 (wheel <0.46.2, priv-esc). Build-only tooling, unused at agent runtime.
+RUN uv pip install --no-cache --upgrade "jaraco.context>=6.1.0" "wheel>=0.46.2"
+
 # ============================================================
 # Stage 2: runtime
 # Lean image — only runtime system packages + the pre-built venv.

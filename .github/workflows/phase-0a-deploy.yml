@@ -85,6 +85,8 @@ jobs:
 
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
+      hermes_digest: ${{ steps.build_hermes.outputs.digest }}
+      sandbox_digest: ${{ steps.build_sandbox.outputs.digest }}
 
     steps:
       - name: Check out code
@@ -186,7 +188,7 @@ jobs:
       # id-token: write is already granted to this job for WIF auth above.
       # ------------------------------------------------------------------
       - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14  # v3.5.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
       - name: Sign hermes image
         run: |
@@ -207,14 +209,87 @@ jobs:
           echo "| shell-sandbox | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------
+  # Supply-chain security scans (Gate checks)
+  # ------------------------------------------------------------------
+  osv-scanner:
+    name: OSV Scanner
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      scan-args: |-
+        --lockfile=uv.lock
+        --fail-on-vuln
+
+  trivy:
+    name: Trivy Scan
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          token_format: access_token
+
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Install Trivy
+        run: |
+          TRIVY_VERSION=0.70.0
+          TARBALL="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${TARBALL}" \
+            -o "${TARBALL}"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            -o checksums.txt
+          grep "${TARBALL}" checksums.txt | sha256sum -c -
+          tar -xzf "${TARBALL}" trivy
+          sudo mv trivy /usr/local/bin/
+          trivy version
+
+      - name: Scan hermes image
+        run: |
+          trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --vuln-type os,library \
+            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes@${{ needs.build-and-push.outputs.hermes_digest }}"
+
+      - name: Scan shell-sandbox image
+        run: |
+          trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --vuln-type os,library \
+            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/shell-sandbox@${{ needs.build-and-push.outputs.sandbox_digest }}"
+
+  scorecard:
+    name: Scorecard Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+  # ------------------------------------------------------------------
   # Deploy: SSH to the VM via IAP, pull new images, restart compose.
-  # Runs only after build-and-push succeeds.
   # ------------------------------------------------------------------
   deploy:
     name: Deploy to VM (IAP SSH)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: build-and-push
+    needs: [build-and-push, osv-scanner, trivy, scorecard]
     environment:
       name: production
       url: https://autonomousagent-vm.autonomous-agent-2026.cloud.goog
@@ -225,6 +300,8 @@ jobs:
 
     env:
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      HERMES_DIGEST: ${{ needs.build-and-push.outputs.hermes_digest }}
+      SANDBOX_DIGEST: ${{ needs.build-and-push.outputs.sandbox_digest }}
 
     steps:
       - name: Check out code
@@ -257,11 +334,24 @@ jobs:
           gcloud auth list
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14  # v3.5.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Verify image signatures
+        env:
+          HERMES_IMAGE: ${{ env.AR_REPO }}/hermes@${{ env.HERMES_DIGEST }}
+          SANDBOX_IMAGE: ${{ env.AR_REPO }}/shell-sandbox@${{ env.SANDBOX_DIGEST }}
+        run: |
+          for img in "$HERMES_IMAGE" "$SANDBOX_IMAGE"; do
+            echo "Verifying signature for $img..."
+            cosign verify \
+              --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$img"
+          done
 
       - name: Verify SLSA provenance
         env:
-          IMAGE: ${{ env.AR_REPO }}/hermes:${{ env.IMAGE_TAG }}
+          IMAGE: ${{ env.AR_REPO }}/hermes@${{ env.HERMES_DIGEST }}
         run: |
           cosign verify-attestation \
             --type slsaprovenance \
@@ -313,10 +403,7 @@ jobs:
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
           # Verify the image attestation via cosign before pulling
-          echo "[deploy] Verifying SLSA provenance and SBOM attestation..."
-          IMAGE_URI="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes:${IMAGE_TAG}"
-          # We resolve the digest from the remote registry to verify it
-          DIGEST=$(gcloud container images describe "${IMAGE_URI}" --format="value(image_summary.digest)")
+          echo "[deploy] Verifying image signatures and attestations..."
 
           # Fallback to cosign if it exists, but install it if missing.
           # Version is pinned; binary is verified against the release checksums.txt
@@ -334,10 +421,17 @@ jobs:
             rm -f /tmp/cosign_checksums.txt
           fi
 
-          cosign verify-attestation --type spdxjson \
-            --certificate-identity-regexp '^https://github.com/Manzela/AutonomousAgent/' \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes@${DIGEST}"
+          # Verify both images built and signed in this workflow
+          for svc in "hermes" "shell-sandbox"; do
+            IMAGE_URI="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/${svc}:${IMAGE_TAG}"
+            DIGEST=$(gcloud container images describe "${IMAGE_URI}" --format="value(image_summary.digest)")
+
+            echo "[deploy] Verifying signature for ${svc}..."
+            cosign verify \
+              --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/${svc}@${DIGEST}"
+          done
 
           echo "[deploy] Pulling new images..."
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet

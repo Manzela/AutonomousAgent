@@ -37,6 +37,13 @@ dependencies = [
   "opentelemetry-api>=1.20",
   "opentelemetry-sdk>=1.20",
   "opentelemetry-exporter-otlp-proto-http>=1.20",
+  # SP-00f.2: GitHub App installation-token helper (lib/github_auth.py) uses
+  # pyjwt[crypto] (RS256 JWT mint) and cryptography (RSA key loading). Promoted
+  # from [project.optional-dependencies.a2a] to main deps so that `uv sync`
+  # without --extra a2a still provides a working token-mint path. No new dep is
+  # introduced — both packages were already present in the a2a extra.
+  "pyjwt[crypto]>=2.9",
+  "cryptography>=43.0",
 ]
 
 [project.optional-dependencies]
@@ -82,10 +89,10 @@ a2a = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "httpx-sse>=0.4",
-  "pyjwt[crypto]>=2.9",
+  # pyjwt[crypto]>=2.9 and cryptography>=43.0 promoted to [project.dependencies]
+  # (SP-00f.2) so uv sync without --extra a2a still provides the token-mint path.
   "cachetools>=5.5",
   "python-ulid>=3.0",
-  "cryptography>=43.0",
   "python-multipart>=0.0.20",
   # opentelemetry-api promoted to [project.dependencies] (P2-13).
   "jcs>=0.2",

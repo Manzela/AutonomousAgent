@@ -37,6 +37,10 @@ patterns:
     regex: '\b\d{8,12}:[A-Za-z0-9_-]{30,40}\b'
     replacement: '[REDACTED:telegram_bot_token]'
     severity: critical
+  - name: slack_token
+    regex: '\bxox[baprs]-[A-Za-z0-9_-]{10,}(?:-[A-Za-z0-9_-]{10,})*\b'
+    replacement: '[REDACTED:slack_token]'
+    severity: critical
   - name: high_entropy_hex
     regex: '\b[a-f0-9]{40,}\b'
     replacement: '[REDACTED:high_entropy_hex]'

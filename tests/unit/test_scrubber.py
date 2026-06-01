@@ -70,3 +70,62 @@ def test_multiple_secrets_in_one_string(scrubber):
 def test_source_attribution(scrubber):
     _, hits = scrubber.scrub("AKIAIOSFODNN7EXAMPLE", source="model_response")
     assert all(h.source == "model_response" for h in hits)
+
+
+# ---------------------------------------------------------------------------
+# C-16: Slack OAuth token scrubbing (#198)
+# ---------------------------------------------------------------------------
+
+# Slack token prefixes: xoxb (bot), xoxa (app-level), xoxp (user/legacy),
+# xoxr (refresh), xoxs (service). Tokens are assembled from fragments so that
+# the commit does not contain a credential-shaped literal that triggers
+# push-protection scanners.
+_SLACK_BOT_TOKEN = (
+    "xoxb" + "-" + "123456789012" + "-" + "234567890123" + "-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+)
+_SLACK_USER_TOKEN = "xoxp" + "-" + "111111111111" + "-" + "222222222222" + "-" + "AbCdEfGhIjKl"
+_SLACK_APP_TOKEN = "xoxa" + "-" + "2-abcdefghijklmnopqrstu"
+_SLACK_REFRESH_TOKEN = "xoxr" + "-" + "1-abcdefghijklmnopqrst"
+_SLACK_SERVICE_TOKEN = "xoxs" + "-" + "1-2-ABCDEFGHIJKLMNOP" + "-" + "abcdefghijk"
+
+
+@pytest.mark.parametrize(
+    "text,prefix",
+    [
+        (f"token in payload: {_SLACK_BOT_TOKEN}", "xoxb"),
+        (f"Authorization header value {_SLACK_USER_TOKEN}", "xoxp"),
+        (f"app credential is {_SLACK_APP_TOKEN}", "xoxa"),
+        (f"refresh with {_SLACK_REFRESH_TOKEN}", "xoxr"),
+        (f"service auth {_SLACK_SERVICE_TOKEN}", "xoxs"),
+    ],
+)
+def test_slack_token_is_redacted(scrubber, text, prefix):
+    """Slack OAuth tokens (xox[baprs]-...) MUST be redacted (C-16, #198)."""
+    cleaned, hits = scrubber.scrub(text, source="test")
+    assert (
+        "[REDACTED:slack_token]" in cleaned
+    ), f"Slack token with prefix {prefix!r} was NOT redacted. Got: {cleaned!r}"
+    assert any(
+        h.pattern_name == "slack_token" for h in hits
+    ), f"Expected hit 'slack_token' in hits, got {[h.pattern_name for h in hits]}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # 'xox' substring that does NOT match the token shape
+        "the xoxford experiment yielded results",
+        "proxy-xox-settings are not tokens",
+        "xox alone should not match",
+        # 'xox' followed by a valid prefix letter but no dash — not a token
+        "xoxb without a dash is harmless text",
+    ],
+)
+def test_slack_false_positive_benign_xox_not_redacted(scrubber, text):
+    """Strings that merely contain 'xox' but are NOT Slack tokens MUST NOT be redacted."""
+    cleaned, hits = scrubber.scrub(text, source="test")
+    assert (
+        "[REDACTED:slack_token]" not in cleaned
+    ), f"False positive: benign text {text!r} was incorrectly redacted → {cleaned!r}"
+    slack_hits = [h for h in hits if h.pattern_name == "slack_token"]
+    assert slack_hits == [], f"False-positive slack_token hit on benign text {text!r}: {slack_hits}"

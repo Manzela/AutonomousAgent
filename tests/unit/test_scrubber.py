@@ -81,12 +81,12 @@ def test_source_attribution(scrubber):
 # the commit does not contain a credential-shaped literal that triggers
 # push-protection scanners.
 _SLACK_BOT_TOKEN = (
-    "xoxb" + "-" + "123456789012" + "-" + "234567890123" + "-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+    "xoxb" + "-" + "123456789012" + "-" + "234567890123" + "-" + "aaaaaaaaaaaaaaaaaaaaaaaa"
 )
-_SLACK_USER_TOKEN = "xoxp" + "-" + "111111111111" + "-" + "222222222222" + "-" + "AbCdEfGhIjKl"
-_SLACK_APP_TOKEN = "xoxa" + "-" + "2-abcdefghijklmnopqrstu"
-_SLACK_REFRESH_TOKEN = "xoxr" + "-" + "1-abcdefghijklmnopqrst"
-_SLACK_SERVICE_TOKEN = "xoxs" + "-" + "1-2-ABCDEFGHIJKLMNOP" + "-" + "abcdefghijk"
+_SLACK_USER_TOKEN = "xoxp" + "-" + "111111111111" + "-" + "222222222222" + "-" + "bbbbbbbbbbbb"
+_SLACK_APP_TOKEN = "xoxa" + "-" + "2-aaaaaaaaaaaaaaaaaaaaaa"
+_SLACK_REFRESH_TOKEN = "xoxr" + "-" + "1-aaaaaaaaaaaaaaaaaaaa"
+_SLACK_SERVICE_TOKEN = "xoxs" + "-" + "1-2-cccccccccccccccccc" + "-" + "dddddddddddd"
 
 
 @pytest.mark.parametrize(
@@ -145,7 +145,7 @@ def test_a2a_slack_token_redacted_in_nested_params() -> None:
     """
     from lib.a2a.scrubber import scrub_inbound_params
 
-    token = "xoxb" + "-" + "123456789012" + "-" + "234567890123" + "-" + "AbCdEfGhIjKlMnOpQrStUvWx"
+    token = "xoxb" + "-" + "123456789012" + "-" + "234567890123" + "-" + "aaaaaaaaaaaaaaaaaaaaaaaa"
     params = {"message": {"parts": [{"text": f"auth header is {token} please process"}]}}
 
     result = scrub_inbound_params(params)

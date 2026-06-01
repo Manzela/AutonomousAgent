@@ -11,15 +11,30 @@ produces, so the AUTHORITATIVE numbers come from CI, never executor prose:
   - C7 test-truth: the PR's `## Test Truth` value must byte-contain the canonical counts
     line derived from the junitxml — a fabricated count (the meta-audit's "541" move) FAILS.
 
+Bot exemption: automated dependency-bump PRs authored by a known bot login (see
+BOT_AUTHORS) are exempt from the C1 evidence + C7 test-truth requirements.  Their
+green build/test/trivy CI IS the evidence.  Pass PR_AUTHOR=<login> via env var (set
+from `github.event.pull_request.user.login` in the workflow).
+
 Pure functions (parse/extract/compare) are unit-tested directly; the CLI wires them to files.
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+
+# Automated dependency-bump bots whose PRs are exempt from C1/C7.
+# Keep this list narrow: only genuine automated bots, not human/agent authors.
+BOT_AUTHORS: frozenset[str] = frozenset(
+    {
+        "dependabot[bot]",
+        "github-actions[bot]",
+    }
+)
 
 _HEADER_RE = re.compile(r"^\s*##\s+(.*\S)\s*$")
 _FENCE_RE = re.compile(r"^\s*```")
@@ -137,6 +152,11 @@ def check_test_truth(pr_body: str, counts: dict[str, int]) -> tuple[bool, str]:
     )
 
 
+def is_bot_pr(author: str) -> bool:
+    """Return True when the PR author is a known automated dependency-bump bot."""
+    return author.strip() in BOT_AUTHORS
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         description="PR-meta checks: evidence-present (C1) + test-truth (C7)"
@@ -155,6 +175,12 @@ def main(argv: list[str]) -> int:
         help="which checks to HARD-gate (default all). The workflow hard-gates 'evidence' and "
         "emits test-truth informationally until SP-00c gives a CI-green full suite to byte-match.",
     )
+    ap.add_argument(
+        "--pr-author",
+        default=os.environ.get("PR_AUTHOR", ""),
+        help="PR author login (also read from PR_AUTHOR env var). "
+        "Automated dependency-bot PRs (see BOT_AUTHORS) are exempt from C1/C7.",
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -166,6 +192,16 @@ def main(argv: list[str]) -> int:
 
     if args.emit_test_truth:
         print(canonical_test_truth(counts))
+        return 0
+
+    # Bot dependency PRs: green CI (build/tests/trivy) IS the evidence.
+    # Skip C1/C7 prose checks and exit 0 so the required check stays GREEN.
+    if is_bot_pr(args.pr_author):
+        print(
+            f"[SKIP] bot dependency PR (author={args.pr_author!r}) — "
+            "evidence requirement waived; CI gates are the evidence"
+        )
+        print("== pr-meta-checks: PASS (bot-exempt) ==")
         return 0
 
     with open(args.pr_body) as fh:

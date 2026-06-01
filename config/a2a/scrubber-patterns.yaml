@@ -20,3 +20,7 @@ patterns:
   # boundary. Bare ISO dates are not PHI. Re-add as field-scoped rule if needed.
   # MRN / patient ID
   - "\\bMRN[:\\s]?\\d{6,10}\\b"
+  # Slack OAuth tokens: xoxb- (bot), xoxa- (app-level), xoxp- (user/legacy), xoxr- (refresh), xoxs- (service).
+  # xapp- (Socket Mode app), xoxe- (token rotation), xoxc- (client), xoxd- (cookie) are
+  # intentionally out of current scope — omission is a documented decision, not an oversight.
+  - "\\bxox[baprs]-[A-Za-z0-9_-]{10,}(?:-[A-Za-z0-9_-]{10,})*\\b"

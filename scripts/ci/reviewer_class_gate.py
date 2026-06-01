@@ -33,8 +33,31 @@ SCOPE:
     Other PRs: advisory only — print warnings but exit 0.
     A PR is P0/P1 if:
         - It has a GitHub label matching /^P[01]$/i  (passed via --labels), OR
-        - Its body contains a `Priority:` field (case-insensitive) whose value is P0 or P1.
-    If neither signal is present, the gate runs in advisory mode.
+        - Its body contains a `Priority:` field (case-insensitive) whose value starts
+          with P0 or P1 (markdown-tolerant: leading `**`, `-`, `>`, whitespace and
+          trailing text after the token are all accepted), OR
+        - The PR touches a SENSITIVE PATH (security/governance-critical prefix) — the
+          fail-closed safety net so the gate does not depend solely on author-controlled
+          body text.  Pass changed files via --changed-files.
+    If no signal is present, the gate runs in advisory mode.
+
+SENSITIVE PATHS (path-based fail-closed trigger):
+    Any PR whose changed files include a path under one of these prefixes triggers the
+    hard gate regardless of labels or PR body:
+        audit/acceptance/
+        .github/
+        scripts/ci/
+        terraform/
+        deploy/
+        lib/scrubber
+        lib/a2a/
+        app/core/trust
+        CLAUDE.md
+        config/dead_code_entrypoints.txt
+    This ensures governance-critical changes are always cross-model reviewed even when
+    the author omits labels or the Priority: field.
+    Note: the broader "hard-gate ALL PRs by default" policy is an operator activation
+    decision left for a future iteration.
 
 SPOOF-RESISTANCE LIMITATION (documented, not solved):
     This gate parses SELF-DECLARED metadata — the `Reviewer model:` line in the PR
@@ -280,7 +303,7 @@ def extract_reviewer_model(pr_body: str) -> tuple[str | None, str | None]:
 # ---------------------------------------------------------------------------
 
 _CO_AUTHORED_RE = re.compile(
-    r"Co-Authored-By:\s+(.+?)\s+<[^>]+>",
+    r"Co-Authored-By:\s*(.+?)\s*<[^>]+>",
     re.IGNORECASE,
 )
 
@@ -305,22 +328,66 @@ def extract_implementer_models(commits_text: str) -> list[str]:
 # Priority detection
 # ---------------------------------------------------------------------------
 
-_PRIORITY_LINE_RE = re.compile(r"^\s*Priority\s*:\s*(P\d+)\s*$", re.IGNORECASE | re.MULTILINE)
+_PRIORITY_LINE_RE = re.compile(
+    # Markdown-tolerant priority detection.  Handles forms including:
+    #   Priority: P0                      (plain)
+    #   - Priority: P0                    (list item)
+    #   > Priority: P1                    (blockquote)
+    #   **Priority:** P0                  (bold label, value outside closing **)
+    #   **Priority: P1**                  (entire field bolded)
+    #   Priority: P0 (blocker text)       (trailing text)
+    # Leading **, -, >, whitespace are all absorbed.
+    # Optional ** between the colon and the P0/P1 token (for **Priority:** P0 style).
+    r"^[\s>*\-]*Priority\*{0,2}\s*:\s*\*{0,2}\s*(P[01])\b",
+    re.IGNORECASE | re.MULTILINE,
+)
 _LABEL_P01_RE = re.compile(r"^P[01]$", re.IGNORECASE)
 
+# Path prefixes that trigger the hard gate regardless of labels/body (fail-closed safety net).
+# Any PR touching security/governance-critical paths MUST have cross-model review.
+SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
+    "audit/acceptance/",
+    ".github/",
+    "scripts/ci/",
+    "terraform/",
+    "deploy/",
+    "lib/scrubber",
+    "lib/a2a/",
+    "app/core/trust",
+    "CLAUDE.md",
+    "config/dead_code_entrypoints.txt",
+)
 
-def is_p0_or_p1(pr_body: str, labels: list[str]) -> bool:
-    """Return True if this PR should be hard-gated (P0 or P1)."""
-    # Check GitHub labels
+
+def _touches_sensitive_path(changed_files: list[str]) -> bool:
+    """Return True if any changed file falls under a sensitive-path prefix."""
+    for path in changed_files:
+        path = path.strip()
+        for prefix in SENSITIVE_PATH_PREFIXES:
+            if path == prefix or path.startswith(prefix):
+                return True
+    return False
+
+
+def is_p0_or_p1(pr_body: str, labels: list[str], changed_files: list[str] | None = None) -> bool:
+    """Return True if this PR should be hard-gated (P0 or P1).
+
+    Hard gate fires when ANY of the following is true:
+      (a) GitHub label matches /^P[01]$/i
+      (b) PR body contains a Priority: field (markdown-tolerant) whose value is P0 or P1
+      (c) Changed files touch a sensitive/governance-critical path prefix
+    """
+    # (a) Check GitHub labels
     for label in labels:
         if _LABEL_P01_RE.match(label.strip()):
             return True
-    # Check Priority: field in body
+    # (b) Check Priority: field in body (markdown-tolerant)
     m = _PRIORITY_LINE_RE.search(pr_body)
     if m:
-        priority = m.group(1).upper()
-        if priority in ("P0", "P1"):
-            return True
+        return True
+    # (c) Path-based fail-closed trigger
+    if changed_files and _touches_sensitive_path(changed_files):
+        return True
     return False
 
 
@@ -340,14 +407,18 @@ def evaluate(
     pr_body: str,
     commits_text: str,
     labels: list[str],
+    changed_files: list[str] | None = None,
 ) -> GateResult:
     """Evaluate the C9 reviewer-model-class rule.
 
     Args:
-        pr_body:      Full PR body markdown.
-        commits_text: Concatenated commit-message text for all PR commits
-                      (e.g. from `git log origin/main..HEAD --format=%B`).
-        labels:       List of GitHub label names on the PR.
+        pr_body:       Full PR body markdown.
+        commits_text:  Concatenated commit-message text for all PR commits
+                       (e.g. from `git log origin/main..HEAD --format=%B`).
+        labels:        List of GitHub label names on the PR.
+        changed_files: List of file paths changed in this PR (e.g. from
+                       `git diff --name-only origin/<base>...HEAD`).
+                       Used for the path-based fail-closed trigger.
 
     Returns:
         GateResult with ok=True iff all checks pass.
@@ -355,7 +426,7 @@ def evaluate(
     failures: list[str] = []
     warnings: list[str] = []
 
-    advisory_only = not is_p0_or_p1(pr_body, labels)
+    advisory_only = not is_p0_or_p1(pr_body, labels, changed_files)
 
     # 1. Extract reviewer
     reviewer_raw, reviewer_key = extract_reviewer_model(pr_body)
@@ -390,14 +461,6 @@ def evaluate(
                 f"The reviewer must not have co-authored the code under review. "
                 f"Use a genuinely independent reviewer model. "
                 f"Implementer model(s): {implementer_keys}"
-            )
-        # SAME-MODEL check: reviewer != every implementer (already covered by mixed-authorship
-        # when reviewer is in implementers, but check the simple single-implementer case too)
-        elif reviewer_key in implementer_keys:
-            # This branch is unreachable given the above check, kept for clarity
-            failures.append(
-                f"SAME-MODEL VIOLATION (C9): reviewer '{reviewer_key}' is the same model as "
-                f"implementer(s) {implementer_keys}. Use a different model."
             )
 
     summary_parts = []
@@ -448,6 +511,15 @@ def main(argv: list[str]) -> int:
         default="",
         help="comma-separated list of GitHub label names on this PR (e.g. 'P0,bug')",
     )
+    ap.add_argument(
+        "--changed-files",
+        default="",
+        help=(
+            "file containing newline-separated list of changed file paths "
+            "(e.g. from `git diff --name-only origin/<base>...HEAD > /tmp/changed.txt`). "
+            "Used for the path-based fail-closed trigger on sensitive/governance-critical paths."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -464,8 +536,17 @@ def main(argv: list[str]) -> int:
         print(f"::error::c9-reviewer-class-gate: cannot read commits file: {e}")
         return 1
 
+    changed_files: list[str] = []
+    if args.changed_files:
+        try:
+            with open(args.changed_files) as fh:
+                changed_files = [ln.strip() for ln in fh.read().splitlines() if ln.strip()]
+        except OSError as e:
+            print(f"::error::c9-reviewer-class-gate: cannot read changed-files file: {e}")
+            return 1
+
     labels = [lb.strip() for lb in args.labels.split(",") if lb.strip()]
-    result = evaluate(pr_body, commits_text, labels)
+    result = evaluate(pr_body, commits_text, labels, changed_files)
 
     scope_tag = "advisory" if result.advisory_only else "hard-gate"
     print(f"== c9-reviewer-class-gate [{scope_tag}] ==")

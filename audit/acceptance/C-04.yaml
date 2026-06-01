@@ -7,6 +7,14 @@
 # Opus → FORBIDDEN; Claude → Gemini → ALLOWED.  Vendor-sameness alone does NOT
 # make same-class.
 #
+# HARD-GATE TRIGGERS (any one fires the hard gate):
+#   (a) GitHub label matching /^P[01]$/i
+#   (b) PR body contains a Priority: field (markdown-tolerant) whose value starts with
+#       P0 or P1 — accepts leading **, -, >, whitespace; trailing text after token.
+#   (c) Changed files touch a sensitive/governance-critical path prefix (SENSITIVE_PATH_PREFIXES).
+#       Fail-closed safety net so the gate does not depend solely on author-controlled body text.
+#       The broader "hard-gate ALL PRs by default" policy is an operator activation decision.
+#
 # SPOOF-RESISTANCE LIMITATION (documented, not solved):
 #   This gate parses SELF-DECLARED metadata (`Reviewer model:` line + `Co-Authored-By:`
 #   trailers).  It CANNOT cryptographically prove the review was performed by the
@@ -182,6 +190,41 @@ assertions:
       python -m pytest tests/ci/test_reviewer_class_gate.py -q
     expect_exit: 0
 
+  - id: path-based-fail-closed-trigger
+    description: >
+      HARDENING (FIX 1b): a same-model PR with NO label and NO Priority: body but
+      with a changed file under a sensitive path prefix → hard-gate FAIL.
+      Hard-gate fires on (P0/P1 label) OR (Priority body field) OR (sensitive changed path).
+      Note: broad "hard-gate ALL PRs" policy is left as an operator activation decision.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate, SENSITIVE_PATH_PREFIXES
+
+      # Same model, no label, no Priority body — only a sensitive changed file
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: claude-opus-4-8\n"
+      )
+      commits = "feat: impl\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
+      changed = ["audit/acceptance/foo.yaml"]
+      r = evaluate(body, commits, [], changed)
+      if r.ok:
+          print("FAIL: sensitive path must trigger hard gate"); sys.exit(1)
+      if r.advisory_only:
+          print("FAIL: advisory_only must be False for sensitive-path hard gate"); sys.exit(1)
+      # Also verify a trivial path does NOT trigger
+      changed_trivial = ["README.md"]
+      r2 = evaluate(body, commits, [], changed_trivial)
+      if not r2.ok:
+          print("FAIL: trivial path must remain advisory — gate must not hard-fail"); sys.exit(1)
+      if not r2.advisory_only:
+          print("FAIL: advisory_only must be True for trivial path"); sys.exit(1)
+      print(f"OK: sensitive path hard-gates ({SENSITIVE_PATH_PREFIXES[0]}...), trivial path stays advisory")
+      PYEOF
+    expect_exit: 0
+
   - id: gate-is-main-guarded
     description: >
       reviewer_class_gate.py has a `if __name__ == "__main__":` guard so the
@@ -198,6 +241,15 @@ assertions:
 
 proof:
   ci_workflow: .github/workflows/c9-reviewer-class-gate.yml
+  hard_gate_triggers: |
+    The hard gate fires on (P0/P1 label) OR (Priority body field, markdown-tolerant)
+    OR (sensitive changed path).  The path-based trigger is the fail-closed safety net
+    so the gate does not depend solely on author-controlled body text.
+    Broader "hard-gate ALL PRs by default" policy is left as an operator activation decision.
+  sensitive_paths: |
+    audit/acceptance/, .github/, scripts/ci/, terraform/, deploy/,
+    lib/scrubber, lib/a2a/, app/core/trust, CLAUDE.md,
+    config/dead_code_entrypoints.txt
   spoof_resistance: >
     DOCUMENTED LIMITATION: this gate parses self-declared metadata (PR body +
     commit trailers).  It cannot cryptographically prove the declared model

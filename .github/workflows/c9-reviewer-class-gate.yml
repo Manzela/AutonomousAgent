@@ -60,12 +60,18 @@ jobs:
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: printf '%s' "$PR_LABELS" > /tmp/pr_labels.txt
 
+      - name: Collect changed files for this PR
+        run: |
+          git diff --name-only "origin/${{ github.base_ref }}...HEAD" \
+            > /tmp/pr_changed_files.txt
+
       - name: Run C9 reviewer-class gate
         run: |
           python scripts/ci/reviewer_class_gate.py \
             --pr-body /tmp/pr_body.txt \
             --commits /tmp/pr_commits.txt \
-            --labels "$(cat /tmp/pr_labels.txt)"
+            --labels "$(cat /tmp/pr_labels.txt)" \
+            --changed-files /tmp/pr_changed_files.txt
 
       - name: Re-run gate unit tests (committed red-green)
         run: |

@@ -5,21 +5,27 @@ RED-GREEN matrix
 Each test exercises a fixture PR body + commit-trailer text.  The table below
 summarises PASS / FAIL / ADVISORY:
 
- Case                                   | expect
- --------------------------------------- | ------
- Opus reviews Sonnet (P0)               | PASS
- Opus reviews Opus (P0)                 | FAIL  (same model)
- Missing Reviewer model line (P0)       | FAIL  (closed-default)
- Gemini reviews Claude (P0)             | PASS  (different model + different vendor)
- Reviewer also co-authored (P0)         | FAIL  (mixed-authorship independence)
- Non-P0/P1 with missing reviewer        | PASS (advisory, no hard gate)
- Non-P0/P1 same model                   | PASS (advisory)
- P1 label detected from label list      | FAIL  (same model, P1 → hard gate)
- P1 from Priority: body field           | FAIL  (same model, P1 → hard gate)
- Blank / placeholder Reviewer model     | FAIL  (closed-default)
- No Co-Authored-By trailer (P0)         | FAIL  (closed-default)
- Haiku reviews Sonnet                   | PASS  (different model)
- normalise_model smoke test             | unit  (not gate call)
+ Case                                                        | expect
+ ------------------------------------------------------------ | ------
+ Opus reviews Sonnet (P0)                                   | PASS
+ Opus reviews Opus (P0)                                     | FAIL  (same model)
+ Missing Reviewer model line (P0)                           | FAIL  (closed-default)
+ Gemini reviews Claude (P0)                                 | PASS  (different model + different vendor)
+ Reviewer also co-authored (P0)                             | FAIL  (mixed-authorship independence)
+ Non-P0/P1 with missing reviewer                            | PASS (advisory, no hard gate)
+ Non-P0/P1 same model                                       | PASS (advisory)
+ P1 label detected from label list                          | FAIL  (same model, P1 → hard gate)
+ P1 from Priority: body field                               | FAIL  (same model, P1 → hard gate)
+ Blank / placeholder Reviewer model                         | FAIL  (closed-default)
+ No Co-Authored-By trailer (P0)                             | FAIL  (closed-default)
+ Haiku reviews Sonnet                                       | PASS  (different model)
+ normalise_model smoke test                                 | unit  (not gate call)
+ Markdown-decorated Priority: P0 (bold) → hard gate         | FAIL  (hardening FIX 1a)
+ Markdown-decorated Priority: P1 (dash list) → hard gate    | FAIL  (hardening FIX 1a)
+ Priority: P0 with trailing text → hard gate                | FAIL  (hardening FIX 1a)
+ Same-model, no label, sensitive path → hard gate FAIL      | FAIL  (hardening FIX 1b)
+ Same-model, no label, trivial path only → advisory PASS    | PASS  (hardening FIX 1b)
+ No-space Co-Authored-By: trailer → caught                  | FAIL  (hardening FIX 2)
 """
 
 from __future__ import annotations
@@ -31,6 +37,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "scripts", "ci"))
 
 from reviewer_class_gate import (
+    SENSITIVE_PATH_PREFIXES,
     evaluate,
     extract_implementer_models,
     extract_reviewer_model,
@@ -360,3 +367,162 @@ class TestEvaluate:
         commits = "feat: add feature\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\n"
         result = evaluate(body, commits, P0_LABEL)
         assert result.ok is True
+
+
+# ---------------------------------------------------------------------------
+# FIX 1a — markdown-tolerant Priority: detection
+# ---------------------------------------------------------------------------
+
+
+class TestMarkdownPriorityDetection:
+    """Verify that Priority: lines decorated with Markdown still trigger the hard gate."""
+
+    def test_bold_priority_p0_hard_gates(self):
+        """**Priority:** P0 (bold markdown) must be detected and hard-gate the PR."""
+        body = "## Summary\nSomething.\n\n**Priority:** P0\n"
+        assert is_p0_or_p1(body, []) is True
+
+    def test_bold_priority_p1_hard_gates(self):
+        """**Priority: P1** variant detected."""
+        body = "**Priority: P1** — blocker for the sprint\n"
+        assert is_p0_or_p1(body, []) is True
+
+    def test_dash_list_priority_p0_hard_gates(self):
+        """- Priority: P0 (list-item markdown) must be detected."""
+        body = "## Summary\n- Priority: P0\n## Details\n"
+        assert is_p0_or_p1(body, []) is True
+
+    def test_blockquote_priority_p1_hard_gates(self):
+        """> Priority: P1 (blockquote) must be detected."""
+        body = "> Priority: P1\nSome note.\n"
+        assert is_p0_or_p1(body, []) is True
+
+    def test_priority_with_trailing_text_hard_gates(self):
+        """Priority: P0 (blocker, must fix before release) — trailing text must not evade."""
+        body = "Priority: P0 (blocker, must fix before release)\n"
+        assert is_p0_or_p1(body, []) is True
+
+    def test_priority_p2_not_hard_gated(self):
+        """Priority: P2 must NOT trigger the hard gate."""
+        body = "Priority: P2\n"
+        assert is_p0_or_p1(body, []) is False
+
+    def test_markdown_priority_evaluate_hard_gate_fail(self):
+        """Same-model PR with **Priority:** P0 in body → HARD FAIL via evaluate()."""
+        body = "## Reviewer model\nReviewer model: claude-opus-4-8\n\n**Priority:** P0\n"
+        commits = _commits("Claude Opus 4.8")
+        result = evaluate(body, commits, NO_LABELS)
+        assert result.ok is False
+        assert result.advisory_only is False
+
+    def test_markdown_priority_different_model_passes(self):
+        """**Priority:** P0 with different models → PASS (hard gate but correct review)."""
+        body = "## Reviewer model\nReviewer model: claude-opus-4-8\n\n**Priority:** P0\n"
+        commits = _commits("Claude Sonnet 4.6")
+        result = evaluate(body, commits, NO_LABELS)
+        assert result.ok is True
+        assert result.advisory_only is False
+
+
+# ---------------------------------------------------------------------------
+# FIX 1b — path-based fail-closed trigger
+# ---------------------------------------------------------------------------
+
+
+class TestSensitivePathTrigger:
+    """Path-based fail-closed trigger: sensitive path → hard gate regardless of labels/body."""
+
+    def test_sensitive_path_audit_acceptance(self):
+        """audit/acceptance/ path triggers hard gate."""
+        assert is_p0_or_p1("", [], ["audit/acceptance/foo.yaml"]) is True
+
+    def test_sensitive_path_github_workflow(self):
+        """.github/ path triggers hard gate."""
+        assert is_p0_or_p1("", [], [".github/workflows/some.yml"]) is True
+
+    def test_sensitive_path_scripts_ci(self):
+        """scripts/ci/ path triggers hard gate."""
+        assert is_p0_or_p1("", [], ["scripts/ci/reviewer_class_gate.py"]) is True
+
+    def test_sensitive_path_terraform(self):
+        """terraform/ path triggers hard gate."""
+        assert is_p0_or_p1("", [], ["terraform/main.tf"]) is True
+
+    def test_sensitive_path_claude_md(self):
+        """CLAUDE.md (exact) triggers hard gate."""
+        assert is_p0_or_p1("", [], ["CLAUDE.md"]) is True
+
+    def test_sensitive_path_deploy(self):
+        """deploy/ path triggers hard gate."""
+        assert is_p0_or_p1("", [], ["deploy/litellm/config.yaml"]) is True
+
+    def test_trivial_path_readme_not_gated(self):
+        """README.md is not a sensitive path — no label/body → advisory only."""
+        assert is_p0_or_p1("", [], ["README.md"]) is False
+
+    def test_trivial_path_docs_not_gated(self):
+        """docs/architecture/notes.md is not a sensitive path."""
+        assert is_p0_or_p1("", [], ["docs/architecture/notes.md"]) is False
+
+    def test_same_model_no_label_sensitive_path_hard_gate_fail(self):
+        """Same-model PR, no label, no Priority body, but touches audit/acceptance/ → FAIL."""
+        body = "## Reviewer model\nReviewer model: claude-opus-4-8\n"
+        commits = _commits("Claude Opus 4.8")
+        changed = ["audit/acceptance/foo.yaml"]
+        result = evaluate(body, commits, NO_LABELS, changed)
+        assert result.ok is False
+        assert result.advisory_only is False
+
+    def test_same_model_no_label_trivial_path_advisory_pass(self):
+        """Same-model PR, no label, trivial path (README.md only) → advisory PASS."""
+        body = "## Reviewer model\nReviewer model: claude-opus-4-8\n"
+        commits = _commits("Claude Opus 4.8")
+        changed = ["README.md"]
+        result = evaluate(body, commits, NO_LABELS, changed)
+        assert result.ok is True
+        assert result.advisory_only is True
+
+    def test_different_model_sensitive_path_passes(self):
+        """Different model + sensitive path → hard gate but PASS (review is valid)."""
+        body = "## Reviewer model\nReviewer model: claude-opus-4-8\n"
+        commits = _commits("Claude Sonnet 4.6")
+        changed = ["scripts/ci/reviewer_class_gate.py"]
+        result = evaluate(body, commits, NO_LABELS, changed)
+        assert result.ok is True
+        assert result.advisory_only is False
+
+    def test_sensitive_path_prefixes_constant_present(self):
+        """SENSITIVE_PATH_PREFIXES constant is exported and non-empty."""
+        assert len(SENSITIVE_PATH_PREFIXES) > 0
+        assert "audit/acceptance/" in SENSITIVE_PATH_PREFIXES
+        assert ".github/" in SENSITIVE_PATH_PREFIXES
+        assert "scripts/ci/" in SENSITIVE_PATH_PREFIXES
+
+
+# ---------------------------------------------------------------------------
+# FIX 2 — no-space Co-Authored-By: trailer
+# ---------------------------------------------------------------------------
+
+
+class TestNoSpaceCoAuthoredBy:
+    """Co-Authored-By:ModelName (no space after colon) must be caught."""
+
+    def test_no_space_trailer_detected_as_implementer(self):
+        """Co-Authored-By:Claude Sonnet 4.6 <...> (zero spaces) → parsed correctly."""
+        commits = "feat: work\n\nCo-Authored-By:Claude Sonnet 4.6 <noreply@anthropic.com>\n"
+        models = extract_implementer_models(commits)
+        assert "claude-sonnet-4-6" in models
+
+    def test_no_space_opus_trailer_same_model_hard_gate_fail(self):
+        """No-space Opus co-author trailer, Opus reviewer, P0 → FAIL (was previously invisible)."""
+        body = _body(reviewer="claude-opus-4-8")
+        commits = "feat: work\n\nCo-Authored-By:Claude Opus 4.8 <noreply@anthropic.com>\n"
+        result = evaluate(body, commits, P0_LABEL)
+        assert result.ok is False
+        assert result.advisory_only is False
+
+    def test_normal_spaced_trailer_still_works(self):
+        """Original spaced form (Co-Authored-By: Name <...>) still works after regex change."""
+        commits = "feat: work\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
+        models = extract_implementer_models(commits)
+        assert "claude-opus-4-8" in models

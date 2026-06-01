@@ -75,11 +75,17 @@ RUN uv pip install --no-cache "psycopg[binary]>=3.1"
 # No-op when GCS_SNAPSHOT_BUCKET is unset.
 RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 
-# Security: the `python -m venv` seed ships setuptools/wheel (and setuptools' jaraco.*
-# deps). Upgrade the two with fixable CRITICAL/HIGH CVEs so the runtime image (which
-# COPYs /app/.venv) is clean: CVE-2026-23949 (jaraco.context <6.1.0, path traversal) and
-# CVE-2026-24049 (wheel <0.46.2, priv-esc). Build-only tooling, unused at agent runtime.
-RUN uv pip install --no-cache --upgrade "jaraco.context>=6.1.0" "wheel>=0.46.2"
+# Security: the `python -m venv` seed + setuptools ship build-only tooling (jaraco.context,
+# wheel) with fixable CRITICAL/HIGH CVEs that the trivy image scan flags — CVE-2026-23949
+# (jaraco.context <6.1.0, path traversal) and CVE-2026-24049 (wheel <0.46.2, priv-esc).
+# uv installs the normalized hyphenated name but can leave the old DOTTED dist-info behind,
+# so explicitly uninstall first, reinstall the patched versions, then purge any stale <6 /
+# <0.46 dist-info directories. Build-only tooling, unused at agent runtime.
+RUN uv pip uninstall jaraco.context wheel 2>/dev/null || true; \
+    uv pip install --no-cache "jaraco.context>=6.1.0" "wheel>=0.46.2"; \
+    rm -rf /app/.venv/lib/python3.11/site-packages/jaraco.context-5*.dist-info \
+           /app/.venv/lib/python3.11/site-packages/jaraco_context-5*.dist-info \
+           /app/.venv/lib/python3.11/site-packages/wheel-0.4[0-5]*.dist-info 2>/dev/null || true
 
 # ============================================================
 # Stage 2: runtime

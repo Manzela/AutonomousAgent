@@ -1,0 +1,72 @@
+# C-04 / H-05 — C9 reviewer-model-class gate.
+#
+# Enforces the operator-resolved rule (2026-06-01): a DIFFERENT MODEL constitutes
+# a different class.  The class IS the specific model.  Opus reviewing Sonnet →
+# ALLOWED; Opus reviewing Opus → FORBIDDEN.  Vendor-sameness alone does NOT make
+# same-class.
+#
+# SCOPE:
+#   P0/P1 PRs  → hard gate (non-zero exit fails the check)
+#   Other PRs  → advisory (warnings printed; check passes)
+#
+# SPOOF-RESISTANCE NOTE (documented, not solved):
+#   This gate parses self-declared metadata: `Reviewer model:` in the PR body and
+#   `Co-Authored-By:` trailers in commit messages.  It CANNOT cryptographically
+#   verify that the declared model actually performed the review.  Live cross-vendor
+#   invocation hardening is deferred pending SP-06 / SP-27 + reviewer credentials.
+#
+# CODEOWNERS guards .github/ → this config is reviewed by the operator + a
+# cross-vendor reviewer (C9).
+name: c9-reviewer-class-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  reviewer-class-gate:
+    name: C9 reviewer-model-class gate (C-04)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v5
+        with:
+          python-version: "3.11"
+
+      - name: Write PR body to file
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s' "$PR_BODY" > /tmp/pr_body.txt
+
+      - name: Collect commit messages for this PR
+        run: |
+          git log "origin/${{ github.base_ref }}..HEAD" --format="%B%n---COMMIT-BOUNDARY---" \
+            > /tmp/pr_commits.txt
+
+      - name: Collect PR labels
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: printf '%s' "$PR_LABELS" > /tmp/pr_labels.txt
+
+      - name: Run C9 reviewer-class gate
+        run: |
+          python scripts/ci/reviewer_class_gate.py \
+            --pr-body /tmp/pr_body.txt \
+            --commits /tmp/pr_commits.txt \
+            --labels "$(cat /tmp/pr_labels.txt)"
+
+      - name: Re-run gate unit tests (committed red-green)
+        run: |
+          python -m pytest tests/ci/test_reviewer_class_gate.py -q

@@ -1,6 +1,7 @@
 # SHA256SUMS — sha256 of every audit/acceptance/*.yaml (C8 acceptance-frozen).
 # CODEOWNERS-guarded: a change here needs a different-actor approval (C10, 4-eyes).
 # Regenerate deliberately with: scripts/ci/acceptance_frozen.py --write
+692e8cfe35a52bd3f4be331ad45b42390467aed67e9f65a837756f6891363e2c  C-04.yaml
 713ad21cb32a0bbbd287b9554f187df8b678ef9b794d1b2b295b577e9a37112f  SP-00.yaml
 5cb4c59dd47fee6f5e244fea44fcc5e86127a61aa027cb869a3a88f1c0d02d42  SP-00c.yaml
 e20147c82b6fd611d58dd0930a7f73e6829f4128903901125bc6b63971ef6f19  SP-00d.yaml

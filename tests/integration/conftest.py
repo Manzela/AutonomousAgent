@@ -31,3 +31,27 @@ def wait_for_stack():
             pass
         time.sleep(2)
     raise RuntimeError("Stack did not become healthy within 60s")
+
+
+@pytest.fixture
+def hermes_child_pid_delta():
+    import psutil
+    import os
+
+    # Try to find the A2A server / uvicorn process running on localhost:7878
+    target_proc = None
+    for p in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            cmd = p.info["cmdline"]
+            if cmd and any("server:app" in arg or "lib.a2a.server" in arg for arg in cmd):
+                target_proc = p
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+
+    if target_proc is None:
+        # Fallback to current process (pytest) if server process not found
+        target_proc = psutil.Process(os.getpid())
+
+    before = {c.pid for c in target_proc.children(recursive=True)}
+    yield (before, lambda: {c.pid for c in target_proc.children(recursive=True)} - before)

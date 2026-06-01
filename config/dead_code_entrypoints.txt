@@ -1,0 +1,54 @@
+# dead_code_entrypoints.txt — Operator-approved escape hatch for dead-code-gate (C4)
+#
+# PURPOSE:
+#   Symbols listed here are treated as runtime entrypoints by dead_code_gate.py,
+#   even if no `if __name__ == "__main__":` block or pyproject [project.scripts]
+#   entry is present. This allows operator-reviewed modules that are invoked by
+#   external harnesses, Docker CMD, service meshes, or other runtime contexts
+#   not visible to static analysis.
+#
+# RULES (ENFORCED):
+#   1. Entries MUST be added by an operator in a SEPARATE commit from the code
+#      being exempted (4-eyes principle — same as audit rubric changes).
+#   2. Self-waivers (@manual, # dead-code: ignore, # noqa: deadcode) are
+#      FORBIDDEN in the diff itself. This file is the ONLY allowed exemption path.
+#   3. Each entry must include a comment explaining WHY it is an entrypoint.
+#   4. Entries are one of:
+#        module.dotted.path          — treats the whole module as an entrypoint root
+#        module.dotted.path:symbol   — treats a specific symbol as a root
+#
+# FORMAT: one entry per line; '#' lines are comments; blank lines ignored.
+#
+# ---------------------------------------------------------------------------
+# Known entrypoints seeded by operator review (2026-05-31):
+#
+# app/a2a_canary/main.py is a __main__-guarded module; it is listed here for
+# documentation only (the gate already auto-detects __main__ guards). The Docker
+# CMD ["python", "-m", "app.a2a_canary.main"] also launches it.
+app.a2a_canary.main
+
+# lib/a2a/server.py defines the A2A FastAPI ASGI app (`app = FastAPI(...)`) and is
+# launched at runtime by `uvicorn lib.a2a.server:app --host 0.0.0.0 --port 9001`
+# (deploy/docker-compose.yml:433). uvicorn imports the module, so its @app.post(...)
+# route handlers (e.g. compatibility_admin_limits "/v1/admin/limits", compatibility_turn
+# "/v1/turn") are framework-registered endpoints, not dead code — the gate just cannot
+# see a compose-string uvicorn launch as an entrypoint. Operator-reviewed (2026-06-01).
+lib.a2a.server
+
+# lib/a2a/auth.py:verify_token is the JWT auth guard CALLED at lib/a2a/server.py:202
+# (`identity = await verify_token(token_str, ...)`) inside the @app.post handler chain — it IS
+# reachable via the lib.a2a.server uvicorn entrypoint. The callgraph cannot trace the
+# FastAPI handler→helper await path once the stream/subscribe decorators carry response_model=None.
+# Verified reachable (grep: server.py imports + calls it) 2026-06-01.
+lib.a2a.auth:verify_token
+
+# lib/durability/checkpoint.py:Checkpoint is INSTANTIATED at lib/durability/__init__.py:131
+# (`cp = Checkpoint(...)`) on the durability resume path. Verified reachable 2026-06-01.
+lib.durability.checkpoint:Checkpoint
+
+# scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
+# Listed here for discoverability only.
+# scripts.ci.dead_code_gate    (auto-detected via __main__)
+# scripts.ci.import_hygiene    (auto-detected via __main__)
+# scripts.ci.license_dep_gate  (auto-detected via __main__)
+# scripts.ci.run_acceptance    (auto-detected via __main__)

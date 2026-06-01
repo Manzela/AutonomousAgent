@@ -5,3 +5,9 @@ deploy/                      @Manzela
 secrets/                     @Manzela
 lib/durability/              @Manzela
 lib/observability/           @Manzela
+# SP-00e (C8/C10): the agent must not edit its own gates or acceptance.
+.github/                     @Manzela
+audit/acceptance/            @Manzela
+# SP-G1 (C10): the golden eval corpus is operator-guarded; corpus content and SHA
+# must not be changed by an agent without operator sign-off (4-eyes principle).
+evals/golden/                @Manzela

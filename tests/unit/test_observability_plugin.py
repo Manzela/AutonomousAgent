@@ -989,3 +989,99 @@ def test_post_api_request_skips_record_when_no_input_tokens(monkeypatch):
 
     assert call_count["n"] == 0
     obs._LLM_MODEL_BY_SESSION.pop("sess-zero-tok", None)
+
+
+# ---------------------------------------------------------------------------
+# SP-O1 — llm.call.cost histogram is SOURCED (LiteLLM pricing) + RECORDED.
+# The histogram was created but never .record()ed; these pin the wiring and the
+# no-fabrication contract (an unpriced model records nothing, not a guessed cost).
+# ---------------------------------------------------------------------------
+
+
+def test_llm_request_cost_usd_prices_known_model():
+    """A LiteLLM-priced model yields a positive USD cost from real token counts."""
+    from lib.observability import _llm_request_cost_usd
+
+    cost = _llm_request_cost_usd("gpt-3.5-turbo", 1000, 500)
+    assert cost is not None and cost > 0.0, f"a known model must be priced, got {cost!r}"
+
+
+def test_llm_request_cost_usd_none_for_unpriced_model():
+    """An unknown model returns None — NO fabricated cost (SP-O1: cost claims sourced)."""
+    from lib.observability import _llm_request_cost_usd
+
+    assert _llm_request_cost_usd("totally-made-up-model-xyz-9000", 1000, 500) is None
+
+
+def test_post_api_request_records_nonzero_llm_call_cost(monkeypatch):
+    """SP-O1 end-to-end: post_api_request records a non-zero llm.call.cost (USD),
+    labeled by model, for a priced model + real token usage."""
+    import lib.observability as obs
+
+    cost_hist = MagicMock()
+    monkeypatch.setattr(obs, "_llm_call_cost_hist", cost_hist)
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-cost-1", user_message="x", model="gpt-3.5-turbo")
+    obs._post_api_request(
+        session_id="sess-cost-1",
+        usage={"input_tokens": 1000, "output_tokens": 500},
+        response_model="gpt-3.5-turbo",
+    )
+
+    assert cost_hist.record.call_count == 1, "llm.call.cost must be recorded exactly once"
+    value, attrs = cost_hist.record.call_args.args
+    assert value > 0.0, f"recorded cost must be > 0 USD, got {value}"
+    assert attrs.get("gen_ai.response.model") == "gpt-3.5-turbo"
+    obs._LLM_MODEL_BY_SESSION.pop("sess-cost-1", None)
+
+
+def test_post_api_request_skips_cost_for_unpriced_model(monkeypatch):
+    """SP-O1: an unpriced model records NO cost datapoint (no fabrication) even
+    though tokens are present — the histogram .record() is never called."""
+    import lib.observability as obs
+
+    cost_hist = MagicMock()
+    monkeypatch.setattr(obs, "_llm_call_cost_hist", cost_hist)
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    obs._pre_llm_call(session_id="sess-cost-2", user_message="x", model="made-up")
+    obs._post_api_request(
+        session_id="sess-cost-2",
+        usage={"input_tokens": 1000, "output_tokens": 500},
+        response_model="totally-made-up-model-xyz-9000",
+    )
+
+    cost_hist.record.assert_not_called()
+    obs._LLM_MODEL_BY_SESSION.pop("sess-cost-2", None)
+
+
+def test_post_api_request_records_cost_via_captured_model_fallback(monkeypatch):
+    """SP-O1 (C9 fix): when response_model is ABSENT, cost is still recorded using the
+    model captured at pre_llm_call (the J9 session fallback) — no silent cost-data loss
+    for providers that omit the model in the response envelope (e.g. some Vertex paths)."""
+    import lib.observability as obs
+
+    cost_hist = MagicMock()
+    monkeypatch.setattr(obs, "_llm_call_cost_hist", cost_hist)
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    # pre_llm_call captures the model; post_api_request omits response_model entirely.
+    obs._pre_llm_call(session_id="sess-cost-fb", user_message="x", model="gpt-3.5-turbo")
+    obs._post_api_request(
+        session_id="sess-cost-fb",
+        usage={"input_tokens": 1000, "output_tokens": 500},
+        # response_model deliberately omitted -> falls back to the captured model
+    )
+
+    assert cost_hist.record.call_count == 1, "cost must record via the captured-model fallback"
+    value, attrs = cost_hist.record.call_args.args
+    assert value > 0.0, f"fallback cost must be > 0 USD, got {value}"
+    assert attrs.get("gen_ai.response.model") == "gpt-3.5-turbo"
+    obs._LLM_MODEL_BY_SESSION.pop("sess-cost-fb", None)

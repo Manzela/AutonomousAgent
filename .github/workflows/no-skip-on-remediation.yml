@@ -1,8 +1,8 @@
-name: No pytest.mark.skip in remediation PRs
+name: No new skip/skipif/xfail/manual markers (C6)
 on:
   pull_request:
-    branches: [main]
-    paths: ['tests/**', 'lib/**', 'app/**']
+    branches: [main, "remediation/**"]
+    paths: ['tests/**', 'lib/**', 'app/**', 'scripts/**']
 permissions:
   contents: read
   pull-requests: read
@@ -14,16 +14,18 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
           fetch-depth: 0
-      - name: Block new pytest.mark.skip lines
+      - name: Block new skip/skipif/xfail/manual markers (C6)
         run: |
-          set -euo pipefail
+          set -uo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          # C6: "a test that can't run in CI keeps its task OPEN." Block NEWLY-ADDED skip
+          # markers (skip/skipif/xfail) and the forbidden @manual / pytest.mark.manual.
+          # Forward-looking (added lines only) — the 18 pre-existing markers are unaffected.
           ADDED=$(git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
-                  | grep -E '^\+[^+].*pytest\.mark\.skip' \
-                  | grep -v 'pytest.mark.skipif' || true)
+                  | grep -E '^\+[^+].*(pytest\.mark\.(skip|skipif|xfail)|@manual|pytest\.mark\.manual)' || true)
           if [ -n "$ADDED" ]; then
-            echo "::error::PR adds pytest.mark.skip lines:"
+            echo "::error::PR adds skip/skipif/xfail/manual markers (C6 forbids new skips):"
             echo "$ADDED"
             exit 1
           fi

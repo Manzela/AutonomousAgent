@@ -15,7 +15,7 @@
 # (see audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C3).
 # Digest resolved 2026-05-19 against python:3.11-slim on Docker Hub.
 ARG PYTHON_VERSION=3.11
-ARG BASE_IMAGE=python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834
+ARG BASE_IMAGE=python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
 
 # ============================================================
 # Stage 1: builder
@@ -23,7 +23,7 @@ ARG BASE_IMAGE=python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fe
 # Carries uv, git, and apt build tools — none of which land in
 # the runtime stage.
 # ============================================================
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS builder
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -31,12 +31,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Build-time system deps (git for any VCS-based pip deps; curl for misc fetches).
 # These are NOT carried into the runtime stage.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
       git curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv — build-time only; the runtime stage uses the venv directly.
-COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:d55f0133c94f06df529c2ea55ccfde75fb62c2f7dcba2a19777cae3dfcc9f4ea /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.5.11@sha256:0ac957607303916420297a4c9c213bb33fbd3c888f9cd7f4f7273596ebf42b85 /uv /usr/local/bin/uv
 
 # Create an isolated virtualenv so the runtime stage can COPY just /app/.venv.
 RUN python -m venv /app/.venv
@@ -80,7 +80,7 @@ RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 # Lean image — only runtime system packages + the pre-built venv.
 # No uv, no build tooling, no source trees.
 # ============================================================
-FROM python:3.11-slim@sha256:9a7765b36773a37061455b332f18e265e7f58f6fea9c419a550d2a8b0e9db834 AS runtime
+FROM python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0 AS runtime
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
@@ -89,7 +89,7 @@ ENV PYTHONUNBUFFERED=1 \
 # NOTE: git, curl, ripgrep, ffmpeg are called by the agent as subprocess tools
 # (code search, file fetches, voice). Once hermes no longer shells out to these,
 # this block can be removed and the base switched to distroless.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
       git curl ca-certificates ripgrep ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 

@@ -1,0 +1,132 @@
+# SP-00i — model-pin gate + harness-config sha stamp (PRD §6 EPIC 0).
+#
+# Enforces that every model ref in the three canonical config files is pinned
+# to a specific named version or digest — no bare 'latest' tags, no version-free
+# identifiers. Also stamps the harness-config sha (reasoning-effort + system-prompt
+# sha + thinking + compaction flags) into the step summary so a diff is visible.
+#
+# SP-G1 REGRESSION GATE (ADVISORY — SP-G1 not yet built, task #11):
+#   When a model or harness-config change is detected in the PR diff, the SP-G1
+#   golden set MUST be re-run with no regression before merge. This step is
+#   ADVISORY until SP-G1 ships — it detects the changed-diff condition and
+#   emits a non-blocking warning. Once SP-G1 is built, add a 'require-sp-g1'
+#   step that calls the SP-G1 runner and fails on regression.
+#
+# NO-OP CONTROL:
+#   A PR that changes NEITHER a scanned config file NOR the harness-config sha
+#   does not trigger an SP-G1 re-run (the 'model-config-changed' step exits 0
+#   with a 'no change detected' note, and the advisory SP-G1 step is skipped).
+#
+# CODEOWNERS guards .github/, so this file is reviewed by the operator +
+# the cross-vendor (Gemini) reviewer before it can land.
+name: model-pin-gate
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+    paths:
+      - config/hermes/model-tiers.yaml
+      - config/limits.yaml
+      - deploy/litellm/config.yaml
+      - scripts/ci/model_pin_check.py
+      - tests/ci/test_model_pin_check.py
+      - .github/workflows/model-pin-gate.yml
+      - audit/acceptance/SP-00i.yaml
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  model-pin-gate:
+    name: Enforce model pins + stamp harness-config sha (SP-00i)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+
+      - name: Scan config for unpinned model refs + stamp harness-config sha (single call)
+        id: model-pin-scan
+        # ONE invocation does BOTH the pin scan and the harness-config sha stamp, so the
+        # GHA step summary is written exactly once (C9 #178: was duplicated by two calls).
+        # system_prompt_sha = the integrity.soul_md_sha256 pin already in limits.yaml.
+        run: |
+          set -uo pipefail
+          SOUL_SHA="$(grep 'soul_md_sha256' config/limits.yaml | awk '{print $2}' | tr -d '# ')"
+          REASONING_EFFORT="high"   # harness-config field (also in the change-detect set below)
+          python3 scripts/ci/model_pin_check.py \
+            --paths config/hermes/model-tiers.yaml,config/limits.yaml,deploy/litellm/config.yaml \
+            --harness-config "reasoning_effort=${REASONING_EFFORT},system_prompt_sha=${SOUL_SHA}" \
+            | tee model-pin-gate-evidence.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Detect model/harness-config change in PR diff (advisory SP-G1 trigger)
+        # ADVISORY: emits a warning if a model or config file changed, noting that SP-G1
+        # re-run is required but cannot be enforced until SP-G1 is built (task #11).
+        # NO-OP CONTROL: if none of the scanned config files changed, this step exits 0
+        # with a 'no change detected' note.
+        id: model-config-changed
+        if: always()
+        run: |
+          set -uo pipefail
+          # Detect changed files in this PR relative to the base branch.
+          CHANGED="$(git diff --name-only origin/${{ github.base_ref }}...HEAD 2>/dev/null || true)"
+          CONFIG_FILES=(
+            "config/hermes/model-tiers.yaml"
+            "config/limits.yaml"
+            "deploy/litellm/config.yaml"
+            ".github/workflows/model-pin-gate.yml"
+          )
+          TRIGGERED=false
+          for f in "${CONFIG_FILES[@]}"; do
+            if echo "$CHANGED" | grep -qF "$f"; then
+              TRIGGERED=true
+              echo "::warning::SP-00i: $f changed in this PR."
+            fi
+          done
+          if [ "$TRIGGERED" = "true" ]; then
+            echo "::warning::SP-G1 golden regression re-run is REQUIRED for this PR but " \
+                 "cannot be enforced until SP-G1 is built (task #11). " \
+                 "Operator MUST manually confirm no regression before merge. " \
+                 "See docs/architecture/sp-g1-advisory.md for the runbook."
+            echo 'SP-G1-advisory: TRIGGERED (model/harness-config changed; manual re-run required)' \
+              >> model-pin-gate-evidence.txt
+          else
+            echo 'SP-G1-advisory: no-op (no model/harness-config file changed in this PR)' \
+              >> model-pin-gate-evidence.txt
+          fi
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          set -uo pipefail
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_model_pin_check.py -q \
+            | tee -a model-pin-gate-evidence.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Re-run SP-00i acceptance (C1)
+        run: |
+          set -uo pipefail
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00i.yaml \
+            | tee -a model-pin-gate-evidence.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload model-pin-gate evidence artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: model-pin-gate-evidence
+          path: model-pin-gate-evidence.txt
+          if-no-files-found: error

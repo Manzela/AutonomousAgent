@@ -1,44 +1,45 @@
-## Summary
+<!-- Executor Operating Contract (PRD §4). Fill every applicable section.
+     "Done" is gate-derived (C14), not asserted here. CI RE-RUNS your Evidence (C1);
+     executor-pasted numbers are advisory — the junitxml / CI artifact is source of truth. -->
 
+## Summary
 <!-- One paragraph: what changed and why. -->
 
-## Changes
+## Acceptance (C8)
+<!-- The sha-pinned audit/acceptance/<task-id>.yaml this PR satisfies.
+     You MUST NOT edit that acceptance file in this PR (acceptance-frozen gate). -->
+- Task:
+- Acceptance file + sha256:
 
-<!-- Bullet list of notable changes. -->
--
+## Evidence (C1)
+<!-- Fenced commands whose AUTHORITATIVE output is the CI re-run (bot comment / artifact). -->
 
-## Phase
+```
+```
 
-<!-- Which phase does this PR belong to? -->
-- [ ] Phase 1 (local Mac)
-- [ ] Phase 2 (cloud prod)
-- [ ] Phase 3 (trajectory pipeline)
-- [ ] Phase 4 (RL training)
-- [ ] Cross-phase / hotfix
+## Red-Green (C2)
+<!-- The committed FAIL-without-change then PASS-with-change pair (paths or CI run links). -->
 
-## Testing
+## Test Truth (C7)
+<!-- collected / passed / failed / skipped — must byte-match the CI junitxml artifact. -->
 
-<!-- How did you verify this works? Paste relevant output. -->
-- [ ] Unit tests added / updated and passing
-- [ ] Integration tests added / updated and passing
-- [ ] Smoke tests pass (`./scripts/smoke.sh`)
-- [ ] Manual verification (describe below)
+## Refutation attempted (C12)
+<!-- The deliberately-broken input your acceptance assertion catches (a red run). -->
 
-## Documentation
+## Test Changes (C6)
+<!-- REQUIRED if this PR deletes a test, relaxes an assertion, or drops coverage below
+     baseline. A different-model-class reviewer (C9) must APPROVE this block. Else "None". -->
+None
 
-- [ ] CHANGELOG.md updated under `[Unreleased]`
-- [ ] ADR added if this locks in an architectural decision
-- [ ] Runbook updated if this changes operational procedures
-- [ ] README updated if this changes user-visible workflow
+## Reviewer model
+<!-- C9 / CLAUDE.md: a DIFFERENT model class reviews every P0/P1 PR. Record it literally below. -->
+Reviewer model:
 
 ## Security
-
-- [ ] No new secrets committed in plaintext (sops-encrypted only)
-- [ ] No new egress endpoints added without allowlist update
-- [ ] Pre-commit hooks pass
+- [ ] No plaintext secrets (sops-encrypted only); pre-commit clean
+- [ ] No new egress endpoints without an allowlist update (C16)
+- [ ] Signed, squash-only, conventional title; targets `autonomous-agent-2026` (C13)
 
 ## Related
-
-<!-- Issue numbers, ADR numbers, related PRs. -->
+- PRD §6:
 - Closes #
-- ADR: docs/decisions/####-name.md

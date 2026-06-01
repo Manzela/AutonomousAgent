@@ -1,0 +1,67 @@
+# Acceptance — SP-O1 · llm.call.cost histogram is SOURCED + RECORDED (P1-4)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-O1: "`llm.call.cost` histogram `.record()`ed · non-zero llm.call.cost after a
+# real run." The histogram was CREATED (lib/observability/__init__.py) but never recorded;
+# this wires it from the LiteLLM pricing map. Cost is SOURCED, never fabricated — an
+# unpriced model records nothing (an absent datapoint beats a wrong cost claim; SP-23/U-9/
+# SP-R2 budget read this metric). The LIVE Cloud-Monitoring datapoint proof is a GATED
+# operator run (real traffic); these assertions are the CI-verifiable red-greens.
+
+task: SP-O1
+title: "llm.call.cost histogram .record()ed — sourced from the LiteLLM pricing map (no fabrication)"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: o1-cost-helper-prices-known-model
+    description: >
+      Red-green: _llm_request_cost_usd returns a POSITIVE USD cost for a LiteLLM-priced
+      model from real token counts. FAILS if the helper returns 0/None for a priced model
+      (i.e. pricing is not actually sourced).
+    cmd: |
+      uv run --no-project --with litellm python - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from lib.observability import _llm_request_cost_usd
+      c = _llm_request_cost_usd("gpt-3.5-turbo", 1000, 500)
+      if c is None or c <= 0.0:
+          print("FAIL: a LiteLLM-priced model must cost > 0 USD, got", repr(c)); sys.exit(1)
+      print("OK: gpt-3.5-turbo (1000+500 tok) priced at $%.6f from the LiteLLM map" % c)
+      PYEOF
+    expect_exit: 0
+
+  - id: o1-cost-helper-no-fabrication-on-unknown-model
+    description: >
+      Anti-hallucination (C12-style): an UNKNOWN/unpriced model yields None — the helper
+      must NEVER invent a price. FAILS (red) if a fabricated number is returned.
+    cmd: |
+      uv run --no-project --with litellm python - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from lib.observability import _llm_request_cost_usd
+      c = _llm_request_cost_usd("totally-made-up-model-xyz-9000", 1000, 500)
+      if c is not None:
+          print("FAIL: an unpriced model must return None (no fabricated cost), got", repr(c)); sys.exit(1)
+      print("OK: unpriced model returned None — no fabricated cost claim")
+      PYEOF
+    expect_exit: 0
+
+  - id: o1-histogram-record-wired-end-to-end
+    description: >
+      Wiring red-green: the post_api_request hook RECORDS a non-zero llm.call.cost to the
+      histogram for a priced model + real usage, and records NOTHING for an unpriced model.
+      Runs the committed pytest red-greens (fail without the wiring, pass with it).
+    cmd: |
+      uv run --no-project --with pytest --with litellm \
+        python -m pytest tests/unit/test_observability_plugin.py -k cost -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/sp-o1-cost-recorder.yml
+  artifact: >
+    sourced-pricing + no-fabrication + end-to-end-record red-greens (CI). The live
+    "non-zero llm.call.cost in Cloud Monitoring after a real run" datapoint is a GATED
+    operator step (real traffic emitting to the autonomous-agent-2026 / i-for-ai
+    MeterProvider) — tracked, not run in CI.

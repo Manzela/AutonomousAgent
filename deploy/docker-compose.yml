@@ -296,27 +296,61 @@ services:
   #
   # Official server image from github/github-mcp-server. Hermes connects
   # via HTTP MCP protocol (matches Context7 pattern, simpler than stdio).
-  # Toolset = `all`: actions, code_security, copilot, dependabot, discussions,
-  # gists, git, issues, labels, notifications, orgs, projects, pull_requests,
-  # repos, secret_protection, security_advisories, stargazers, users.
-  # Required PAT scopes: repo, workflow, read:org, security_events.
+  # Toolsets reduced (SP-00f.1) from the full set to a COARSE first cut:
+  #   repos, issues, pull_requests, actions.
+  # This drops the clearly out-of-scope surfaces: code_security, secret_protection,
+  #   orgs, users, copilot, dependabot, discussions, gists, notifications, projects,
+  #   security_advisories, stargazers.
+  # ⚠ PARTIAL — this is NOT the full C17 boundary. `--toolsets` is group-granular, so the
+  #   KEPT groups still expose some GATED/write tools: repos -> create_repository /
+  #   fork_repository / delete_file; pull_requests -> merge_pull_request; actions ->
+  #   run_workflow / rerun_workflow. The AUTHORITATIVE C17 boundary is the least-priv App
+  #   TOKEN (SP-00f.2) + the per-role TOOL allowlist (SP-05) — both still pending.
+  # ⚠ The credential is STILL the broad classic PAT (repo, workflow, read:org,
+  #   security_events), so those leaked tools would currently SUCCEED (201, not 403).
+  #   DO NOT run autonomously until SP-00f.2 closes.
 
   github-mcp:
     # Pinned by digest. Resolved 2026-05-19.
     image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
-    command: ["http", "--port", "8003", "--toolsets", "all"]
+    command: ["http", "--port", "8003", "--toolsets", "repos,issues,pull_requests,actions"]
     # HIGH-7: capability hardening for GitHub MCP (holds a live GitHub PAT).
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     environment:
-      # PAT injected via env_file (decrypted at bootstrap from sops). The
-      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
-      # and uses it to authenticate every API call to api.github.com.
-      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_pat
-    secrets:
-      - github_pat
+      # SP-00f.2 DRAFT — App-credential wiring (replaces static PAT).
+      # GATED: the broad PAT secret (github_pat) is NOT revoked yet;
+      # PAT revocation + App secret provisioning are operator steps listed
+      # in gated_operator_steps of the SP-00f.2 PR.  Do NOT set these
+      # env vars live until the App private key is SOPS-encrypted and the
+      # PAT has been revoked — otherwise the service will fail to start.
+      #
+      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN (or _FILE)
+      # once at startup.  It has NO built-in App auth and NO hot-reload.
+      # Because installation tokens expire ≤1 h, a token-refresh sidecar
+      # (SP-00f.3, NOT built here) or a cron-restart strategy is required:
+      #   Option A (interim): restart: always + mint token at container start
+      #     via an entrypoint wrapper that calls lib/github_auth.py and writes
+      #     the result to /run/secrets/github_token before exec-ing the server.
+      #   Option B (target, SP-00f.3): token-refresh sidecar that re-mints
+      #     ~5 min before expiry and SIGHUPs / docker-restarts github-mcp.
+      # See lib/github_auth.py docstring for full rationale.
+      GITHUB_APP_ID: ${GITHUB_APP_ID}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID}
+      # Path inside the container to the SOPS-decrypted PEM key (bind-mounted
+      # from secrets/ at runtime by the operator bootstrap script).
+      GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github_app_key
+      # The server still reads GITHUB_PERSONAL_ACCESS_TOKEN_FILE at startup;
+      # once the operator mints + injects the installation token this env var
+      # should point at the tmpfs file written by the entrypoint wrapper.
+      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_token
+    # github_pat disabled post-revocation; `github_app_key` + `github_token` are added to this
+    # array once the GitHub App key is provisioned (GATED operator step). An explicit EMPTY ARRAY
+    # keeps `docker compose config` valid during the transition — a comment-only `secrets:` parses
+    # as YAML null, which Compose rejects ("services.github-mcp.secrets must be a array").
+    secrets: []
     networks: [internal, egress]   # needs api.github.com egress
     # The official ghcr.io/github/github-mcp-server image is distroless —
     # no wget, curl, sh, python. Nothing to exec for a healthcheck. The
@@ -720,5 +754,12 @@ secrets:
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
   litellm_master_key:
     file: ${SECRETS_DIR:-../secrets}/litellm-master-key
+  # github_pat: RETIRED by SP-00f.2 (PAT revocation is a GATED operator step).
+  # Remove this block once the PAT has been revoked and github_app_key provisioned.
   github_pat:
     file: ${SECRETS_DIR:-../secrets}/github-pat
+  # SP-00f.2 DRAFT — uncomment once the SOPS-encrypted App key is provisioned.
+  # github_app_key:
+  #   file: ${SECRETS_DIR:-../secrets}/github-app-key.pem
+  # github_token is a tmpfs file written at runtime by the entrypoint wrapper;
+  # it is NOT a Docker secret (no file: source) — referenced by env var path.

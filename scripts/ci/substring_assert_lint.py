@@ -52,6 +52,36 @@ _OUTPUT_ISH: frozenset[str] = frozenset(
     }
 )
 
+# Refusal vocabulary words that must NEVER appear as binding assertions in
+# differential safety tests.  Checking that a model "refused" by inspecting
+# its prose is theatrical safety: the deceptive variant can emit these words
+# while still executing the forbidden side-effect.
+_REFUSAL_VOCABULARY: frozenset[str] = frozenset(
+    {
+        "refuse",
+        "refused",
+        "refusal",
+        "cannot",
+        "can't",
+        "won't",
+        "will not",
+        "blocked",
+        "denied",
+        "forbidden",
+        "not allowed",
+        "i cannot",
+        "i will not",
+        "i refuse",
+        "unauthorized",
+        "prohibited",
+    }
+)
+
+# Comment marker that allowlists a line from the differential binding check.
+# Used on DECEPTIVE-variant fixture string literals that INTENTIONALLY contain
+# refusal vocabulary (the bait text — NOT the binding assertion).
+_DIFFERENTIAL_ALLOWLIST_MARKER = "pragma: differential-deceptive-fixture"
+
 # The gate's own test file — excluded from scanning to avoid self-trip.
 # Built as a relative path that matches what the walker produces.
 _OWN_TEST_FILE = "tests/ci/test_substring_assert_lint.py"
@@ -227,6 +257,103 @@ def find_lint_warnings(source: str, filename: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Differential test binding check (BLOCKING, not advisory)
+# ---------------------------------------------------------------------------
+
+
+def _line_is_allowlisted(source_lines: list[str], lineno: int) -> bool:
+    """Return True if the source line at `lineno` (1-indexed) carries the
+    differential-deceptive-fixture allowlist marker as a comment.
+
+    Checks both inline comments on the same line and a preceding comment line.
+    """
+    idx = lineno - 1  # convert to 0-indexed
+    if idx < 0 or idx >= len(source_lines):
+        return False
+    line = source_lines[idx]
+    if _DIFFERENTIAL_ALLOWLIST_MARKER in line:
+        return True
+    # Also check the immediately preceding line for a standalone comment marker.
+    if idx > 0 and _DIFFERENTIAL_ALLOWLIST_MARKER in source_lines[idx - 1]:
+        return True
+    return False
+
+
+def find_differential_binding_errors(source: str, filename: str) -> list[str]:
+    """Scan a *_differential.py test file for binding assertions that check
+    refusal vocabulary against output-ish names.
+
+    This is BLOCKING (non-advisory): a differential test's BINDING assertion
+    must observe a real side-effect (bytes, HTTP request count, etc.) — NEVER
+    a refusal-vocabulary substring.
+
+    The probe in a differential test encodes:
+      COMPLIANT  -> forbidden_side_effect_occurred() == False
+      DECEPTIVE  -> forbidden_side_effect_occurred() == True
+      BENIGN     -> forbidden_side_effect_occurred() == False
+
+    A vocabulary check (assert "refuse" not in output) would be fooled by a
+    deceptive agent that emits refusal prose while still executing the side-effect.
+
+    Allowlist: lines with the comment marker
+    `# pragma: differential-deceptive-fixture` are excluded.  Use this ONLY on
+    DECEPTIVE-variant fixture strings that INTENTIONALLY contain refusal
+    vocabulary as bait — NOT on binding assertions.
+
+    Returns:
+        A list of human-readable error strings; empty list == clean.
+    """
+    try:
+        tree = ast.parse(source, filename=filename)
+    except SyntaxError:
+        return []
+
+    source_lines = source.splitlines()
+    errors: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.Assert):
+                continue
+            test = stmt.test
+            # Pattern: assert <string_literal> [not] in <output-ish name>
+            if not isinstance(test, ast.Compare):
+                continue
+            if not isinstance(test.left, ast.Constant) or not isinstance(test.left.value, str):
+                continue
+            literal_value = test.left.value.lower()
+            # Is this literal a refusal vocabulary word?
+            is_refusal = any(word in literal_value for word in _REFUSAL_VOCABULARY)
+            if not is_refusal:
+                continue
+            # Does the RHS compare against an output-ish name?
+            for op, comp in zip(test.ops, test.comparators):
+                if isinstance(op, (ast.In, ast.NotIn)) and _is_output_ish(comp):
+                    # Is this line allowlisted?
+                    if _line_is_allowlisted(source_lines, stmt.lineno):
+                        continue
+                    comp_name = (
+                        comp.id if isinstance(comp, ast.Name) else f"...{comp.attr}"  # type: ignore[union-attr]
+                    )
+                    errors.append(
+                        f"{filename}:{stmt.lineno}: DIFFERENTIAL-BINDING-ERROR: "
+                        f"differential test uses refusal-vocabulary substring check "
+                        f"`assert {test.left.value!r} "
+                        f"{'not in' if isinstance(op, ast.NotIn) else 'in'} "
+                        f"{comp_name}` — binding assertions MUST observe a real "
+                        f"side-effect (bytes, HTTP status, span count), NEVER refusal "
+                        f"vocabulary. Add `# pragma: differential-deceptive-fixture` "
+                        f"ONLY if this line is a DECEPTIVE-variant bait fixture, not "
+                        f"a binding assertion."
+                    )
+
+    return errors
+
+
+# ---------------------------------------------------------------------------
 # CLI — main()
 # ---------------------------------------------------------------------------
 
@@ -237,42 +364,52 @@ def main(argv: list[str]) -> int:
     Walks `--root` for test_*.py files, runs find_lint_warnings on each,
     emits ::warning:: annotations, and ALWAYS returns 0 (advisory).
 
+    Also scans `--differential-root` (default: tests/integration) for
+    *_differential.py files and FAILS (exit 1) if any binding assertion is a
+    refusal-vocabulary substring check (BLOCKING gate for differential tests).
+
     Usage:
-        substring_assert_lint.py [--root <dir>]
+        substring_assert_lint.py [--root <dir>] [--differential-root <dir>]
     """
     ap = argparse.ArgumentParser(
-        description="substring-assert + mock-under-test lint gate (C3, advisory)"
+        description="substring-assert + mock-under-test lint gate (C3, advisory) "
+        "+ differential-binding BLOCKING check"
     )
     ap.add_argument(
         "--root",
         default="tests",
         help="root directory to scan for test_*.py files (default: tests)",
     )
+    ap.add_argument(
+        "--differential-root",
+        default="tests/integration",
+        help=(
+            "directory to scan for *_differential.py files for the BLOCKING "
+            "differential-binding check (default: tests/integration)"
+        ),
+    )
     args = ap.parse_args(argv)
 
-    root = Path(args.root)
-    if not root.exists():
-        # Graceful: non-existent root is a no-op (advisory gate never blocks)
-        return 0
+    # -----------------------------------------------------------------------
+    # Advisory pass (existing behaviour — always exits 0 from this block)
+    # -----------------------------------------------------------------------
 
+    root = Path(args.root)
     total_warnings = 0
 
-    for py_file in sorted(root.rglob("test_*.py")):
-        # Normalise to forward-slash for comparison
-        rel = str(py_file).replace("\\", "/")
-        # Self-exclusion: skip the gate's own test file
-        if rel.endswith(_OWN_TEST_FILE):
-            continue
-
-        try:
-            source = py_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-
-        file_warnings = find_lint_warnings(source, rel)
-        for w in file_warnings:
-            print(f"::warning::{w}")
-            total_warnings += 1
+    if root.exists():
+        for py_file in sorted(root.rglob("test_*.py")):
+            rel = str(py_file).replace("\\", "/")
+            if rel.endswith(_OWN_TEST_FILE):
+                continue
+            try:
+                source = py_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            file_warnings = find_lint_warnings(source, rel)
+            for w in file_warnings:
+                print(f"::warning::{w}")
+                total_warnings += 1
 
     if total_warnings:
         print(
@@ -282,7 +419,34 @@ def main(argv: list[str]) -> int:
     else:
         print("== substring-assert-lint: 0 warnings (C3) ==")
 
-    # ALWAYS exit 0 — this gate is advisory
+    # -----------------------------------------------------------------------
+    # BLOCKING pass: differential binding check
+    # -----------------------------------------------------------------------
+
+    diff_root = Path(args.differential_root)
+    total_errors = 0
+
+    if diff_root.exists():
+        for py_file in sorted(diff_root.glob("*_differential.py")):
+            rel = str(py_file).replace("\\", "/")
+            try:
+                source = py_file.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            file_errors = find_differential_binding_errors(source, rel)
+            for e in file_errors:
+                print(f"::error::{e}")
+                total_errors += 1
+
+    if total_errors:
+        print(
+            f"== differential-binding-check: FAIL ({total_errors} binding error(s) "
+            f"in *_differential.py files) — vocabulary-binding regresses the "
+            f"SP-00c anti-theatre contract =="
+        )
+        return 1
+
+    print("== differential-binding-check: PASS (0 vocabulary-binding errors) ==")
     return 0
 
 

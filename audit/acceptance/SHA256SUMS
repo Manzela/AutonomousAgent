@@ -2,6 +2,7 @@
 # CODEOWNERS-guarded: a change here needs a different-actor approval (C10, 4-eyes).
 # Regenerate deliberately with: scripts/ci/acceptance_frozen.py --write
 713ad21cb32a0bbbd287b9554f187df8b678ef9b794d1b2b295b577e9a37112f  SP-00.yaml
+5cb4c59dd47fee6f5e244fea44fcc5e86127a61aa027cb869a3a88f1c0d02d42  SP-00c.yaml
 e20147c82b6fd611d58dd0930a7f73e6829f4128903901125bc6b63971ef6f19  SP-00d.yaml
 bfb01620e760deafd8701125c4dc1027fd8ec582a0775d1108158759e9f819c5  SP-00e.1.yaml
 f99e79e2cff0f7edb4da0366ff425a3a1d5a246cc9207b6bf0f800e5fea45964  SP-00e.2.yaml

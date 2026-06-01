@@ -61,6 +61,41 @@ _SP14_TRAJECTORY_SHIPPER: Optional[Any] = None
 _SP14_SESSION_EVENTS: Dict[str, List[Dict[str, Any]]] = {}
 _SP14_SESSION_EVENTS_LOCK = threading.Lock()
 
+# Dedup set for detector-failure log suppression. Entries are
+# (session_id, detector_name) tuples; a session's entries are discarded
+# in _sp14_ship_on_session_end so the set stays bounded across sessions.
+# Guarded by the existing lock — same concurrency idiom as _SP14_SESSION_EVENTS.
+_SP14_DETECTOR_FAILURE_SEEN: set = set()
+
+
+def _sp14_log_detector_failure(detector: str, session_id: str, exc: BaseException) -> None:
+    """Log a detector exception at WARNING on the first occurrence per (session_id, detector),
+    and at DEBUG on subsequent occurrences — so a persistent fault is operator-visible
+    exactly once without flooding the logs.
+
+    Never raises — safe to call from bare ``except`` blocks in the hook callbacks.
+    """
+    key = (session_id, detector)
+    with _SP14_SESSION_EVENTS_LOCK:
+        first_time = key not in _SP14_DETECTOR_FAILURE_SEEN
+        if first_time:
+            _SP14_DETECTOR_FAILURE_SEEN.add(key)
+
+    if first_time:
+        logger.warning(
+            "SP-14 %s failed for session %s (fail-open): %s",
+            detector,
+            session_id,
+            exc,
+        )
+    else:
+        logger.debug(
+            "SP-14 %s failed for session %s (repeated, fail-open): %s",
+            detector,
+            session_id,
+            exc,
+        )
+
 
 def _sp14_dispatch_f_code(f_code: str, **kwargs: Any) -> None:
     """Thin dispatch wrapper so tests can patch this without importing handlers.
@@ -407,7 +442,7 @@ def _sp14_detect_on_tool_call(
                 tool_call_id=tool_call_id,
             )
     except Exception as exc:  # noqa: BLE001 — never block the agent loop
-        logger.debug("SP-14 LoopDetector failed for session %s: %s", session_id, exc)
+        _sp14_log_detector_failure("LoopDetector", session_id, exc)
 
     try:
         # F35 — StallDetector (event-driven).
@@ -424,7 +459,7 @@ def _sp14_detect_on_tool_call(
                 tool_call_id=tool_call_id,
             )
     except Exception as exc:  # noqa: BLE001 — never block the agent loop
-        logger.debug("SP-14 StallDetector failed for session %s: %s", session_id, exc)
+        _sp14_log_detector_failure("StallDetector", session_id, exc)
 
     return None
 
@@ -458,10 +493,16 @@ def _sp14_ship_on_session_end(
 
     with _SP14_SESSION_EVENTS_LOCK:
         trajectory = _SP14_SESSION_EVENTS.pop(session_id, [])
+        # Discard dedup-set entries for this session so the set stays bounded
+        # across many sessions (sessions end; the set would grow otherwise).
+        _SP14_DETECTOR_FAILURE_SEEN.discard((session_id, "LoopDetector"))
+        _SP14_DETECTOR_FAILURE_SEEN.discard((session_id, "StallDetector"))
 
-    # Reset stall detector state so completed sessions don't accumulate stale entries.
+    # Reset detector state so completed sessions don't accumulate stale entries.
+    # NOTE: set_task_state(in_progress=False) was removed — it is redundant
+    # because reset() calls _sessions.pop(session_id) which discards the entry
+    # entirely, making any preceding in_progress flag change a no-op.
     try:
-        _SP14_STALL_DETECTOR.set_task_state(session_id=session_id, in_progress=False)
         _SP14_STALL_DETECTOR.reset(session_id=session_id)
         _SP14_LOOP_DETECTOR.reset(session_id=session_id)
     except Exception as exc:  # noqa: BLE001

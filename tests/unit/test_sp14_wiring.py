@@ -1,7 +1,7 @@
 """SP-14: Tests for F34 LoopDetector + F35 StallDetector wiring in post_tool_call,
 and TrajectoryShipper.ship_trajectory call from on_session_end.
 
-Coverage matrix (7 assertions + marker round-trip = 8 tests):
+Coverage matrix (7 assertions + marker round-trip + detector-failure logging = 9 tests):
   1. Looping session trips F34 (positive)
   2. Non-looping session does NOT trip F34 (negative)
   3. Stalled session trips F35 (positive) — via event-driven check() call site
@@ -10,6 +10,8 @@ Coverage matrix (7 assertions + marker round-trip = 8 tests):
   6. Under-budget session NOT vetoed (negative — existing hook pass-through)
   7. Completed session ships trajectory containing a planted unique marker event
      (marker round-trip — real shipper, in-memory fake sanitize+GCS)
+  8. (structural) register adds on_session_end hook
+  9. Broken detector: first failure logs WARNING, subsequent failures log DEBUG, hook never raises
 
 Design notes:
 - LoopDetector + StallDetector are tested via the WIRED durability hook
@@ -28,6 +30,7 @@ Design notes:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -460,3 +463,112 @@ class TestSP14RegisterHooks:
         assert (
             "on_session_end" in hook_names
         ), f"Expected on_session_end in registered hooks: {hook_names}"
+
+
+# ---------------------------------------------------------------------------
+# Detector failure logging: WARNING once, DEBUG thereafter, fail-open (1 test)
+# ---------------------------------------------------------------------------
+
+
+class TestDetectorFailureLogging:
+    """_sp14_detect_on_tool_call: broken detector logs WARNING first, DEBUG thereafter,
+    and never raises (fail-open preserved)."""
+
+    def test_broken_loop_detector_logs_warning_then_debug_never_raises(self, monkeypatch, caplog):
+        """A LoopDetector that raises on every call:
+        - first invocation → WARNING in caplog
+        - second invocation → DEBUG in caplog (not a second WARNING)
+        - the hook itself never raises (fail-open)
+        """
+        import lib.durability as dur
+        from lib.durability.runtime_detectors import LoopDetector, StallDetector
+
+        SESSION = "broken-loop-sess-unique-xyz"
+
+        # Use a fresh StallDetector so the session has no stale state.
+        stall_det = StallDetector(idle_timeout_s=300)
+
+        # Create a LoopDetector whose record_tool_call always raises.
+        broken_loop_det = LoopDetector(threshold=3)
+        monkeypatch.setattr(
+            broken_loop_det,
+            "record_tool_call",
+            MagicMock(side_effect=RuntimeError("injected boom")),
+        )
+
+        monkeypatch.setattr(dur, "_SP14_LOOP_DETECTOR", broken_loop_det, raising=False)
+        monkeypatch.setattr(dur, "_SP14_STALL_DETECTOR", stall_det, raising=False)
+
+        # Ensure the dedup set is clean for this session before we start.
+        with dur._SP14_SESSION_EVENTS_LOCK:
+            dur._SP14_DETECTOR_FAILURE_SEEN.discard((SESSION, "LoopDetector"))
+
+        ctx = _Ctx()
+        with patch("lib.durability._sp14_dispatch_f_code"):
+            dur.register(ctx)
+
+            # ---- First broken call ----
+            with caplog.at_level(logging.DEBUG, logger="lib.durability"):
+                caplog.clear()
+                # Must not raise (fail-open contract).
+                ctx.invoke(
+                    "post_tool_call",
+                    tool_name="Bash",
+                    args={"command": "ls"},
+                    result="ok",
+                    session_id=SESSION,
+                    tool_call_id="call-0",
+                    task_id="t1",
+                    duration_ms=10.0,
+                )
+
+            warning_records = [
+                r
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "LoopDetector" in r.message
+            ]
+            assert len(warning_records) >= 1, (
+                f"Expected at least 1 WARNING for LoopDetector on first failure; "
+                f"got records: {[(r.levelname, r.message) for r in caplog.records]}"
+            )
+
+            # ---- Second broken call (same session) ----
+            with caplog.at_level(logging.DEBUG, logger="lib.durability"):
+                caplog.clear()
+                ctx.invoke(
+                    "post_tool_call",
+                    tool_name="Bash",
+                    args={"command": "ls"},
+                    result="ok",
+                    session_id=SESSION,
+                    tool_call_id="call-1",
+                    task_id="t1",
+                    duration_ms=10.0,
+                )
+
+            # Second failure must NOT emit a new WARNING for LoopDetector.
+            second_warning_records = [
+                r
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "LoopDetector" in r.message
+            ]
+            assert len(second_warning_records) == 0, (
+                f"Expected NO second WARNING for LoopDetector on repeated failure; "
+                f"got: {[(r.levelname, r.message) for r in caplog.records]}"
+            )
+
+            # Second failure MUST emit a DEBUG record for LoopDetector.
+            debug_records = [
+                r
+                for r in caplog.records
+                if r.levelno == logging.DEBUG and "LoopDetector" in r.message
+            ]
+            assert len(debug_records) >= 1, (
+                f"Expected at least 1 DEBUG for LoopDetector on repeated failure; "
+                f"got records: {[(r.levelname, r.message) for r in caplog.records]}"
+            )
+
+        # Cleanup: remove dedup entries so other tests in the same process are
+        # not affected if pytest reuses module-level state.
+        with dur._SP14_SESSION_EVENTS_LOCK:
+            dur._SP14_DETECTOR_FAILURE_SEEN.discard((SESSION, "LoopDetector"))

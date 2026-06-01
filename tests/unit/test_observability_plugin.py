@@ -1058,3 +1058,30 @@ def test_post_api_request_skips_cost_for_unpriced_model(monkeypatch):
 
     cost_hist.record.assert_not_called()
     obs._LLM_MODEL_BY_SESSION.pop("sess-cost-2", None)
+
+
+def test_post_api_request_records_cost_via_captured_model_fallback(monkeypatch):
+    """SP-O1 (C9 fix): when response_model is ABSENT, cost is still recorded using the
+    model captured at pre_llm_call (the J9 session fallback) — no silent cost-data loss
+    for providers that omit the model in the response envelope (e.g. some Vertex paths)."""
+    import lib.observability as obs
+
+    cost_hist = MagicMock()
+    monkeypatch.setattr(obs, "_llm_call_cost_hist", cost_hist)
+    fake_tracer = MagicMock()
+    fake_tracer.start_span.return_value = MagicMock()
+    monkeypatch.setattr(obs, "_tracer", fake_tracer)
+
+    # pre_llm_call captures the model; post_api_request omits response_model entirely.
+    obs._pre_llm_call(session_id="sess-cost-fb", user_message="x", model="gpt-3.5-turbo")
+    obs._post_api_request(
+        session_id="sess-cost-fb",
+        usage={"input_tokens": 1000, "output_tokens": 500},
+        # response_model deliberately omitted -> falls back to the captured model
+    )
+
+    assert cost_hist.record.call_count == 1, "cost must record via the captured-model fallback"
+    value, attrs = cost_hist.record.call_args.args
+    assert value > 0.0, f"fallback cost must be > 0 USD, got {value}"
+    assert attrs.get("gen_ai.response.model") == "gpt-3.5-turbo"
+    obs._LLM_MODEL_BY_SESSION.pop("sess-cost-fb", None)

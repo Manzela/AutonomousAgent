@@ -35,4 +35,8 @@ SOPS_AGE_KEY_FILE="$KEY_FILE" sops --encrypt \
   "$INPUT_PLAINTEXT"
 
 echo "Encrypted $INPUT_PLAINTEXT -> $OUTPUT_ENCRYPTED" >&2
-echo "REMINDER: delete the plaintext via 'rm $INPUT_PLAINTEXT' once you have verified the encrypted file." >&2
+# SP-00b: delete the plaintext source automatically once encryption succeeded.
+# `set -euo pipefail` (top of file) guarantees this line is unreachable if the
+# sops --encrypt above exited non-zero, so plaintext is preserved on failure.
+rm -- "$INPUT_PLAINTEXT"
+echo "Deleted plaintext $INPUT_PLAINTEXT after successful encryption." >&2

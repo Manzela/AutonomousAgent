@@ -1,70 +1,83 @@
 #!/usr/bin/env bash
-# SP-00 acceptance probe — prove the LangGraph spine survives garak's removal.
+# SP-00 acceptance probe — prove the LangGraph spine survived garak's removal.
 #
-# WHY: today langgraph reaches the environment ONLY via garak->langchain->langgraph
-# (PRD §6 SP-00, verified). SP-22 will delete garak. If langgraph is not a DIRECT
-# dependency, that deletion silently removes the spine. This probe re-resolves the
-# project with garak stripped and asserts langgraph is still there.
+# WHY: SP-22 permanently removed garak from pyproject.toml (dev extra). This
+# probe is the POST-removal red-green gate: it asserts (a) garak is ABSENT from
+# pyproject.toml so the removal is not accidentally reverted, and (b) langgraph
+# + langgraph-checkpoint are still present as direct dependencies in the lock —
+# confirming the spine is no longer bound to the garak->langchain->langgraph path.
 #
 # Modes:
-#   default        resolution proof — strip garak, `uv lock`, assert langgraph in
-#                  the garak-free lock. Offline against uv's cache by default.
-#   SP00_IMPORT_PROOF=1   additionally `uv sync --no-dev` + `import langgraph`
-#                  (the faithful PRD assertion; needs network — used in CI).
-#   SP00_UV_FLAGS  override uv flags (default: --offline). CI sets "" for network.
+#   default              Assertion-only mode: verify pyproject + lock offline.
+#   SP00_IMPORT_PROOF=1  Additionally run `import langgraph; import langgraph.checkpoint`
+#                        against the real environment (used in CI with network access).
+#   SP00_UV_FLAGS        Override uv flags (default: --frozen). CI can set "" for
+#                        network mode if a full re-sync is needed.
 #
-# Exit 0 = spine survives garak removal. Non-zero = FAIL (spine still garak-bound).
+# Exit 0 = spine is intact and garak is absent. Non-zero = FAIL.
+#
+# History: before SP-22 this probe STRIPPED garak from a scratch pyproject and
+# re-resolved, asserting the spine survived that hypothetical removal. After SP-22
+# the removal is permanent — so the probe now asserts the real tree has no garak
+# and the lock still carries langgraph as a direct dep.
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-UV_FLAGS="${SP00_UV_FLAGS---offline}"   # note: ---offline => default "--offline"; set SP00_UV_FLAGS="" to disable
-
-SCRATCH="$(mktemp -d)"
-cleanup() { rm -rf "$SCRATCH"; }
-trap cleanup EXIT
-
-cp pyproject.toml "$SCRATCH/pyproject.toml"
-[ -f uv.lock ] && cp uv.lock "$SCRATCH/uv.lock"
-
-# --- strip the garak dependency line from the scratch pyproject -----------------
-python3 - "$SCRATCH/pyproject.toml" <<'PY'
+# --- 1. Assert garak is ABSENT from pyproject.toml --------------------------------
+echo "== checking pyproject.toml has no garak dependency =="
+python3 - <<'PY'
 import re, sys
-path = sys.argv[1]
-src = open(path).read()
-stripped = re.sub(r'^[ \t]*"garak[^"]*",[ \t]*\r?\n', '', src, flags=re.M)
-if stripped == src:
-    sys.exit("FAIL: no garak dependency line found to strip — probe assumption broken")
-open(path, "w").write(stripped)
+src = open("pyproject.toml").read()
+# Match any live (non-comment) garak dep line
+if re.search(r'^[^#\n]*"garak', src, re.M):
+    sys.exit("FAIL: garak dependency line found in pyproject.toml -- SP-22 removal was reverted")
+print("PASS (absent): garak is not present in pyproject.toml.")
 PY
 
-# --- re-resolve WITHOUT garak ----------------------------------------------------
-echo "== re-resolving lock with garak removed (uv lock ${UV_FLAGS}) =="
-( cd "$SCRATCH" && uv lock ${UV_FLAGS} )
-
-# --- resolution proof: langgraph must remain in the garak-free lock --------------
-if ! grep -Eq '^name = "langgraph"$' "$SCRATCH/uv.lock"; then
-    echo "FAIL: langgraph is ABSENT from the garak-free lock — the spine still"
-    echo "      depends on the garak->langchain->langgraph path. Add langgraph as"
-    echo "      a direct dependency in pyproject.toml [project.dependencies]."
+# --- 2. Assert langgraph + langgraph-checkpoint are DIRECT, version-pinned deps ----
+echo "== checking langgraph + langgraph-checkpoint are direct deps in pyproject.toml =="
+if ! grep -Eq '^[[:space:]]*"langgraph(==|>=)[0-9]' pyproject.toml; then
+    echo "FAIL: langgraph is not a direct, version-pinned dep in pyproject.toml."
     exit 1
 fi
-echo "PASS (resolution): langgraph present in the garak-free lock."
+echo "PASS (direct dep): langgraph is a direct, version-pinned dependency."
 
-# also assert the checkpoint package survives, since SP-01 builds on it
-if ! grep -Eq '^name = "langgraph-checkpoint"$' "$SCRATCH/uv.lock"; then
-    echo "FAIL: langgraph-checkpoint ABSENT from the garak-free lock."
+if ! grep -Eq '^[[:space:]]*"langgraph-checkpoint(==|>=)[0-9]' pyproject.toml; then
+    echo "FAIL: langgraph-checkpoint is not a direct, version-pinned dep in pyproject.toml."
     exit 1
 fi
-echo "PASS (resolution): langgraph-checkpoint present in the garak-free lock."
+echo "PASS (direct dep): langgraph-checkpoint is a direct, version-pinned dependency."
 
-# --- import proof (CI / network) -------------------------------------------------
+# --- 3. Assert langgraph + langgraph-checkpoint remain in the lock -----------------
+echo "== checking langgraph + langgraph-checkpoint are in uv.lock =="
+if ! grep -Eq '^name = "langgraph"$' uv.lock; then
+    echo "FAIL: langgraph is ABSENT from the lock -- the spine was broken."
+    exit 1
+fi
+echo "PASS (lock): langgraph present in uv.lock."
+
+if ! grep -Eq '^name = "langgraph-checkpoint"$' uv.lock; then
+    echo "FAIL: langgraph-checkpoint ABSENT from uv.lock."
+    exit 1
+fi
+echo "PASS (lock): langgraph-checkpoint present in uv.lock."
+
+# --- 4. Assert garak is NOT in the lock either ------------------------------------
+echo "== checking garak is absent from uv.lock =="
+if grep -Eq '^name = "garak"$' uv.lock; then
+    echo "FAIL: garak is still present in uv.lock -- lock has not been regenerated after removal."
+    exit 1
+fi
+echo "PASS (lock-absent): garak is not in uv.lock."
+
+# --- 5. Import proof (CI / network) -----------------------------------------------
 if [ "${SP00_IMPORT_PROOF:-0}" = "1" ]; then
-    echo "== import proof: uv sync --no-dev (garak-free base env) + import langgraph =="
-    ( cd "$SCRATCH" \
-        && uv sync --no-dev ${UV_FLAGS} \
-        && uv run --no-dev python -c "import langgraph, langgraph.checkpoint; print('PASS (import): langgraph + langgraph.checkpoint import without garak/dev extra')" )
+    UV_RUN_FLAGS="${SP00_UV_FLAGS---frozen}"
+    echo "== import proof: uv run python -c 'import langgraph; import langgraph.checkpoint' =="
+    uv run ${UV_RUN_FLAGS} python -c \
+        "import langgraph, langgraph.checkpoint; from importlib.metadata import version; print('PASS (import): langgraph', version('langgraph'), '+ langgraph.checkpoint', version('langgraph-checkpoint'), 'both importable post-garak-removal')"
 fi
 
-echo "SP-00 probe: OK — the spine survives garak removal."
+echo "SP-00 probe: OK -- garak absent; spine intact."

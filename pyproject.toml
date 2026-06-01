@@ -63,7 +63,9 @@ dev = [
   "inspect-ai>=0.3.0",
   "deepeval>=1.0.0",
   "pyrit>=0.4.0",
-  "garak>=0.9.0",
+  # garak removed by SP-22 — was a dev-only adversarial-probe tool;
+  # langgraph is now a DIRECT dep (SP-00) so the garak→langchain→langgraph
+  # transitive path is no longer the spine's only route to langgraph.
 ]
 # Phase 2 production memory store — Cloud SQL + pgvector.
 # P-2 work item per docs/research/autonomous-agent-seed-orchestrator/INTEGRATION.md.

@@ -106,6 +106,7 @@ _BUILTIN_ALLOWLIST: frozenset[str] = frozenset(
         # [dev]
         "pytest",
         "pytest-asyncio",
+        "pytest-cov",
         "pytest-mock",
         "ruff",
         "testcontainers",

@@ -1,0 +1,9 @@
+{
+  "line_rate": 0.35,
+  "branch_rate": 0.43,
+  "measured_scope": "pytest tests/unit tests/ci --cov=lib --cov=app --cov-branch",
+  "captured_against": "branch remediation/p1-01-rewrite-tests, deps installed via uv sync --frozen --extra dev --extra gcp --extra a2a",
+  "measured_line_rate": 0.3734,
+  "measured_branch_rate": 0.4545,
+  "note": "Conservative initial floor: measured 0.3734 line / 0.4545 branch with deps installed via `uv sync --frozen --extra dev --extra gcp --extra a2a` (893 passed, 4 skipped). Floor set 0.02-0.03 below measured to absorb CI-vs-local variance. Re-tighten from first real CI run. CODEOWNERS-guarded coverage FLOOR (C6); a PR dropping below this without an approved ## Test Changes block fails test-integrity-gate"
+}

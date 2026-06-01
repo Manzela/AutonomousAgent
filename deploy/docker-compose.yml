@@ -346,13 +346,11 @@ services:
       # once the operator mints + injects the installation token this env var
       # should point at the tmpfs file written by the entrypoint wrapper.
       GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_token
-    secrets:
-      # github_pat: disabled post-revocation (GATED operator step)
-      # Leave the secret block present but commented so compose validation
-      # does not error when the file doesn't exist during the transition.
-      # Uncomment github_app_key and github_token once provisioned.
-      # - github_app_key
-      # - github_token
+    # github_pat disabled post-revocation; `github_app_key` + `github_token` are added to this
+    # array once the GitHub App key is provisioned (GATED operator step). An explicit EMPTY ARRAY
+    # keeps `docker compose config` valid during the transition — a comment-only `secrets:` parses
+    # as YAML null, which Compose rejects ("services.github-mcp.secrets must be a array").
+    secrets: []
     networks: [internal, egress]   # needs api.github.com egress
     # The official ghcr.io/github/github-mcp-server image is distroless —
     # no wget, curl, sh, python. Nothing to exec for a healthcheck. The

@@ -86,11 +86,15 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 # Runtime system tools required by the hermes agent at execution time.
-# NOTE: git, curl, ripgrep, ffmpeg are called by the agent as subprocess tools
-# (code search, file fetches, voice). Once hermes no longer shells out to these,
+# NOTE: git, curl, ripgrep are called by the agent as subprocess tools (code search,
+# file fetches). ffmpeg (a speculative "voice"/media tool) was REMOVED 2026-06-01: it is
+# UNUSED in the codebase (0 functional refs) and its large dependency tree carried
+# CRITICAL/HIGH CVEs that trivy flags as fixable but Debian-stable has not backported, so
+# `apt-get upgrade` cannot clear them. Re-add `ffmpeg` here if the agent gains a real
+# media-processing capability. Once hermes no longer shells out to these,
 # this block can be removed and the base switched to distroless.
 RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
-      git curl ca-certificates ripgrep ffmpeg \
+      git curl ca-certificates ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the pre-built virtualenv from the builder stage.

@@ -1,0 +1,15 @@
+# Trivy ignore manifest — risk-accepted, non-runtime-exploitable CVEs.
+#
+# Both CVEs below are present ONLY in setuptools' VENDORED build tooling
+# (site-packages/setuptools/_vendor/...), which setuptools bundles for its own
+# packaging use. They are NEVER on the running agent's import path. The
+# TOP-LEVEL packages are already patched in deploy/Dockerfile.hermes:
+#   - jaraco.context 6.1.2  (vendored copy: jaraco.context 5.3.0)
+#   - wheel 0.47.0          (vendored copy: wheel 0.45.1)
+# The path-traversal (jaraco.context) and priv-esc (wheel) vectors require the
+# app to call these libraries with attacker-controlled input at runtime, which
+# it never does — they are build-time-only. Accepted by operator (SP-00g/#193,
+# 2026-06-01). Re-evaluate when setuptools bumps its vendored jaraco.context
+# (>=6.1.0) and wheel (>=0.46.2), at which point these lines should be removed.
+CVE-2026-23949
+CVE-2026-24049

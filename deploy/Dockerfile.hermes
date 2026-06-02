@@ -75,6 +75,15 @@ RUN uv pip install --no-cache "psycopg[binary]>=3.1"
 # No-op when GCS_SNAPSHOT_BUCKET is unset.
 RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 
+# CI hermes-api HTTP stub (deploy/scripts/ci_hermes_api.py) deps — fastapi + uvicorn.
+# Declared under pyproject [project.optional-dependencies].a2a (NOT main deps, so the
+# SP-00h license/dep-allowlist gate over pyproject is unaffected). BAKED INTO THE IMAGE
+# here so the CI overlay does NOT pip-install at container start: docker-compose.ci.yml
+# runs hermes-api with read_only:true, where a runtime `pip install` cannot write
+# site-packages and the container exits(1) — the root cause of the nightly's
+# "Stack did not become healthy" + httpx ConnectError cascade (NEW-227-A / OD-2).
+RUN uv pip install --no-cache "fastapi>=0.115" "uvicorn[standard]>=0.30"
+
 # Security: the `python -m venv` seed + setuptools ship build-only tooling (jaraco.context,
 # wheel) with fixable CRITICAL/HIGH CVEs that the trivy image scan flags — CVE-2026-23949
 # (jaraco.context <6.1.0, path traversal) and CVE-2026-24049 (wheel <0.46.2, priv-esc).

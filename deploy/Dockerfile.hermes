@@ -4,18 +4,18 @@
 # Multi-stage build (P2-25):
 #   builder  — installs all Python packages into /app/.venv; carries uv and
 #              build tools that must NOT appear in the final image.
-#   runtime  — lean python:3.11-slim with only runtime system packages; copies
+#   runtime  — lean python:3.13-slim with only runtime system packages; copies
 #              the pre-built virtualenv from builder.
 #
 # Target for a future distroless migration: once hermes no longer shells out to
-# git, curl, ripgrep, and ffmpeg at agent runtime, the runtime stage base can
-# switch to gcr.io/distroless/python3.11-debian12@sha256:... (no apt, no shell).
+# git, curl, ripgrep at agent runtime, the runtime stage base can
+# switch to gcr.io/distroless/python3-debian12@sha256:... (no apt, no shell).
 #
 # Base image pinned by SHA digest for reproducibility + supply-chain safety
 # (see audit/phase1-to-phase2-readiness-2026-05-19/security-audit.md C3).
-# Digest resolved 2026-05-19 against python:3.11-slim on Docker Hub.
-ARG PYTHON_VERSION=3.11
-ARG BASE_IMAGE=python:3.11-slim@sha256:a3ab0b966bc4e91546a033e22093cb840908979487a9fc0e6e38295747e49ac0
+# Digest resolved 2026-06-01 against python:3.13.13-slim on Docker Hub.
+ARG PYTHON_VERSION=3.13
+ARG BASE_IMAGE=python:3.13.13-slim@sha256:aa938a849bcb82dce8f49480f056ab82bf5c1c3ebc294f0430f37b6820e7f286
 
 # ============================================================
 # Stage 1: builder
@@ -81,11 +81,13 @@ RUN uv pip install --no-cache "google-cloud-storage>=2.10"
 # uv installs the normalized hyphenated name but can leave the old DOTTED dist-info behind,
 # so explicitly uninstall first, reinstall the patched versions, then purge any stale <6 /
 # <0.46 dist-info directories. Build-only tooling, unused at agent runtime.
+# NOTE: python3.* glob (not a hardcoded minor version) so this fires correctly on any
+# Python base bump — hardcoding python3.11 caused a silent NO-OP after the 3.13 upgrade.
 RUN uv pip uninstall jaraco.context wheel 2>/dev/null || true; \
     uv pip install --no-cache "jaraco.context>=6.1.0" "wheel>=0.46.2"; \
-    rm -rf /app/.venv/lib/python3.11/site-packages/jaraco.context-5*.dist-info \
-           /app/.venv/lib/python3.11/site-packages/jaraco_context-5*.dist-info \
-           /app/.venv/lib/python3.11/site-packages/wheel-0.4[0-5]*.dist-info 2>/dev/null || true
+    rm -rf /app/.venv/lib/python3.*/site-packages/jaraco.context-5*.dist-info \
+           /app/.venv/lib/python3.*/site-packages/jaraco_context-5*.dist-info \
+           /app/.venv/lib/python3.*/site-packages/wheel-0.4[0-5]*.dist-info 2>/dev/null || true
 
 # ============================================================
 # Stage 2: runtime

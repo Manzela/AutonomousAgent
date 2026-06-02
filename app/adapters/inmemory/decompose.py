@@ -25,13 +25,20 @@ DECOMPOSITION RULE (v1, deterministic):
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from app.core.decompose import SDLC_PHASES, AbstractDecomposer, is_catch_all_glob
 from app.core.graph_state import TaskGraph, TaskNode
 from lib.anchors.task_spec import TaskSpec
 
+# Static mirror of `TaskNode["phase"]`'s Literal — used to type the classifier so a
+# node's `phase` is the Literal, not a bare `str`. If this drifts from TaskNode's
+# Literal, mypy fails at the `"phase": phase` assignment below (self-checking); the
+# runtime `SDLC_PHASES` membership guard in app/core/decompose.py catches it too.
+Phase = Literal["research", "draft", "refine", "verify", "ship"]
+
 # Phase keyword buckets — first matching bucket wins (checked in this order).
-_PHASE_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+_PHASE_KEYWORDS: list[tuple[Phase, tuple[str, ...]]] = [
     (
         "research",
         ("research", "investigate", "document the design", "design doc", "explore", "analyze"),
@@ -102,7 +109,7 @@ class InMemoryDecomposer(AbstractDecomposer):
 
 
 # ── helpers (pure, deterministic) ───────────────────────────────────────────
-def _classify_phase(text: str) -> str:
+def _classify_phase(text: str) -> Phase:
     low = text.lower()
     for phase, kws in _PHASE_KEYWORDS:
         if any(kw in low for kw in kws):

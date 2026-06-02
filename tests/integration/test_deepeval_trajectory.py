@@ -2,6 +2,13 @@
 
 Uses DeepEval to evaluate agent trajectories against a 7-dimension GEval rubric,
 and asserts against Hallucination/Groundedness thresholds.
+
+NOTE on what these assert (C9): under the hermetic CI default (``make_ci_judge()`` →
+``DeterministicDeepEvalJudge``) these are PIPELINE SMOKE tests — they prove the
+GEval/Hallucination eval path constructs, runs, and scores WITHOUT reaching OpenAI; the
+deterministic judge always returns a passing verdict, so they are NOT a real quality gate.
+The REAL semantic quality evaluation runs in staging with ``DEEPEVAL_JUDGE=vertex``
+(``LiteLLMVertexJudge`` — a cross-vendor Gemini judge with live Vertex creds).
 """
 
 from __future__ import annotations

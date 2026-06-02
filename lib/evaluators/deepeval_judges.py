@@ -29,39 +29,67 @@ from __future__ import annotations
 
 import json
 import os
+import typing
 from typing import Any, Optional
 
 from deepeval.models.base_model import DeepEvalBaseLLM
+from pydantic import BaseModel
 
 # The GEval raw-score field is on a 0-10 scale (divided by 10 internally); return the top
 # of the band so a passing judgment clears any sane threshold.
 _GEVAL_PASS_SCORE = 10.0
 
 
+def _fill_field(name: str, ann: Any) -> Any:
+    """Pick a PASSING value for one structured-output field, recursing into the type
+    (Optional/Union, List, Literal, nested pydantic model) so a NEW DeepEval metric schema
+    shape does not crash the deterministic judge (C9 hardening)."""
+    lname = name.lower()
+    origin = typing.get_origin(ann)
+    args = typing.get_args(ann)
+
+    # Optional[X] / Union[...] → fill the first concrete (non-None) member.
+    if origin is typing.Union:
+        non_none = [a for a in args if a is not type(None)]
+        return _fill_field(name, non_none[0]) if non_none else None
+    # List[...] → empty (no verdicts / no contradictions = not-hallucinated, passing).
+    if origin in (list, typing.List):  # noqa: UP006
+        return []
+    # Literal[...] → the first allowed value (e.g. Literal["yes","no"] verdicts).
+    if origin is typing.Literal:
+        return args[0] if args else None
+    # Nested pydantic model → recurse.
+    if isinstance(ann, type) and issubclass(ann, BaseModel):
+        return _fill_schema(ann)
+    # By NAME (deepeval's GEval ReasonScore).
+    if lname == "score":
+        return _GEVAL_PASS_SCORE
+    if lname in ("reason", "reasoning"):
+        return "deterministic CI judge: criteria satisfied"
+    # By TYPE.
+    if ann in (float, int):
+        return 0.0
+    if ann is bool:
+        return False
+    if ann is str:
+        return "n/a"
+    return None
+
+
 def _fill_schema(schema: Any) -> Any:
-    """Deterministically construct a passing instance of a DeepEval structured-output
-    pydantic ``schema`` by inspecting its fields — score→10.0, reason→text, list→[]."""
-    fields = getattr(schema, "model_fields", {})
-    values: dict[str, Any] = {}
-    for name, field in fields.items():
-        ann = str(getattr(field, "annotation", "")).lower()
-        lname = name.lower()
-        if lname == "score":
-            values[name] = _GEVAL_PASS_SCORE
-        elif lname in ("reason", "reasoning"):
-            values[name] = "deterministic CI judge: criteria satisfied"
-        elif "list" in ann or ann.startswith("typing.list") or ann.startswith("list"):
-            values[name] = []  # e.g. Hallucination verdicts: no contradictions
-        elif "bool" in ann:
-            values[name] = False
-        elif "float" in ann or "int" in ann:
-            values[name] = 0.0
-        else:
-            values[name] = "deterministic CI judge"
+    """Deterministically construct a PASSING instance of a DeepEval structured-output
+    pydantic ``schema`` (score→10.0, reason→text, list→[], nested→recurse). Defensive:
+    if a field we couldn't type slips through, drop it and let pydantic defaults fill in."""
+    fields = getattr(schema, "model_fields", None)
+    if fields is None:
+        return None
+    values = {
+        name: _fill_field(name, getattr(field, "annotation", None))
+        for name, field in fields.items()
+    }
     try:
         return schema(**values)
     except Exception:
-        # Drop any field we mis-typed and let pydantic defaults / Optionals fill in.
         return schema(**{k: v for k, v in values.items() if v is not None})
 
 
@@ -106,7 +134,14 @@ class LiteLLMVertexJudge(DeepEvalBaseLLM):
 
             data = trim_and_load_json(content)
         except Exception:
-            data = json.loads(content)
+            try:
+                data = json.loads(content)
+            except json.JSONDecodeError as exc:
+                # Fail with a debuggable message instead of an opaque crash mid-eval.
+                raise ValueError(
+                    f"LiteLLMVertexJudge({self._model}): judge did not return parseable JSON "
+                    f"(first 200 chars): {content[:200]!r}"
+                ) from exc
         return schema(**data)
 
     def generate(self, prompt: str, schema: Optional[Any] = None, *args: Any, **kwargs: Any) -> Any:

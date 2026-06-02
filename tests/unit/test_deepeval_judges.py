@@ -60,3 +60,28 @@ def test_geval_scale_convention_is_ten_not_one():
     from lib.evaluators.deepeval_judges import _GEVAL_PASS_SCORE
 
     assert _GEVAL_PASS_SCORE == 10.0
+
+
+def test_fill_schema_handles_nested_literal_optional_lists():
+    # C9 hardening: the deterministic filler must recurse into nested models / Literal /
+    # Optional / List without crashing, so a NEW deepeval metric schema cannot break CI.
+    from typing import List, Literal, Optional
+
+    from pydantic import BaseModel
+
+    from lib.evaluators.deepeval_judges import _fill_schema
+
+    class _Verdict(BaseModel):
+        verdict: Literal["yes", "no"]
+        note: Optional[str] = None
+
+    class _Outer(BaseModel):
+        score: float
+        reason: str
+        verdicts: List[_Verdict]
+        flag: bool
+
+    out = _fill_schema(_Outer)
+    assert out.score == 10.0
+    assert out.verdicts == []  # empty list → passing (no contradictions)
+    assert isinstance(out.reason, str) and out.flag is False

@@ -111,5 +111,23 @@ app.adapters.inmemory.checkpointer
 app.core.decision_record
 app.core.graph
 app.core.spine_runner
+
+# SP-02 goal→DAG decomposition (TaskGraph validation + TaskSpec→TaskRequest phase bridge).
+# app/core/decompose.py is the AbstractDecomposer seam + the pure SP-02 validators
+# (validate_taskgraph / assert_decomposition_fidelity / is_catch_all_glob / acceptance_indices)
+# + the task_graph_to_requests phase bridge; app/adapters/inmemory/decompose.py is the
+# DETERMINISTIC rule-based InMemoryDecomposer CI runs against (no LLM); app/adapters/gcp/
+# decompose.py:VertexDecomposer is the DEFERRED Vertex/LLM concretion stub (raises
+# NotImplementedError, kept per the CLAUDE.md builder-agent rule). These are genuinely
+# exercised by tests/unit/test_decompose.py (31 red-green oracles) and inherited by SP-05
+# (sandbox manifest = node allowed_paths), SP-06 (scope-root gate over allowed_paths) and
+# SP-11 (ready-node fan-out over the depends_on DAG), but the spine (app/core/graph.py)
+# does NOT call the decomposer yet — clarify/decompose is the deferred SP-01 layer. Listed
+# as legitimately-present-not-yet-wired foundation that must not be deleted (same pattern as
+# the SP-01 spine + FirecrackerSandbox). Pending operator review at PR. REMOVE each line once
+# the spine's decompose node wires it (it becomes genuinely reachable then).
+app.core.decompose
+app.adapters.inmemory.decompose
+app.adapters.gcp.decompose
 # scripts.ci.license_dep_gate  (auto-detected via __main__)
 # scripts.ci.run_acceptance    (auto-detected via __main__)

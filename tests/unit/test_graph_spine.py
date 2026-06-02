@@ -266,3 +266,38 @@ async def test_replan_at_sign_off_marks_fork_old_thread_immutable():
     # old thread state is preserved/immutable
     assert runner.get_state(old).values["thread_id"] == old
     assert runner.get_state(old).values["replan_parent"] == old
+
+
+# ── Task 7: approval-receipt invariant + TIMEOUT->safe-default REJECT ────────
+async def test_crash_after_approve_does_not_reprompt_sign_off():
+    """Approval-receipt invariant: once sign_off is APPROVE'd the graph advances past
+    it (checkpoint persists the decision), so a resume after a crash surfaces the
+    NEXT gate (ship), never sign_off again, and the sign_off decision is durable once."""
+    cp = InMemoryCheckpointer()
+    runner = SpineRunner(cp, capability=_stub_capability())
+    tid = "goal-receipt"
+    r1 = await runner.start(thread_id=tid, goal="g", durability="sync")
+    so = r1["__interrupt__"][0]
+    r2 = await runner.resume(
+        thread_id=tid,
+        interrupt_id=so.id,
+        decision={"verb": "APPROVE", "actor": "op", "reason": "y"},
+        durability="sync",
+    )
+    assert runner.get_state(tid).next == ("ship_gate",)  # advanced, NOT back at sign_off
+    sign_off_iid = r2["sign_off"]["interrupt_id"]
+    assert sum(1 for d in r2["decision_record"] if d["interrupt_id"] == sign_off_iid) == 1
+
+
+async def test_timeout_maps_to_safe_default_reject():
+    runner = SpineRunner(InMemoryCheckpointer(), capability=_stub_capability())
+    tid = "goal-timeout"
+    r1 = await runner.start(thread_id=tid, goal="g")
+    so = r1["__interrupt__"][0]
+    r2 = await runner.resume(
+        thread_id=tid,
+        interrupt_id=so.id,
+        decision={"verb": "TIMEOUT", "actor": "system", "reason": "no response"},
+    )
+    assert runner.get_state(tid).next == ()  # halted (TIMEOUT -> safe-default reject)
+    assert not r2.get("spec_sha")

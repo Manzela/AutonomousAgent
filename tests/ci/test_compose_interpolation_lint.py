@@ -95,6 +95,41 @@ def test_allow_exempts_a_var():
 
 
 # --------------------------------------------------------------------------- #
+# C9 hardening — silent-blank forms a "bare identifier only" check would miss   #
+# --------------------------------------------------------------------------- #
+def test_alternate_modifier_is_flagged():
+    # ${VAR:+x} / ${VAR+x} evaluate to "" when VAR is unset — a silent blank, NOT a default.
+    a = find_bare_interpolations("a: ${VAR:+x}\nb: ${VAR+x}\n")
+    assert [(ln, v) for (ln, v, _raw) in a] == [(1, "VAR"), (2, "VAR")]
+
+
+def test_substitution_form_is_flagged():
+    # ${VAR/a/b} is a bash substitution, not a Compose default — must not be treated safe.
+    findings = find_bare_interpolations("x: ${VAR/foo/bar}\n")
+    assert [v for (_ln, v, _raw) in findings] == ["VAR"]
+
+
+def test_empty_braces_is_flagged():
+    # Malformed ${} has no name and no operator — flag it rather than silently pass.
+    findings = find_bare_interpolations("x: ${}\n")
+    assert len(findings) == 1 and findings[0][2] == "${}"
+
+
+def test_escaped_quote_in_double_string_does_not_unmask_comment():
+    # A backslash-escaped quote inside a double-quoted scalar must NOT be read as closing the
+    # string — otherwise the following '#' looks like a comment and the ${BARE} is missed
+    # (the dangerous false-negative direction). The bare interpolation must still be flagged.
+    findings = find_bare_interpolations('k: "a \\" # still in string ${BARE}"\n')
+    assert [v for (_ln, v, _raw) in findings] == ["BARE"]
+
+
+def test_alternate_modifier_var_name_reported_not_full_content():
+    # The report shows the var NAME (VAR), not the raw operator content (VAR:+x).
+    ((_ln, var, raw),) = find_bare_interpolations("k: ${VAR:+x}\n")
+    assert var == "VAR" and raw == "${VAR:+x}"
+
+
+# --------------------------------------------------------------------------- #
 # stderr matcher — for the --from-stderr / --docker-config paths                #
 # --------------------------------------------------------------------------- #
 def test_extract_unset_vars_quoted_and_unquoted():

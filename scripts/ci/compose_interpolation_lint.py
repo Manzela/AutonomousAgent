@@ -38,8 +38,16 @@ import sys
 
 # ``${...}`` NOT preceded by ``$`` (so ``$${VAR}`` — an escaped literal — is skipped).
 _INTERP_RE = re.compile(r"(?<!\$)\$\{([^}]*)\}")
-# Content that is a *bare* identifier (no ``:- - :? ? :+ +`` operator) — the silent-blank trap.
-_BARE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# An interpolation is SAFE iff its content is a var name immediately followed by a default
+# (``:-`` / ``-``) or loud-fail (``:?`` / ``?``) operator. EVERYTHING ELSE is flagged: a bare
+# ``${VAR}``, an alternate ``${VAR:+x}`` / ``${VAR+x}`` (blanks when unset), a bash-style
+# ``${VAR/a/b}`` (not a Compose-supported form), or a malformed ``${}``. Flagging by the
+# ABSENCE of a safe operator — rather than only matching a bare identifier — closes the
+# silent-blank false-negatives a "bare-identifier-only" check would miss (C9, gemini-2-5-pro).
+# (Nested ``${A:-${B}}`` is not a Compose-supported form and is out of scope.)
+_SAFE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(:-|:\?|-|\?)")
+# The leading var name, for reporting (e.g. ``VAR`` out of ``VAR:+x``).
+_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*")
 # Docker Compose's unset-variable warning, both quoted and unquoted spellings:
 #   The "PY" variable is not set. Defaulting to a blank string.
 #   The PY variable is not set. Defaulting to a blank string.
@@ -49,12 +57,22 @@ _UNSET_RE = re.compile(r'The\s+"?(?P<var>[A-Za-z_][A-Za-z0-9_]*)"?\s+variable is
 def _strip_comment(line: str) -> str:
     """Drop a YAML comment so a ``${VAR}`` mentioned in prose is not flagged. A full-line
     comment becomes ``""``; an inline ``#`` is treated as a comment only when it is outside
-    quotes and preceded by whitespace (YAML's inline-comment rule)."""
+    quotes and preceded by whitespace (YAML's inline-comment rule). A backslash escape inside
+    a double-quoted scalar (``\\"``) is consumed as a pair so an escaped quote does not falsely
+    close the string and unmask a ``#`` (C9: false-negative hardening). YAML single-quotes do
+    not use backslash escaping (``''`` is the escape), so they are toggled as-is."""
     if line.lstrip().startswith("#"):
         return ""
     out: list[str] = []
     in_single = in_double = False
-    for i, c in enumerate(line):
+    i, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if in_double and c == "\\" and i + 1 < n:
+            out.append(c)
+            out.append(line[i + 1])
+            i += 2
+            continue
         if c == "'" and not in_double:
             in_single = not in_single
         elif c == '"' and not in_single:
@@ -62,22 +80,29 @@ def _strip_comment(line: str) -> str:
         elif c == "#" and not in_single and not in_double and (i == 0 or line[i - 1] in " \t"):
             break
         out.append(c)
+        i += 1
     return "".join(out)
 
 
 def find_bare_interpolations(
     text: str, allow: set[str] | None = None
 ) -> list[tuple[int, str, str]]:
-    """Return ``(lineno, var, raw_token)`` for each bare ``${VAR}`` (no default/error
-    modifier, not ``$$``-escaped, not in a comment) in ``text``."""
+    """Return ``(lineno, var, raw_token)`` for each interpolation that can silently blank — any
+    ``${...}`` that is not ``$$``-escaped, not in a comment, and lacks a ``:-``/``-`` default or
+    ``:?``/``?`` loud-fail operator (so a bare ``${VAR}``, an alternate ``${VAR:+x}``, etc.)."""
     allow = allow or set()
     findings: list[tuple[int, str, str]] = []
     for lineno, raw_line in enumerate(text.splitlines(), 1):
         line = _strip_comment(raw_line)
         for m in _INTERP_RE.finditer(line):
             content = m.group(1)
-            if _BARE_RE.match(content) and content not in allow:
-                findings.append((lineno, content, m.group(0)))
+            if _SAFE_RE.match(content):
+                continue
+            name_m = _NAME_RE.match(content)
+            var = name_m.group(0) if name_m else content
+            if var in allow:
+                continue
+            findings.append((lineno, var, m.group(0)))
     return findings
 
 

@@ -63,8 +63,14 @@ services:
       - sh
       - -c
       - |
-        export PYTHONPATH="$(echo /app/.venv/lib/python*/site-packages):${PYTHONPATH:-}"
-        exec python /app/deploy/scripts/ci_hermes_api.py
+        # Use the venv's OWN interpreter (whatever its minor version) so its compiled
+        # extensions match: bare `/app/.venv/bin/python` is absent in this image, and
+        # mixing the SYSTEM python with the venv site-packages fails the native-extension
+        # ABI check (ModuleNotFoundError: pydantic_core._pydantic_core). Pick the
+        # highest python3.X actually present in the venv bin.
+        PY="$(ls /app/.venv/bin/python3* 2>/dev/null | sort -V | tail -1)"
+        echo "ci_hermes_api: using venv interpreter: ${PY:-<none found>}" >&2
+        exec "$PY" /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"

@@ -10,10 +10,13 @@ DOCTRINE (load-bearing — read before editing a node):
   at-least-once. Therefore irreversible external effects live in DISTINCT post-resume
   nodes, never co-located with interrupt().
 
-- The (thread_id, __pregel_task_id, action_kind) LEDGER — NOT the checkpointer — is
-  what makes irreversible external effects EXACTLY-ONCE across a node re-entry
-  (loops / fan-out / crash-mid-effect): reserve-key -> act -> mark-done,
-  write-before-effect; on re-entry a present receipt SKIPS the effect.
+- The (thread_id, __pregel_task_id, action_kind) LEDGER — NOT the checkpointer — dedups
+  irreversible external effects across a node RE-ENTRY whose receipt is already durable
+  (loops / fan-out re-dispatch / re-driven resume): on re-entry a present receipt SKIPS the
+  effect. This is check-then-act within one node, so a crash STRICTLY between act and the
+  node's checkpoint commit is AT-LEAST-ONCE; true exactly-once for that window comes from
+  the external op being idempotent (spec §12: git content-addressing + check-then-act;
+  seal_spec derives a deterministic spec_id so its save is idempotent). See app.core.graph.apply_once.
 
 - node_id / super_step are HUMAN-READABLE LABELS ONLY. They are NEVER part of the
   exactly-once key. The naive (thread_id, node_id, super_step) key COLLIDES under

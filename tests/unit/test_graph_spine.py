@@ -378,3 +378,16 @@ async def test_dod17_workspace_ref_byte_equal_across_crash_resume():
     )
     post = r3["workspace_ref"]["digest"]
     assert pre == digest and post == digest  # byte-equal rehydrate across the crash
+
+
+# ── C9 review fix: deterministic spec_id (idempotent re-seal) ────────────────
+def test_spec_id_is_deterministic_for_idempotent_reseal():
+    """C9 finding 3: seal_spec derives spec_id from (thread_id, __pregel_task_id) so a
+    crash-retry of the node (same stable ptid) overwrites the SAME SpecStore file rather
+    than minting a duplicate spec on each retry."""
+    from app.core.graph import _spec_id_for
+
+    a = _spec_id_for("T", "ptid-1")
+    assert _spec_id_for("T", "ptid-1") == a  # deterministic: same (tid,ptid) -> same id
+    assert _spec_id_for("T", "ptid-2") != a  # distinct ptid -> distinct id
+    assert _spec_id_for("U", "ptid-1") != a  # distinct thread -> distinct id

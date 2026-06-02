@@ -47,21 +47,24 @@ services:
     # ENTRYPOINT is ["hermes"]).
     entrypoint: []
     # Fix NEW-227-A/-C (OD-2): fastapi + uvicorn[standard] live under pyproject
-    # [project.optional-dependencies].a2a (NOT main deps), and Dockerfile.hermes installs
-    # hermes-agent[all] + OTel/psycopg/gcs — they ARE now baked into the builder venv
-    # (#243). Two bugs had to be fixed in sequence:
-    #   (A) the prior code pip-installed them at container start, but read_only:true makes
-    #       the rootfs unwritable, so the runtime pip failed → container exited(1); fixed
-    #       by baking them into the image (#243).
-    #   (B) THIS fix: the command must invoke the VENV python explicitly. Bare `python`
-    #       under `entrypoint: []` did not resolve to /app/.venv/bin/python (the venv
-    #       holding the baked fastapi/uvicorn), so it still raised
-    #       `ModuleNotFoundError: No module named 'fastapi'` and exited(1). Use the
-    #       absolute venv interpreter so the baked deps are always on the import path.
-    # (Still off pyproject main deps, so the SP-00h license/dep gate is unaffected.)
+    # [project.optional-dependencies].a2a (NOT main deps); Dockerfile.hermes bakes them
+    # into the builder venv at /app/.venv/lib/python*/site-packages (#243). The boot then
+    # failed twice on INTERPRETER RESOLUTION, not the deps:
+    #   (A) the original code pip-installed at container start, but read_only:true makes the
+    #       rootfs unwritable → pip failed → container exited(1) (fixed by baking, #243);
+    #   (B) `/app/.venv/bin/python` does NOT exist in this image (dangling/absent venv
+    #       symlink → "stat: no such file or directory"); bare `python` therefore resolves
+    #       to the SYSTEM interpreter, which lacks fastapi (ModuleNotFoundError).
+    # THIS fix uses the system `python` (which DOES run) and points PYTHONPATH at the venv
+    # site-packages (glob-resilient to the base python minor), so the baked deps are
+    # importable without depending on a venv python binary. read_only-safe (no writes).
+    # (Still off pyproject main deps → the SP-00h license/dep gate is unaffected.)
     command:
-      - /app/.venv/bin/python
-      - /app/deploy/scripts/ci_hermes_api.py
+      - sh
+      - -c
+      - |
+        export PYTHONPATH="$(echo /app/.venv/lib/python*/site-packages):${PYTHONPATH:-}"
+        exec python /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"

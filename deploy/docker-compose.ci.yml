@@ -60,13 +60,18 @@ services:
       - sh
       - -c
       - |
-        PY="$(command -v python3 || command -v python)"
-        echo "ci_hermes_api: interpreter=$PY; installing fastapi/uvicorn into /tmp/pydeps" >&2
-        "$PY" -m pip install --quiet --no-warn-script-location --target /tmp/pydeps \
+        # `python3`/`python` are NOT on PATH in this image (dispatch #6: `interpreter=` empty),
+        # but the ENTRYPOINT `hermes` is a working python console script — its shebang names
+        # the real interpreter. Find hermes via PATH (not a hardcoded venv path) and read its
+        # shebang. Unquoted $PY so a `#!/usr/bin/env pythonX` shebang word-splits correctly.
+        PY="$(head -1 "$(command -v hermes)" 2>/dev/null | sed 's/^#!//')"
+        echo "ci_hermes_api: interpreter (from hermes shebang) = ${PY:-<none>}" >&2
+        [ -n "$PY" ] || { echo "no hermes interpreter found" >&2; exit 1; }
+        $PY -m pip install --quiet --no-warn-script-location --target /tmp/pydeps \
           "fastapi>=0.115" "uvicorn[standard]>=0.30" || { echo "pip install failed" >&2; exit 1; }
         # Prepend the deps but KEEP /app (env PYTHONPATH) so ci_hermes_api's `lib.scrubber`
         # import still resolves.
-        PYTHONPATH="/tmp/pydeps:${PYTHONPATH:-}" exec "$PY" /app/deploy/scripts/ci_hermes_api.py
+        PYTHONPATH="/tmp/pydeps:${PYTHONPATH:-}" exec $PY /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"

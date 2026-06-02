@@ -75,8 +75,12 @@ services:
     # and add them to the SOPS recipient list before terraform apply.
     environment:
       PHOENIX_ENABLE_AUTH: "true"
-      PHOENIX_SECRET: "${PHOENIX_SECRET}"
-      PHOENIX_ADMIN_SECRET: "${PHOENIX_ADMIN_SECRET}"
+      # Explicit empty default (matches the base compose's PHOENIX_SECRET convention) so an
+      # unset var does not silently blank with only a Compose WARN (the OD-2 $PY trap). NOTE
+      # for operator: consider hardening to ${PHOENIX_SECRET:?provision phoenix.env.sops} so a
+      # MISSING auth secret fails CLOSED rather than starting Phoenix auth with a blank secret.
+      PHOENIX_SECRET: "${PHOENIX_SECRET:-}"
+      PHOENIX_ADMIN_SECRET: "${PHOENIX_ADMIN_SECRET:-}"
 
   github-mcp:
     logging: *gcplogs

@@ -25,6 +25,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = _REPO_ROOT / "trajectories" / "decision-record.jsonl"
 
 
+def _default_path() -> Path:
+    """Resolve the durable decision-record path. SPINE_DECISION_RECORD_PATH overrides
+    (lets tests stay hermetic instead of polluting the repo's trajectories/ dir, and
+    lets ops relocate the trail) — mirrors the judge_events config-driven path."""
+    env = os.environ.get("SPINE_DECISION_RECORD_PATH")
+    return Path(env) if env else DEFAULT_PATH
+
+
 def _append_line(path: Path, line: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
@@ -50,7 +58,7 @@ def append_decision(
     Fail-open: returns the written path, or None on any failure / when disabled."""
     if enabled is False:
         return None
-    target = Path(path) if path is not None else DEFAULT_PATH
+    target = Path(path) if path is not None else _default_path()
     try:
         record = {
             "schema_version": SCHEMA_VERSION,

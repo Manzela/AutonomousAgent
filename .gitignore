@@ -26,7 +26,11 @@ logs/
 trajectories/queue/
 trajectories/judge-events.jsonl
 trajectories/judge-events.jsonl.*
+trajectories/decision-record.jsonl
+trajectories/decision-record.jsonl.*
 .cache/
+.coverage
+.coverage.*
 
 # OS
 .DS_Store

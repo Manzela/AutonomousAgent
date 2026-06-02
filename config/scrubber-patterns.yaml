@@ -56,6 +56,13 @@ patterns:
   # path already redacts these (Day 9 PHI set, tested); the MAIN scrubber (used by the spine
   # checkpoint / logs) did NOT, leaving an email/SSN/phone gap on the persisted-state path.
   # Keep these two configs in sync (see config/a2a/scrubber-patterns.yaml).
+  #
+  # CONSCIOUS TRADE-OFF (C9 review): on this broad surface the SSN/phone shapes can OVER-redact
+  # a `ddd-dd-dddd` / phone-shaped numeric ID. Over-redaction is the FAIL-SAFE direction for a
+  # secret scrubber (cf. high_entropy_hex above, kept despite FP risk) — redacting a benign ID
+  # beats leaking PII; the known-FP behavior is pinned in tests/unit/test_scrubber_pii_patterns.py.
+  # SCOPE = parity with the proven A2A set; broader PII (international +CC phones, no-separator
+  # numbers, space-separated SSN) is a DEFERRED follow-up (documented, not silently dropped).
   - name: us_ssn
     regex: '\b\d{3}-\d{2}-\d{4}\b'
     replacement: '[REDACTED:ssn]'

@@ -50,3 +50,23 @@ def test_main_scrubber_parity_with_a2a_phi():
     blob = scrub_string("user@example.com 123-45-6789 (555) 123-4567")
     for leaked in ["user@example.com", "123-45-6789", "555"]:
         assert leaked not in blob, f"{leaked!r} survived"
+
+
+def test_known_false_positives_are_conservatively_redacted():
+    """CONSCIOUS TRADE-OFF (C9): on the broad main surface the SSN/phone shapes over-redact
+    phone/ID-shaped numbers. Over-redaction is the FAIL-SAFE direction for a secret scrubber
+    (cf. high_entropy_hex, kept despite FP risk) — better to redact a benign ID than leak PII.
+    These cases pin what we KNOWINGLY scrub so the trade-off is explicit, not accidental."""
+    assert "800-555-1212" not in scrub_string(
+        "TEMP-ID 800-555-1212"
+    )  # phone-shaped id (accepted FP)
+    assert "202-24-1337" not in scrub_string("ref 202-24-1337")  # ddd-dd-dddd code (accepted FP)
+
+
+def test_false_negative_scope_is_a2a_parity():
+    """The slice scope is parity with the proven A2A PHI set; broader PII is DEFERRED, not
+    silently dropped. This pins the known limitation so the gap is explicit and reviewable.
+    (No-separator `8005551212` is NOT yet redacted — a follow-up would add it.)"""
+    assert (
+        scrub_string("8005551212") == "8005551212"
+    ), "no-separator phone is a documented FN (deferred)"

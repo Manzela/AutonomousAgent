@@ -231,6 +231,28 @@ class ScrubFilter(logging.Filter):
                         scrub_string(a, source="logging.filter") if isinstance(a, str) else a
                         for a in record.args
                     )
+            # Scrub exception/traceback text so GcpJsonFormatter (and any other
+            # formatter that calls formatException) emits redacted tracebacks.
+            # exc_text is the cached formatted traceback; we pre-populate it with
+            # the scrubbed version so formatters never call formatException on the
+            # raw exc_info again.  If exc_text is already set (cached by a prior
+            # handler) we scrub in place.  Fail-open: exceptions here are swallowed
+            # by the outer try/except so the log record always passes through.
+            if record.exc_info or record.exc_text:
+                # Materialise the traceback string from exc_info if not yet cached.
+                if record.exc_text is None and record.exc_info:
+                    import traceback as _tb
+
+                    record.exc_text = _tb.format_exception(*record.exc_info)[-1]  # type: ignore[arg-type]
+                    # format_exception returns a list; join for multi-line tracebacks.
+                    record.exc_text = "".join(
+                        _tb.format_exception(*record.exc_info)  # type: ignore[arg-type]
+                    )
+                if isinstance(record.exc_text, str):
+                    record.exc_text = scrub_string(record.exc_text, source="logging.filter")
+                # Clear exc_info so formatters use the already-scrubbed exc_text
+                # rather than re-formatting from the raw exception objects.
+                record.exc_info = None
         except Exception:  # noqa: BLE001 — fail-open
             pass
         return True

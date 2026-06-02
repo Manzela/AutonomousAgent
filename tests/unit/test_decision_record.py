@@ -39,6 +39,15 @@ def test_append_is_fail_open_on_bad_path():
     assert append_decision(_decision("APPROVE", "i"), path="/proc/nonexistent/dr.jsonl") is None
 
 
+def test_default_path_respects_env_override(tmp_path, monkeypatch):
+    """SPINE_DECISION_RECORD_PATH redirects the default path (test hermeticity + ops relocation)."""
+    target = tmp_path / "dr.jsonl"
+    monkeypatch.setenv("SPINE_DECISION_RECORD_PATH", str(target))
+    p = append_decision(_decision("APPROVE", "i1"))  # no explicit path -> resolves the env default
+    assert p == target and target.exists()
+    assert json.loads(target.read_text().splitlines()[0])["interrupt_id"] == "i1"
+
+
 def test_disabled_is_a_noop(tmp_path):
     p = tmp_path / "dr.jsonl"
     assert append_decision(_decision("APPROVE", "i"), path=p, enabled=False) is None

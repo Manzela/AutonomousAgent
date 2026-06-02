@@ -15,10 +15,20 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
+import pytest
+
 from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
 from app.core import graph_state as gs
 from app.core.schemas import AgentCapability, ExecutionResult, TaskStatus
 from app.core.spine_runner import SpineRunner
+
+
+@pytest.fixture(autouse=True)
+def _isolate_decision_record(tmp_path, monkeypatch):
+    """Keep these tests hermetic: the spine's nodes call append_decision() with the
+    default path, which would otherwise write the durable trail into the real repo
+    trajectories/ dir. Redirect it to a per-test tmp file."""
+    monkeypatch.setenv("SPINE_DECISION_RECORD_PATH", str(tmp_path / "decision-record.jsonl"))
 
 
 def _stub_capability(status=TaskStatus.COMPLETED):

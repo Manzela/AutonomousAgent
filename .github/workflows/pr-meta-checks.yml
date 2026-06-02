@@ -60,6 +60,8 @@ jobs:
         run: printf -- '%s' "$PR_BODY" > pr_body.md
 
       - name: Emit authoritative test-truth (C7, advisory until SP-00c)
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           TT="$(python3 scripts/ci/pr_meta_checks.py --pr-body pr_body.md --junitxml junit-ci.xml --emit-test-truth)"
           {
@@ -68,5 +70,7 @@ jobs:
             echo "_Executor-pasted \`## Test Truth\` is advisory; the CI junitxml is source of truth._"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Evidence-present gate (C1) — HARD
+      - name: Evidence-present gate (C1) — HARD (bot PRs exempt)
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: python3 scripts/ci/pr_meta_checks.py --pr-body pr_body.md --junitxml junit-ci.xml --check evidence

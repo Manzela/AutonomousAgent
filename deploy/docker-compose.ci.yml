@@ -43,20 +43,24 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.hermes
     image: autonomousagent/hermes:0.1.0
-    # Override the image ENTRYPOINT so `command:` runs as plain python.
+    # Override the image ENTRYPOINT so `command:` runs the stub directly (the image
+    # ENTRYPOINT is ["hermes"]).
     entrypoint: []
-    # Fix NEW-227-A (corrected, OD-2): fastapi + uvicorn[standard] are declared under
-    # [project.optional-dependencies].a2a (NOT main deps), and Dockerfile.hermes
-    # installs hermes-agent[all] + OTel/psycopg/gcs — so they were absent from the
-    # image venv. The PRIOR fix pip-installed them at container start, but this service
-    # runs `read_only: true` (rootfs read-only; only /tmp + the scripts override are
-    # writable), so the runtime `pip install` could not write site-packages and the
-    # container exited(1) — the root cause of the nightly "Stack did not become healthy"
-    # + httpx ConnectError cascade. They are now BAKED INTO the image (Dockerfile.hermes,
-    # CI hermes-api stub deps block) — still off pyproject main deps, so the SP-00h gate
-    # is unaffected — and the command just runs the stub.
+    # Fix NEW-227-A/-C (OD-2): fastapi + uvicorn[standard] live under pyproject
+    # [project.optional-dependencies].a2a (NOT main deps), and Dockerfile.hermes installs
+    # hermes-agent[all] + OTel/psycopg/gcs — they ARE now baked into the builder venv
+    # (#243). Two bugs had to be fixed in sequence:
+    #   (A) the prior code pip-installed them at container start, but read_only:true makes
+    #       the rootfs unwritable, so the runtime pip failed → container exited(1); fixed
+    #       by baking them into the image (#243).
+    #   (B) THIS fix: the command must invoke the VENV python explicitly. Bare `python`
+    #       under `entrypoint: []` did not resolve to /app/.venv/bin/python (the venv
+    #       holding the baked fastapi/uvicorn), so it still raised
+    #       `ModuleNotFoundError: No module named 'fastapi'` and exited(1). Use the
+    #       absolute venv interpreter so the baked deps are always on the import path.
+    # (Still off pyproject main deps, so the SP-00h license/dep gate is unaffected.)
     command:
-      - python
+      - /app/.venv/bin/python
       - /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:

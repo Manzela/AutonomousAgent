@@ -208,6 +208,19 @@ async def test_missing_sandbox_cmd_fails_cleanly():
     assert sb.calls == [], "must not invoke the sandbox with an invalid cmd"
 
 
+async def test_sandbox_run_exception_maps_failed():
+    """A sandbox whose run() raises (a broken impl) yields FAILED, not a crash — the
+    except branch the C9 review hardened to logger.exception()."""
+
+    class _RaisingSandbox(AbstractSandbox):
+        async def run(self, *, cmd, **kw) -> SandboxResult:
+            raise RuntimeError("sandbox backend exploded")
+
+    res = await orchestrate(_req(_PRINT_PID), _cap(), sandbox=_RaisingSandbox())
+    assert res.status == TaskStatus.FAILED
+    assert "sandbox_exec_error" in (res.error or "")
+
+
 # ── 8. spine reachability — the execute NODE drives the sandbox ──────────────
 async def test_spine_execute_node_runs_in_sandbox():
     sb = _RecordingSandbox()

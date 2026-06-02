@@ -432,11 +432,13 @@ async def _execute_sandboxed(
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — surface any sandbox failure as a task failure
-        logger.error(
-            "sandbox exec error: task_id=%s sandbox=%s error=%r",
+        # logger.exception (not .error) preserves the traceback so an internal sandbox
+        # bug (e.g. a broken AbstractSandbox impl) is debuggable; exc_info is scrubbed
+        # on the log path (lib/scrubber.py). C9 (gemini-2-5-pro) review.
+        logger.exception(
+            "sandbox exec error: task_id=%s sandbox=%s",
             request.task_id,
             sandbox.__class__.__name__,
-            exc,
         )
         return ExecutionResult(
             task_id=request.task_id,

@@ -73,9 +73,15 @@ SPOOF-RESISTANCE LIMITATION (documented, not solved):
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from typing import NamedTuple
+
+# Default location of the CODEOWNERS-controlled reviewer allowlist (corroboration source).
+# Relative to repo root; the workflow passes --reviewer-allowlist explicitly, but this
+# constant lets the gate self-locate the committed file when run from repo_root.
+DEFAULT_REVIEWER_ALLOWLIST_PATH = "config/c9-reviewer-allowlist.txt"
 
 # ---------------------------------------------------------------------------
 # Model normalisation map
@@ -325,6 +331,49 @@ def extract_implementer_models(commits_text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Reviewer allowlist (CI-stamped corroboration source — spoof-resistance hardening)
+# ---------------------------------------------------------------------------
+
+
+def load_reviewer_allowlist(path: str | None) -> set[str] | None:
+    """Load the CODEOWNERS-controlled reviewer-model allowlist from *path*.
+
+    The allowlist is the CI-stamped corroboration source for the self-declared
+    `Reviewer model:` line: on a hard-gated PR the declared reviewer must be one of
+    the governance-approved reviewer models listed in this committed, CODEOWNERS-guarded
+    file.  This narrows the spoof surface from arbitrary free text to a 4-eyes-controlled
+    set of values.
+
+    Format: one entry per line (canonical key OR a display name that normalises via
+    MODEL_NORM); `#` starts a comment; blank lines ignored.  Each parsed entry is run
+    through ``normalise_model`` so display-name forms are accepted.
+
+    Returns:
+        A set of canonical model-keys, OR ``None`` when *path* is falsy / missing /
+        unreadable.  ``None`` means corroboration is OFF (back-compat: the gate behaves
+        exactly as it did before this hardening — used by the C-04 acceptance harness,
+        which constructs PRs directly via ``evaluate`` without an allowlist).
+    """
+    if not path or not os.path.isfile(path):
+        return None
+    allow: set[str] = set()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.split("#", 1)[0].strip()
+                if not line:
+                    continue
+                key = normalise_model(line)
+                # Keep the literal too, in case a future key is not yet in MODEL_NORM;
+                # the canonical key (when resolvable) is what evaluate() compares against.
+                if key:
+                    allow.add(key)
+    except OSError:
+        return None
+    return allow or None
+
+
+# ---------------------------------------------------------------------------
 # Priority detection
 # ---------------------------------------------------------------------------
 
@@ -356,6 +405,9 @@ SENSITIVE_PATH_PREFIXES: tuple[str, ...] = (
     "app/core/trust",
     "CLAUDE.md",
     "config/dead_code_entrypoints.txt",
+    # The reviewer allowlist is itself a governance-integrity surface: any change to
+    # the corroboration source must be cross-model reviewed (fail-closed self-guard).
+    "config/c9-reviewer-allowlist.txt",
 )
 
 
@@ -408,6 +460,7 @@ def evaluate(
     commits_text: str,
     labels: list[str],
     changed_files: list[str] | None = None,
+    reviewer_allowlist: set[str] | None = None,
 ) -> GateResult:
     """Evaluate the C9 reviewer-model-class rule.
 
@@ -419,6 +472,13 @@ def evaluate(
         changed_files: List of file paths changed in this PR (e.g. from
                        `git diff --name-only origin/<base>...HEAD`).
                        Used for the path-based fail-closed trigger.
+        reviewer_allowlist: Optional set of canonical reviewer model-keys permitted by the
+                       CODEOWNERS-controlled allowlist (see ``load_reviewer_allowlist``).
+                       When provided (non-None), the self-declared `Reviewer model:` value
+                       is CORROBORATED against it: a recognised-but-off-allowlist reviewer
+                       hard-fails a P0/P1 PR.  This narrows the spoof surface from arbitrary
+                       free text to a 4-eyes-controlled set.  When None (the C-04 acceptance
+                       default), corroboration is OFF and behavior is unchanged (back-compat).
 
     Returns:
         GateResult with ok=True iff all checks pass.
@@ -462,6 +522,20 @@ def evaluate(
                 f"Use a genuinely independent reviewer model. "
                 f"Implementer model(s): {implementer_keys}"
             )
+
+    # 4. CI-STAMPED CORROBORATION (spoof-resistance hardening, P1-4):
+    #    When a CODEOWNERS-controlled allowlist is supplied, the self-declared reviewer
+    #    must be one of the governance-approved reviewer models.  A recognised-but-
+    #    off-allowlist value is a documented spoof vector (an author typing an arbitrary
+    #    "cross-vendor" string that no approved reviewer actually corresponds to) and is
+    #    rejected.  When reviewer_allowlist is None, this layer is OFF (back-compat).
+    if reviewer_allowlist is not None and reviewer_key and reviewer_key not in reviewer_allowlist:
+        failures.append(
+            f"REVIEWER NOT CORROBORATED: declared reviewer model '{reviewer_key}' is not in the "
+            f"CODEOWNERS-controlled reviewer allowlist (config/c9-reviewer-allowlist.txt). "
+            f"The `Reviewer model:` line is self-declared; it must match a governance-approved "
+            f"reviewer model to be trusted. Approved: {sorted(reviewer_allowlist)}"
+        )
 
     summary_parts = []
     if reviewer_key:
@@ -520,6 +594,17 @@ def main(argv: list[str]) -> int:
             "Used for the path-based fail-closed trigger on sensitive/governance-critical paths."
         ),
     )
+    ap.add_argument(
+        "--reviewer-allowlist",
+        default=DEFAULT_REVIEWER_ALLOWLIST_PATH,
+        help=(
+            "path to the CODEOWNERS-controlled reviewer-model allowlist used to corroborate "
+            "the self-declared `Reviewer model:` line "
+            f"(default: {DEFAULT_REVIEWER_ALLOWLIST_PATH}). "
+            "A recognised-but-off-allowlist reviewer hard-fails a P0/P1 PR. Pass '' or a "
+            "missing path to disable corroboration (legacy behavior)."
+        ),
+    )
     args = ap.parse_args(argv)
 
     try:
@@ -546,10 +631,15 @@ def main(argv: list[str]) -> int:
             return 1
 
     labels = [lb.strip() for lb in args.labels.split(",") if lb.strip()]
-    result = evaluate(pr_body, commits_text, labels, changed_files)
+    reviewer_allowlist = load_reviewer_allowlist(args.reviewer_allowlist)
+    result = evaluate(pr_body, commits_text, labels, changed_files, reviewer_allowlist)
 
     scope_tag = "advisory" if result.advisory_only else "hard-gate"
     print(f"== c9-reviewer-class-gate [{scope_tag}] ==")
+    if reviewer_allowlist is not None:
+        print(f"[info] reviewer corroboration ON — allowlist: {sorted(reviewer_allowlist)}")
+    else:
+        print("[info] reviewer corroboration OFF — no allowlist loaded")
 
     for w in result.warnings:
         print(f"[WARN] {w}")

@@ -26,6 +26,9 @@ summarises PASS / FAIL / ADVISORY:
  Same-model, no label, sensitive path → hard gate FAIL      | FAIL  (hardening FIX 1b)
  Same-model, no label, trivial path only → advisory PASS    | PASS  (hardening FIX 1b)
  No-space Co-Authored-By: trailer → caught                  | FAIL  (hardening FIX 2)
+ Declared reviewer NOT in CI-stamped allowlist (P0)         | FAIL  (hardening FIX 3 — spoof)
+ Declared reviewer IS in CI-stamped allowlist (P0)          | PASS  (hardening FIX 3)
+ No allowlist supplied → corroboration off (C-04 default)   | PASS  (hardening FIX 3 — back-compat)
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from reviewer_class_gate import (
     extract_implementer_models,
     extract_reviewer_model,
     is_p0_or_p1,
+    load_reviewer_allowlist,
     normalise_model,
 )
 
@@ -526,3 +530,92 @@ class TestNoSpaceCoAuthoredBy:
         commits = "feat: work\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
         models = extract_implementer_models(commits)
         assert "claude-opus-4-8" in models
+
+
+# ---------------------------------------------------------------------------
+# FIX 3 — CI-stamped reviewer allowlist (spoof-resistance hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewerAllowlistCorroboration:
+    """The declared `Reviewer model:` value is corroborated against a CODEOWNERS-controlled,
+    committed allowlist of permitted reviewer model-keys (`config/c9-reviewer-allowlist.txt`).
+
+    This narrows the spoof surface: an author can no longer hard-gate-PASS by typing an
+    arbitrary 'cross-vendor' string — the declared reviewer must be a governance-approved
+    reviewer model.  When no allowlist is supplied (the C-04 acceptance default), the
+    corroboration layer is OFF and behavior is identical to before (back-compat).
+    """
+
+    def test_load_reviewer_allowlist_parses_file(self, tmp_path):
+        """load_reviewer_allowlist reads keys, ignores comments/blanks, normalises entries."""
+        f = tmp_path / "allowlist.txt"
+        f.write_text(
+            "# C9 reviewer allowlist — CODEOWNERS-guarded\n"
+            "claude-opus-4-8\n"
+            "\n"
+            "Gemini 3.1 Pro\n"  # display-name form must normalise to the key
+            "   # trailing comment\n"
+        )
+        allow = load_reviewer_allowlist(str(f))
+        assert "claude-opus-4-8" in allow
+        assert "gemini-3-1-pro" in allow  # normalised from display name
+        # comment lines and blanks excluded
+        assert all(not k.startswith("#") for k in allow)
+
+    def test_load_reviewer_allowlist_missing_file_returns_none(self):
+        """A missing/absent allowlist path returns None → corroboration OFF (back-compat)."""
+        assert load_reviewer_allowlist("/nonexistent/path/allowlist.txt") is None
+        assert load_reviewer_allowlist("") is None
+        assert load_reviewer_allowlist(None) is None
+
+    def test_declared_reviewer_not_in_allowlist_hard_fails(self):
+        """P0 PR: declared reviewer absent from the CI-stamped allowlist → HARD FAIL (spoof)."""
+        # gpt-4o is a real, normalisable model but NOT on this allowlist
+        body = _body(reviewer="gpt-4o")
+        commits = _commits("Claude Sonnet 4.6")
+        allow = {"claude-opus-4-8", "gemini-3-1-pro"}
+        result = evaluate(body, commits, P0_LABEL, reviewer_allowlist=allow)
+        assert result.ok is False
+        assert result.advisory_only is False
+        assert any("allowlist" in f.lower() or "corroborat" in f.lower() for f in result.failures)
+
+    def test_declared_reviewer_in_allowlist_passes(self):
+        """P0 PR: declared reviewer IS on the allowlist + different model → PASS."""
+        body = _body(reviewer="claude-opus-4-8")
+        commits = _commits("Claude Sonnet 4.6")
+        allow = {"claude-opus-4-8", "gemini-3-1-pro"}
+        result = evaluate(body, commits, P0_LABEL, reviewer_allowlist=allow)
+        assert result.ok is True
+        assert result.failures == []
+
+    def test_no_allowlist_supplied_corroboration_off(self):
+        """No allowlist (None) → corroboration OFF; identical to legacy C-04 behavior.
+
+        gpt-4o is NOT on any allowlist, but with corroboration off it must still PASS
+        (it is a recognised, independent model vs the Sonnet implementer).
+        """
+        body = _body(reviewer="gpt-4o")
+        commits = _commits("Claude Sonnet 4.6")
+        result = evaluate(body, commits, P0_LABEL)  # no reviewer_allowlist kwarg
+        assert result.ok is True
+
+    def test_allowlist_corroboration_advisory_on_non_p01(self):
+        """Non-P0/P1: off-allowlist reviewer → advisory only (warnings), gate exits 0."""
+        body = _body(reviewer="gpt-4o")
+        commits = _commits("Claude Sonnet 4.6")
+        allow = {"claude-opus-4-8", "gemini-3-1-pro"}
+        result = evaluate(body, commits, NO_LABELS, reviewer_allowlist=allow)
+        assert result.ok is True
+        assert result.advisory_only is True
+
+    def test_committed_allowlist_file_is_loadable_and_covers_c04_models(self):
+        """The committed config/c9-reviewer-allowlist.txt loads and includes the two
+        reviewer models exercised by the C-04 acceptance file (opus-4-8 + gemini-3-1-pro),
+        so enabling corroboration in CI does NOT regress C-04's green cases."""
+        repo_root = os.path.join(os.path.dirname(__file__), "..", "..")
+        path = os.path.join(repo_root, "config", "c9-reviewer-allowlist.txt")
+        allow = load_reviewer_allowlist(path)
+        assert allow is not None
+        assert "claude-opus-4-8" in allow
+        assert "gemini-3-1-pro" in allow

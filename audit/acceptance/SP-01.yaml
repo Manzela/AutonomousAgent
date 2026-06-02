@@ -1,0 +1,147 @@
+# Acceptance — SP-01 · LangGraph spine walking-skeleton (durable interrupt/resume + exactly-once ledger)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Scope (spec §2): the 6-node interrupt-split skeleton + FULL SpineState schema +
+# AbstractCheckpointer provider + exactly-once ledger + approval-receipt invariant +
+# append-only decision-record. Later layers (clarify/decompose, fan_out, eval_gate,
+# gated_action_gate, SP-27 monitor, AsyncPostgresSaver, /panic) are designed-for, not
+# built — each with a trigger in spec §2.
+#
+# Exactly-once key is (thread_id, __pregel_task_id, action_kind): the spec's literal
+# "task_id" in §4/§6/§11 is superseded by §4's Correlation-key paragraph (it collides
+# under Send). DoD-4/DoD-17 are satisfied at the schema+reducer level (full SP-17
+# channel-bus normalization + SP-R7 GCS snapshotter stay as their own downstream items).
+
+task: SP-01
+title: "LangGraph spine walking-skeleton — durable interrupt/resume + exactly-once ledger"
+driver: P
+phase: gate-1
+run_from: repo_root
+
+assertions:
+
+  - id: sp01-files-exist
+    description: >
+      The skeleton modules exist: graph.py, graph_state.py, checkpointer ABC,
+      inmemory checkpointer adapter, decision_record, spine_runner.
+    cmd: |
+      for f in app/core/graph.py app/core/graph_state.py app/core/checkpointer.py \
+               app/adapters/inmemory/checkpointer.py app/core/decision_record.py \
+               app/core/spine_runner.py; do
+        test -f "$f" || { echo "FAIL: $f absent"; exit 1; }
+      done
+      echo "OK: all SP-01 skeleton modules present"
+    expect_exit: 0
+
+  - id: sp01-schema-and-key-choice
+    description: >
+      Full SpineState schema + reducers load; the naive (thread_id,node_id,super_step)
+      ledger key COLLIDES under simulated Send fan-out while the content key
+      (thread_id,__pregel_task_id,action_kind) stays distinct (red-green on the key);
+      SP-R1 no-callable + scrub guards hold.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_graph_state.py -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-checkpointer-provider
+    description: >
+      AbstractCheckpointer ABC cannot instantiate; InMemoryCheckpointer.build_saver()
+      yields a langgraph BaseCheckpointSaver (a stable instance so a fresh compile()
+      resumes the prior checkpoint); durability_mode == async (CI).
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_checkpointer.py -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-decision-record-append-only
+    description: >
+      Append-only decision-record JSONL keyed by interrupt_id; fail-open; disabled is a
+      no-op; concurrent appends produce no torn lines.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decision_record.py -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-skeleton-two-interrupts
+    description: >
+      goal_intake -> sign_off[interrupt] -> seal_spec -> execute(wraps orchestrator.execute)
+      -> ship_gate[interrupt] -> ship_effect -> END; two interrupts surface WITH distinct ids;
+      checkpoint persists+restores; nothing builds before sign-off APPROVE; the decision
+      record is keyed by the real Interrupt.id.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        "tests/unit/test_graph_spine.py::test_skeleton_happy_path_two_interrupts_seal_execute_ship" \
+        -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-r1-scrub-before-persist
+    description: >
+      A secret seeded in the operator goal is scrubbed (lib/scrubber.py) before it enters
+      the checkpoint — it does not appear in the persisted state; scrubbed flag is True.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        "tests/unit/test_graph_spine.py::test_secret_in_goal_absent_from_persisted_checkpoint" \
+        -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-dod1-exactly-once
+    description: >
+      DoD-1: the apply_once ledger guard (keyed thread_id,__pregel_task_id,action_kind) is
+      load-bearing on re-entry (negative control proves the guard — not langgraph — dedups);
+      and the ship effect is witnessed exactly once across a crash+resume (fresh runner over
+      the same checkpointer) under sync durability.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        "tests/unit/test_graph_spine.py::test_apply_once_guard_is_load_bearing_on_reentry" \
+        "tests/unit/test_graph_spine.py::test_ship_effect_exactly_once_under_crash_resume" \
+        -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-side-effect-before-interrupt-red
+    description: >
+      Non-vacuous: a REAL external effect placed BEFORE interrupt() in a node body
+      double-acts on resume (==2) — the at-least-once anti-pattern the post-resume
+      node-split + ledger guard prevent. (State-channel writes are rolled back by langgraph,
+      which is exactly why the proof uses an external observable.)
+    cmd: |
+      uv run --extra dev python -m pytest \
+        "tests/unit/test_graph_spine.py::test_external_effect_before_interrupt_double_acts_RED" \
+        -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-reject-and-replan
+    description: >
+      REJECT halts with nothing built (no seal, no ship receipt), audited. REPLAN marks the
+      fork (replan_parent set) and leaves the old thread + unsealed spec immutable; the
+      actual continue-as-new child-thread spawn is the deferred REPLAN layer.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_graph_spine.py \
+        -k "reject or replan" -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-approval-receipt-and-timeout
+    description: >
+      Crash-after-approve does not re-prompt sign_off (the checkpoint advances past it;
+      decision durable once); TIMEOUT maps to safe-default REJECT for the irreversible gates.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_graph_spine.py \
+        -k "reprompt or timeout" -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: sp01-dod4-dod17
+    description: >
+      DoD-4 (proven primitive): pre-normalized SteeringEvents dedup on (channel,origin_id),
+      survive the resume boundary at-most-once, and arbitrate() picks REJECT over APPROVE
+      (full SP-17 bus normalization + arbitrate-as-routing-signal deferred). DoD-17:
+      workspace_ref digest is byte-equal across a crash+resume (the second resume-state piece).
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_graph_spine.py \
+        -k "dod4 or dod17" -q -p no:cacheprovider
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    SP-01 walking-skeleton red-greens (32 unit tests): full SpineState schema + ledger
+    key-choice collision, checkpointer provider ABC, decision-record JSONL, 2-interrupt
+    skeleton wrapping orchestrator.execute, SP-R1 scrub-before-persist, DoD-1 exactly-once
+    (load-bearing apply_once guard + crash+resume), external-effect-before-interrupt RED,
+    REJECT/REPLAN, approval-receipt + TIMEOUT, DoD-4 steering primitive, DoD-17 rehydrate.

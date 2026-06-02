@@ -1,0 +1,188 @@
+# required_gates.txt — curated allowlist of check-run names that MUST be
+# required status checks on main.
+#
+# Inclusion criteria:
+#   1. The check-run is safety/integrity-bearing (not just style/advisory).
+#   2. Its workflow triggers on EVERY pull_request with NO paths:/paths-ignore:
+#      filter and NO continue-on-error at the JOB level, so it always emits a
+#      result and never hangs a PR in "pending" forever.
+#
+# Format: one check-run name per line; blank lines and lines starting with '#'
+# are ignored by scripts/ci/check_required_gates_coverage.py.
+#
+# OPERATOR ACTION REQUIRED: changes here take effect only after an operator
+# runs `terraform apply` (terraform/phase-0a-gcp/branch_protection.tf) OR:
+#   gh api repos/Manzela/AutonomousAgent/branches/main/protection \
+#     -X PATCH --input /dev/stdin <<'JSON'
+#   {"required_status_checks":{"strict":true,"contexts":[<names>]}}
+#   JSON
+# HIGH-STAKES: a required gate that does not run on a given PR stays "pending"
+# forever and BLOCKS that merge.  Every gate below has been verified UNCONDITIONAL.
+
+# ── EXISTING 11 (already required) ─────────────────────────────────────────
+# workflow: ci.yml — unconditional pull_request, no paths filter
+Lint Python
+# workflow: ci.yml — unconditional pull_request, no paths filter
+Lint Shell
+# workflow: ci.yml — unconditional pull_request, no paths filter
+Lint YAML
+# workflow: ci.yml — unconditional pull_request, no paths filter
+# NOTE: hadolint steps have continue-on-error at STEP level only; the job itself
+# is blocking.  Hadolint advisory-ness is per-step, not per-job.
+Lint Dockerfiles
+# workflow: ci.yml — unconditional pull_request, no paths filter
+Unit Tests
+# workflow: ci.yml — unconditional pull_request, no paths filter
+Validate config/limits.yaml
+# workflow: ci.yml — unconditional pull_request, no paths filter
+Validate docker-compose
+# workflow: pr-validation.yml — unconditional pull_request, no paths filter
+Conventional Commit title
+# workflow: pr-validation.yml — unconditional pull_request, no paths filter
+Branch name follows convention
+# workflow: secret-scan.yml — unconditional pull_request (no paths filter);
+# SARIF-upload steps have continue-on-error but that only covers the upload
+# step, not the gitleaks/detect-secrets scan steps themselves.
+gitleaks
+# workflow: secret-scan.yml — same as above
+detect-secrets
+
+# ── NEW SAFETY/ENFORCEMENT GATES (eligible: unconditional + blocking) ────────
+
+# workflow: dead-code-gate.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error at job level.
+# Enforces Executor Contract C4: dead code cannot be ticked as "done".
+dead-code reachability (C4)
+
+# workflow: test-integrity-gate.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter; job-level if: github.event_name == 'pull_request' is always true on PRs.
+# Enforces C6: no silent test deletion/weakening without an approved ## Test Changes block.
+no unexplained test deletion/weakening (C6)
+
+# workflow: c9-reviewer-class-gate.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces C-04/H-05: every P0/P1 PR must declare a cross-model reviewer.
+C9 reviewer-model-class gate (C-04)
+
+# workflow: acceptance-frozen.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces C8/C10: acceptance rubric sha manifest cannot drift silently.
+Verify acceptance files match the sha-pinned manifest (C8)
+
+# workflow: pr-meta-checks.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter; job-level if: github.event_name == 'pull_request' is always true on PRs.
+# Enforces C1 (evidence-present) + C7 (CI-authoritative test-truth).
+evidence-present (C1) + test-truth (C7)
+
+# workflow: import-hygiene.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces C5: every first-party module must be importable; catches deleted-dep/garak-removal.
+import every first-party module (C5)
+
+# workflow: sp-00e6-provenance-antidrift.yml, job: provenance-check —
+# on: pull_request, no paths filter; job-level if: github.event_name == 'pull_request'
+# is always true on PRs.  No continue-on-error.
+# Enforces C11: claimed-add paths in ## Evidence must be genuine additions.
+provenance honesty (C11)
+
+# workflow: sp-00e6-provenance-antidrift.yml, job: no-sentinel-termination —
+# on: pull_request, no paths filter, no job-level if:, no continue-on-error.
+# Anti-drift: blocks sentinel-string loop-exit patterns in the runtime spine.
+no-sentinel-termination (anti-drift)
+
+# workflow: no-sa-key-gate.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces SP-00b: no long-lived SA JSON keys in workflow auth (WIF-only).
+no-sa-key-gate (SP-00b)
+
+# workflow: license-dep-gate.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces SP-00h: no GPL/AGPL/proprietary licenses, no unpinned or typosquatted deps.
+license + dep allowlist (SP-00h)
+
+# workflow: ci.yml, job: enforce-sha-pinning — on: pull_request, no paths filter,
+# no continue-on-error at job level.
+# Supply-chain hygiene: every uses: reference must be SHA-pinned.
+Enforce Action SHA-pinning
+
+# workflow: ci.yml, job: import-smoke — on: pull_request, no paths filter,
+# no continue-on-error at job level.
+# Catches import-time crashes in critical module trees before tests run.
+Import Smoke Gate
+
+# workflow: sp-g1-golden.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces SP-G1: golden eval corpus structural validity + tamper-evidence.
+golden eval corpus regression (SP-G1)
+
+# workflow: sp-o1-cost-recorder.yml — on: pull_request, branches: [main, "remediation/**"],
+# no paths filter, no continue-on-error.
+# Enforces SP-O1: llm.call.cost must be sourced from LiteLLM pricing, not fabricated.
+llm.call.cost sourced + recorded (SP-O1)
+
+# ── EXCLUDED (with rationale) ────────────────────────────────────────────────
+# The following gates exist and pass on PRs but are NOT eligible for required_status_checks
+# because they would hang PRs in "pending" when they don't run:
+#
+# [PATH-FILTERED — only runs when matching files change]
+# - "Enforce model pins + stamp harness-config sha (SP-00i)"
+#     workflow: model-pin-gate.yml
+#     reason: on.pull_request.paths filters to config/ + deploy/litellm/ + audit/acceptance/
+# - "Re-run SP-00 acceptance (resolution + import proof)"
+#     workflow: sp00-spine-pin.yml
+#     reason: on.pull_request.paths filters to pyproject.toml + uv.lock + scripts/ci/ + audit/
+# - "No new skip/skipif/xfail/manual markers (C6)"
+#     workflow: no-skip-on-remediation.yml
+#     reason: on.pull_request.paths: ['tests/**', 'lib/**', 'app/**', 'scripts/**']
+# - "tf-validate" (any Terraform check)
+#     workflow: tf-validate.yml
+#     reason: on.pull_request.paths: ['terraform/**']
+# - CodeQL checks
+#     workflow: codeql.yml
+#     reason: on.pull_request.paths filter to source files; also requires GHAS on private repos
+# - OSV Scanner
+#     workflow: osv-scanner.yml
+#     reason: on.pull_request.paths: ['pyproject.toml', 'uv.lock']
+# - Trivy
+#     workflow: trivy.yml
+#     reason: on.pull_request.paths: ['deploy/**', 'pyproject.toml', 'uv.lock']
+# - "Enforce model pins / lint-cost-tiers"
+#     workflow: lint-cost-tiers.yml
+#     reason: on.pull_request.paths filter
+# - SP-00 spine pin (sp00-spine-pin.yml): paths-filtered as above
+#
+# [ADVISORY / continue-on-error AT JOB LEVEL]
+# - "substring-assert-lint (C3, advisory)"
+#     workflow: sp-00e6-provenance-antidrift.yml, job: substring-assert-lint
+#     reason: continue-on-error: true at the JOB level — never blocks a PR; making it
+#             required would still never block (it always "passes" from GH's perspective)
+#             and adds noise without enforcement.
+#
+# [DEPLOY-TIME / NOT A PR CHECK]
+# - cosign verify-at-deploy
+#     workflow: phase-0a-deploy.yml / sbom-cosign.yml
+#     reason: push/workflow_dispatch triggers only; never runs on pull_request
+# - SBOM + cosign signing
+#     workflow: sbom-cosign.yml
+#     reason: push/workflow_dispatch only
+# - Scorecard
+#     workflow: scorecard.yml
+#     reason: push/workflow_dispatch only
+# - Nightly evals / nightly integration
+#     workflow: nightly-eval.yml, nightly-integration.yml
+#     reason: workflow_dispatch/schedule only, not pull_request
+# - Weekly cost summary
+#     workflow: weekly-cost-summary.yml
+#     reason: workflow_dispatch/schedule only
+# - Release workflow
+#     workflow: release.yml
+#     reason: push to main only, not pull_request
+#
+# [NOT SAFETY-BEARING / UTILITY]
+# - "Request Copilot review"
+#     workflow: auto-review.yml
+#     reason: utility reviewer request, not an enforcement gate; has if: draft==false
+#             which could skip on draft PRs
+# - "P0-4 false-positive closeout (SP-0d)"
+#     workflow: sp-0d-closeout.yml
+#     reason: audit closeout documentation replay, not an enforcement gate

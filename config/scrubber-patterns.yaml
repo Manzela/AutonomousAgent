@@ -18,7 +18,10 @@ patterns:
     replacement: '[REDACTED:openai_or_anthropic_key]'
     severity: critical
   - name: github_pat
-    regex: '\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b'
+    # Classic PATs (ghp_/gho_/ghu_/ghs_/ghr_) AND fine-grained PATs (github_pat_<22>_<59>).
+    # Fine-grained PATs introduced 2022: prefix is literally "github_pat_" — the classic
+    # ghp_/gho_/… prefixes do NOT match that shape, so a second alternative is required.
+    regex: '\b(?:(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b'
     replacement: '[REDACTED:github_pat]'
     severity: critical
   - name: jwt

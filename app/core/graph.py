@@ -2,11 +2,13 @@
 
 Topology (interrupt-split — never co-locate interrupt() with an EXTERNAL side-effect):
 
-    goal_intake -> sign_off[interrupt] -> seal_spec -> execute
-                -> ship_gate[interrupt] -> ship_effect -> END
+    goal_intake -> sign_off[interrupt] -> seal_spec -> decompose -> execute
+                -> eval_gate --[pass]--> ship_gate[interrupt] -> ship_effect -> END
+                            --[out-of-scope]--> __halt__
 
 Control flow is ALWAYS code-decided via conditional edges over the deterministic
-HITL verb. No top-level LLM router/supervisor. See graph_state.py for the
+HITL verb (and, at eval_gate, the deterministic SP-06 scope verdict). No top-level
+LLM router/supervisor. See graph_state.py for the
 exactly-once doctrine. `execute` wraps app.core.orchestrator.execute as a black-box
 call-through leaf (no new orchestrator class). Irreversible EXTERNAL effects
 (SpecStore.save in seal_spec, the durable ship record in ship_effect) live in
@@ -19,6 +21,7 @@ import hashlib
 import sys
 import time
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
@@ -28,7 +31,8 @@ from langgraph.types import interrupt
 from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.core import graph_state as gs
 from app.core.decision_record import append_decision
-from app.core.graph_state import SpineState
+from app.core.eval_gate import scope_root_verdict
+from app.core.graph_state import SpineState, TaskGraph
 from app.core.orchestrator import execute as orchestrate
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
@@ -257,6 +261,34 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
         # returncode) pass through unchanged.
         return _scrub_persisted(delta)
 
+    async def eval_gate(state: SpineState, config) -> dict:
+        """SP-06 (slice 1): PRD-conformance SHIP PRECONDITION — score the agent's changed
+        paths against the LOCKED plan's allowed scope and BLOCK ship on any out-of-scope
+        change. Deterministic, no LLM (the LLM DAGMetric leaf is the deferred SP-06 slice-2).
+
+        In the walking skeleton ``execute`` reports no diff, so ``changed_paths`` is empty and
+        the verdict trivially PASSES; when the real Hermes drive (SP-05) overwrites
+        ``changed_paths`` with the git diff, this SAME gate blocks a non-conformant ship.
+        Pure read (no external effect) → no ledger guard; re-running yields the same verdict."""
+        plan = state.get("plan")
+        changed = [tuple(c) for c in (state.get("changed_paths") or [])]
+        allowed = _allowed_globs_from_plan(plan)
+        verdict = scope_root_verdict(
+            changed,
+            allowed,
+            base="main",
+            head=_digest(state),
+            spec_sha=state.get("spec_sha") or "",
+        )
+        delta = {
+            "eval_verdict": asdict(verdict),
+            "audit": [
+                f"eval_gate passed={verdict.passed} violations={len(verdict.violations)} "
+                f"allowed_globs={len(allowed)} changed={len(changed)}"
+            ],
+        }
+        return _scrub_persisted(delta)
+
     async def ship_gate(state: SpineState, config) -> dict:
         """PURE interrupt node — prod-approval."""
         decision = interrupt(
@@ -302,9 +334,21 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
         "seal_spec": seal_spec,
         "decompose": decompose,
         "execute": execute,
+        "eval_gate": eval_gate,
         "ship_gate": ship_gate,
         "ship_effect": ship_effect,
     }
+
+
+def _allowed_globs_from_plan(plan: Optional[TaskGraph]) -> list[str]:
+    """Union of every plan node's ``allowed_paths`` — the in-scope glob set the SP-06
+    scope gate scores the agent's diff against. Empty when there is no plan."""
+    if not plan:
+        return []
+    globs: list[str] = []
+    for node in plan.get("nodes", []):
+        globs.extend(node.get("allowed_paths", []))
+    return sorted(set(globs))
 
 
 # ── conditional routing (code-decided, deterministic on the HITL verb) ──────
@@ -317,6 +361,15 @@ def _route_after_sign_off(state: SpineState) -> str:
         "REPLAN": "__replan__",
         "TIMEOUT": "__halt__",
     }.get(verb, "__halt__")
+
+
+def _route_after_eval_gate(state: SpineState) -> str:
+    """SP-06 SHIP PRECONDITION: proceed to ship_gate iff the scope verdict PASSED; a failed
+    (out-of-scope) verdict BLOCKS ship → __halt__. Absent verdict (defensive) ⇒ proceed."""
+    v = state.get("eval_verdict")
+    if v is None or v.get("passed", True):
+        return "ship_gate"
+    return "__halt__"
 
 
 def _route_after_ship_gate(state: SpineState) -> str:
@@ -388,7 +441,12 @@ def build_spine(
     )
     g.add_edge("seal_spec", "decompose")
     g.add_edge("decompose", "execute")
-    g.add_edge("execute", "ship_gate")
+    g.add_edge("execute", "eval_gate")
+    g.add_conditional_edges(
+        "eval_gate",
+        _route_after_eval_gate,
+        {"ship_gate": "ship_gate", "__halt__": "__halt__"},
+    )
     g.add_conditional_edges(
         "ship_gate",
         _route_after_ship_gate,

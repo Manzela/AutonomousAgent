@@ -390,6 +390,98 @@ async def test_dod17_workspace_ref_byte_equal_across_crash_resume():
     assert pre == digest and post == digest  # byte-equal rehydrate across the crash
 
 
+# ── SP-06: eval_gate as SHIP PRECONDITION ───────────────────────────────────
+def test_route_after_eval_gate_blocks_only_on_failed_verdict():
+    """The router proceeds to ship_gate iff the scope verdict PASSED; a failed (out-of-scope)
+    verdict BLOCKS ship → __halt__; an absent verdict (defensive) proceeds."""
+    from app.core.graph import _route_after_eval_gate
+
+    assert _route_after_eval_gate({"eval_verdict": {"passed": True}}) == "ship_gate"
+    assert _route_after_eval_gate({"eval_verdict": {"passed": False}}) == "__halt__"
+    assert _route_after_eval_gate({}) == "ship_gate"  # no verdict yet → don't block
+
+
+def test_allowed_globs_from_plan_unions_node_paths():
+    from app.core.graph import _allowed_globs_from_plan
+
+    assert _allowed_globs_from_plan(None) == []
+    plan = {
+        "nodes": [
+            {"allowed_paths": ["app/x.py", "app/y.py"]},
+            {"allowed_paths": ["app/y.py", "lib/z.py"]},
+        ],
+        "edges": [],
+    }
+    assert _allowed_globs_from_plan(plan) == ["app/x.py", "app/y.py", "lib/z.py"]
+
+
+async def test_eval_gate_passes_on_empty_diff_and_records_verdict():
+    """Walking skeleton: execute reports no diff → eval_gate's scope verdict trivially PASSES,
+    the run reaches ship_gate, and the verdict is recorded in state."""
+    runner = SpineRunner(InMemoryCheckpointer(), capability=_stub_capability())
+    tid = "goal-eval-pass"
+    r1 = await runner.start(thread_id=tid, goal="ship a hello-world endpoint")
+    r2 = await runner.resume(
+        thread_id=tid,
+        interrupt_id=r1["__interrupt__"][0].id,
+        decision={"verb": "APPROVE", "actor": "op", "reason": "lgtm"},
+    )
+    assert runner.get_state(tid).next == ("ship_gate",)  # eval_gate passed → reached ship_gate
+    assert r2["eval_verdict"]["passed"] is True
+    assert r2["eval_verdict"]["gate"] == "SP-06.scope-root"
+    assert r2["eval_verdict"]["violations"] == []
+    assert any("eval_gate passed=True" in a for a in r2["audit"])
+
+
+async def test_eval_gate_blocks_ship_on_out_of_scope_change():
+    """SP-06 ship precondition (NON-VACUOUS): an agent diff touching paths OUTSIDE the locked
+    plan's allowed scope makes the verdict FAIL, so the run HALTS before ship_gate — it never
+    reaches the ship interrupt and never writes a ship receipt."""
+    from app.core.graph import build_spine
+
+    app = build_spine(InMemorySaver(), capability=_stub_capability())
+    tid = "goal-eval-block"
+    cfg = {"configurable": {"thread_id": tid}}
+    initial = {
+        "thread_id": tid,
+        "goal": "ship a hello-world endpoint",
+        "clarifications": [],
+        "tasks": [],
+        "ledger": [],
+        "execution_counts": {},
+        "decision_record": [],
+        "audit": [],
+        "steering_events": [],
+        "cost_accumulator": {},
+        "fix_attempts": 0,
+        "scrubbed": True,
+        # an out-of-scope diff the agent supposedly produced (no reducer → survives to eval_gate)
+        "changed_paths": [["M", "infra/main.tf"], ["A", "vendor/thirdparty.py"]],
+    }
+    r1 = await app.ainvoke(initial, cfg, durability="sync")
+    signoff = r1["__interrupt__"][0]
+    r2 = await app.ainvoke(
+        Command(
+            resume={
+                signoff.id: {
+                    "verb": "APPROVE",
+                    "actor": "op",
+                    "reason": "lgtm",
+                    "interrupt_id": signoff.id,
+                }
+            }
+        ),
+        cfg,
+        durability="sync",
+    )
+    assert "__interrupt__" not in r2  # never reached the ship interrupt
+    assert app.get_state(cfg).next == ()  # terminated via __halt__
+    assert r2["eval_verdict"]["passed"] is False
+    assert any(v["reason"] == "out-of-scope" for v in r2["eval_verdict"]["violations"])
+    assert not [r for r in r2.get("ledger", []) if r.get("action_kind") == "ship"]  # never shipped
+    assert any("HALTED" in a for a in r2["audit"])
+
+
 # ── C9 review fix: deterministic spec_id (idempotent re-seal) ────────────────
 def test_spec_id_is_deterministic_for_idempotent_reseal():
     """C9 finding 3: seal_spec derives spec_id from (thread_id, __pregel_task_id) so a

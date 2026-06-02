@@ -243,6 +243,12 @@ class SpineState(TypedDict, total=False):
     plan: Optional[TaskGraph]
     spec_sha: Optional[str]
     spec_id: Optional[str]
+    # SP-06 PRD-conformance: the agent's diff (list of [status, path]) the eval_gate scores
+    # against the locked plan's allowed scope, and the resulting ScopeVerdict (as a dict).
+    # Last-write (no reducer): the real Hermes drive (SP-05) overwrites changed_paths with the
+    # git diff; the skeleton leaves it empty (a trivially-passing, in-scope verdict).
+    changed_paths: Optional[list]
+    eval_verdict: Optional[dict]
     # HITL decisions
     sign_off: Optional[HitlDecision]
     ship: Optional[HitlDecision]

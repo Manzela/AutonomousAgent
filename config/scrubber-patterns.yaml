@@ -52,3 +52,19 @@ patterns:
     regex: '\b[a-f0-9]{40,}\b'
     replacement: '[REDACTED:high_entropy_hex]'
     severity: info  # info-only because of false-positive risk
+  # PII patterns (SP-R1). Ported VERBATIM from config/a2a/scrubber-patterns.yaml — the A2A
+  # path already redacts these (Day 9 PHI set, tested); the MAIN scrubber (used by the spine
+  # checkpoint / logs) did NOT, leaving an email/SSN/phone gap on the persisted-state path.
+  # Keep these two configs in sync (see config/a2a/scrubber-patterns.yaml).
+  - name: us_ssn
+    regex: '\b\d{3}-\d{2}-\d{4}\b'
+    replacement: '[REDACTED:ssn]'
+    severity: critical
+  - name: email
+    regex: '[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}'
+    replacement: '[REDACTED:email]'
+    severity: warning
+  - name: us_phone
+    regex: '\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}'
+    replacement: '[REDACTED:phone]'
+    severity: warning

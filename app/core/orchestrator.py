@@ -346,22 +346,26 @@ def _map_a2a_status(status: str) -> TaskStatus:
     """Map an A2A Task status string to the orchestrator's TaskStatus enum.
 
     A2A uses: SUBMITTED, WORKING, INPUT_REQUIRED, COMPLETED, CANCELED, FAILED.
-    The orchestrator uses: PENDING, INFLIGHT, COMPLETED, FAILED, REFUSED.
+    The orchestrator uses: PENDING, INFLIGHT, INPUT_REQUIRED, COMPLETED, FAILED,
+    REFUSED, CANCELED.
 
-    INPUT_REQUIRED maps to FAILED because the peer is blocked waiting for
-    human input that the orchestrator cannot provide.  Operators are warned
-    via a log message so the blockage is surfaced rather than silently
-    treated as in-progress work.
+    SP-04: INPUT_REQUIRED maps to the NON-TERMINAL TaskStatus.INPUT_REQUIRED — it
+    is NOT a hard FAILED. The peer is blocked waiting for a human decision, which
+    is exactly what the spine's sign_off interrupt() gate exists to provide: the
+    parked task is routable to a human (HITL) and resumable on /approve, never
+    discarded as a failure. (Previously this collapsed to FAILED, killing the run;
+    that was the SP-04 bug.)
     """
     if status == "INPUT_REQUIRED":
-        logger.warning(
-            "a2a: peer returned INPUT_REQUIRED — task is blocked waiting for human input; "
-            "orchestrator has no mechanism to unblock this task (treating as FAILED)"
+        logger.info(
+            "a2a: peer returned INPUT_REQUIRED — task is parked waiting for a human "
+            "decision; routable to the sign_off interrupt() gate (non-terminal, "
+            "resumable on /approve), NOT failed"
         )
     mapping = {
         "SUBMITTED": TaskStatus.INFLIGHT,
         "WORKING": TaskStatus.INFLIGHT,
-        "INPUT_REQUIRED": TaskStatus.FAILED,
+        "INPUT_REQUIRED": TaskStatus.INPUT_REQUIRED,
         "COMPLETED": TaskStatus.COMPLETED,
         "CANCELED": TaskStatus.CANCELED,
         "FAILED": TaskStatus.FAILED,

@@ -59,10 +59,36 @@ class MemoryTier(str, Enum):
 class TaskStatus(str, Enum):
     PENDING = "pending"
     INFLIGHT = "inflight"
+    # INPUT_REQUIRED is NON-TERMINAL (SP-04): the unit of work is blocked waiting on
+    # a human decision and is PARKABLE — the spine routes it to the sign_off
+    # interrupt() gate (HITL), it is NOT a hard failure. Distinct from FAILED so a
+    # peer/agent asking for input can be unblocked rather than discarded.
+    INPUT_REQUIRED = "input_required"
     COMPLETED = "completed"
     FAILED = "failed"
     REFUSED = "refused"
     CANCELED = "canceled"
+
+    @property
+    def is_terminal(self) -> bool:
+        """A terminal status ends the unit of work; a non-terminal one is still
+        live and may advance (PENDING/INFLIGHT run, INPUT_REQUIRED parks to a
+        human gate). SP-04 hinges on INPUT_REQUIRED being non-terminal so the
+        spine can route it to interrupt() instead of failing the run."""
+        return self in _TERMINAL_STATUSES
+
+
+# Terminal == the unit of work is done and will not advance on its own.
+# INPUT_REQUIRED is deliberately ABSENT (it is parkable / resumable — SP-04);
+# PENDING/INFLIGHT are absent because they are still running.
+_TERMINAL_STATUSES = frozenset(
+    {
+        TaskStatus.COMPLETED,
+        TaskStatus.FAILED,
+        TaskStatus.REFUSED,
+        TaskStatus.CANCELED,
+    }
+)
 
 
 class MetaAction(str, Enum):

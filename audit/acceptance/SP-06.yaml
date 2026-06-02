@@ -1,0 +1,123 @@
+# Acceptance — SP-06 (slice 1) · hermetic scope-root eval gate (NO LLM/Vertex)
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 EPIC-2 SP-06 + 2.6 scope-root.
+#   "...the hard non-LLM root computes git diff --name-only base...head and FAILS
+#    deterministically (independent of the LLM leaf) when a changed path is outside the
+#    node's allowed_paths (excluding the shared net-new test set, 2.2/SP-02); an in-scope
+#    PR passes (red+green)."
+#
+# Scope of THIS slice = the DETERMINISTIC non-LLM root + its CLI entrypoint. The authority
+# is the sha-pinned LOCKED TaskSpec (status=='locked' + matching spec_sha); allowed_paths
+# are derived from it by the SP-02 InMemoryDecomposer (CI adapter). Hermetic: pure stdlib
+# (subprocess git / fnmatch / json) + pydantic TaskSpec; imports NEITHER deepeval NOR
+# inspect_ai — so it can never default-route a judge to OpenAI (the nightly cluster-b trap).
+#
+# DEFERRED to later SP-06 slices: the GEval/Faithfulness Vertex judge leaf, 6.2 judge-class
+# inequality (workflow-stamped, cross-vendor Gemini), Inspect-AI patch-apply, 2.7
+# diff-scoped mutation (advisory), 5.2 user-perspective oracle, the per-node
+# audit/acceptance/<node>.yaml frozen copy, AND the eval-gate.yml workflow + its
+# required_status_checks wiring (needs the spine->PR locked-spec plumbing).
+
+task: SP-06
+title: "hermetic scope-root: an out-of-scope changed path FAILS the PR deterministically; an in-scope PR passes; sha-pinned locked-spec authority; no LLM import"
+driver: V
+phase: epic-2
+run_from: repo_root
+
+assertions:
+  - id: sp06-scope-root-red-out-of-scope-fails
+    description: >
+      RED: a locked TaskSpec + a diff touching a path outside the union of node
+      allowed_paths (and not a net-new test) yields passed=False + a violation, and the
+      CLI entrypoint exits 1 (fails the PR).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp06_scope_gate.py::test_out_of_scope_path_fails_deterministically \
+        tests/unit/test_sp06_scope_gate.py::test_entrypoint_exits_nonzero_on_violation \
+        -q
+    expect_exit: 0
+
+  - id: sp06-scope-root-green-in-scope-passes
+    description: >
+      GREEN: the same locked TaskSpec + an in-scope-only diff (a code file under a node
+      allowed_path + a net-new test) yields passed=True, empty violations, exit 0.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp06_scope_gate.py::test_in_scope_diff_passes \
+        tests/unit/test_sp06_scope_gate.py::test_entrypoint_exits_zero_when_in_scope \
+        -q
+    expect_exit: 0
+
+  - id: sp06-net-new-test-exclusion
+    description: >
+      The shared net-new test set (2.2/SP-02) is excluded: a net-new tests/ path passes;
+      a MODIFIED pre-existing tests/ path that is neither net-new nor a node allowed_path
+      trips out-of-scope (the exclusion is net-new-only, matching SP-05's read-only rule).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp06_scope_gate.py::test_net_new_test_excluded \
+        tests/unit/test_sp06_scope_gate.py::test_modified_preexisting_test_not_auto_excluded \
+        -q
+    expect_exit: 0
+
+  - id: sp06-locked-spec-authority
+    description: >
+      The authority is the sha-pinned LOCKED TaskSpec: status!='locked' is rejected
+      (cannot score scope against an unsealed spec); a spec whose recomputed spec_sha !=
+      the claimed pin fails (tamper-evidence).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp06_scope_gate.py::test_unsealed_spec_rejected \
+        tests/unit/test_sp06_scope_gate.py::test_spec_sha_mismatch_fails \
+        -q
+    expect_exit: 0
+
+  - id: sp06-machine-readable-verdict
+    description: >
+      The gate emits a sorted-key JSON verdict with the documented schema (gate, spec_sha,
+      base, head, passed, violations[], allowed_globs[], net_new_tests_excluded[],
+      tests_added).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp06_scope_gate.py::test_verdict_json_schema \
+        tests/unit/test_sp06_scope_gate.py::test_scope_verdict_dataclass_shape \
+        -q
+    expect_exit: 0
+
+  - id: sp06-hermetic-no-llm-import
+    description: >
+      In a FRESH interpreter, importing app.core.eval_gate + scripts.ci.sp06_scope_gate
+      pulls NEITHER deepeval NOR inspect_ai — the OpenAI-default trap is structurally
+      impossible on the gate path.
+    cmd: |
+      uv run --extra dev python - <<'PY'
+      import subprocess, sys
+      code = ("import sys, app.core.eval_gate, scripts.ci.sp06_scope_gate; "
+              "assert 'deepeval' not in sys.modules; assert 'inspect_ai' not in sys.modules; "
+              "print('OK: scope-root gate is hermetic (no LLM judge import)')")
+      r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+      print(r.stdout, r.stderr)
+      sys.exit(r.returncode)
+      PY
+    expect_exit: 0
+
+proof:
+  red_green: >
+    On origin/main no scope gate exists (out-of-scope changes merge freely == RED). After
+    app/core/eval_gate.py + scripts/ci/sp06_scope_gate.py, an out-of-scope path FAILS the
+    PR (entrypoint exit 1) and an in-scope PR PASSES (exit 0); 11 oracles in
+    tests/unit/test_sp06_scope_gate.py.
+  hermetic: >
+    No Vertex/LLM/network/docker. stdlib subprocess(git)+fnmatch+json + pydantic TaskSpec;
+    the InMemoryDecomposer (CI adapter) derives the plan. deepeval/inspect NOT imported
+    (proven in a fresh interpreter).
+  deferred: >
+    GEval/Faithfulness Vertex leaf, 6.2 judge-class inequality (cross-vendor Gemini,
+    workflow-stamped), Inspect-AI patch-apply, 2.7 mutation (advisory), 5.2 user-perspective
+    oracle, per-node frozen audit/acceptance/<node>.yaml, and eval-gate.yml + its
+    required_status_checks wiring (needs the spine->PR locked-spec plumbing) — later slices.

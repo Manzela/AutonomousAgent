@@ -103,7 +103,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Authenticate to GCP (WIF)
         id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
@@ -229,7 +229,7 @@ jobs:
     steps:
       - name: Authenticate to GCP (WIF)
         id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
@@ -310,7 +310,7 @@ jobs:
 
       - name: Authenticate to GCP (WIF)
         id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}

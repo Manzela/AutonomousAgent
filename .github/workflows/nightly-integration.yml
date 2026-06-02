@@ -75,12 +75,26 @@ jobs:
       # 4. Start CI compose overlay and wait for hermes-api to be healthy
       # ------------------------------------------------------------------
       - name: Start CI compose stack
+        # Fix NEW-227-B: `2>&1 | tail -20` under plain `bash -e` uses the pipe's
+        # last exit code (tail's, always 0) — a container exit(1) went undetected.
+        # `set -o pipefail` propagates the first non-zero exit through the pipe.
         run: |
+          set -euo pipefail
           docker compose \
             -f deploy/docker-compose.yml \
             -f deploy/docker-compose.ci.yml \
             up --wait --timeout 60 \
             2>&1 | tail -20
+
+      # Fix NEW-227-B: dump service logs on any failure so triage is one click.
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.ci.yml \
+            logs --no-color hermes-api shell-sandbox volume-init \
+            2>&1 | tail -200 || true
 
       # ------------------------------------------------------------------
       # 5. Install cosign (required by test_cosign_verify_negative.py — N-03)

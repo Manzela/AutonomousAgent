@@ -45,9 +45,19 @@ services:
     image: autonomousagent/hermes:0.1.0
     # Override the image ENTRYPOINT so `command:` runs as plain python.
     entrypoint: []
+    # Fix NEW-227-A: fastapi + uvicorn[standard] are declared under
+    # [project.optional-dependencies].a2a in pyproject.toml, NOT in
+    # [project.dependencies], and Dockerfile.hermes only installs
+    # hermes-agent[all] + OTel/psycopg/gcs — so they are absent from the
+    # image venv. The CI stub is the only consumer; adding them to main deps
+    # would widen the license/dep-allowlist gate (SP-00h) unnecessarily.
+    # Injecting them here at container start is the least-invasive CI-only fix.
     command:
-      - python
-      - /app/deploy/scripts/ci_hermes_api.py
+      - sh
+      - -c
+      - |
+        pip install --quiet "fastapi>=0.115" "uvicorn[standard]>=0.30" \
+          && python /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"

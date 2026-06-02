@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -43,6 +45,33 @@ DEFAULT_PEER_TIMEOUT_S = 30.0
 
 # Default task timeout for local dispatch (seconds).
 DEFAULT_LOCAL_TIMEOUT_S = 60.0
+
+# SP-05: env keys whose NAME is secret-shaped are NEVER passed into a sandbox child
+# (default-deny — the sandbox holds no standing secrets; the lethal-trifecta posture).
+_SECRET_KEY_RE = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CRED|PRIVATE", re.IGNORECASE)
+
+# SP-05: the only harness env vars a sandbox child inherits (everything else is dropped).
+# Absolute `sys.executable` cmds don't strictly need PATH, but keep a minimal POSIX set so
+# trivial tools resolve; NONE of these is secret-shaped.
+_SAFE_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "PWD")
+
+
+def _scrubbed_sandbox_env(extra: Optional[dict[str, Any]] = None) -> dict[str, str]:
+    """Build the sandbox child's env: a minimal allowlist from the harness env plus any
+    non-secret ``extra`` overrides. Default-deny — a harness ``*KEY/*TOKEN/*SECRET`` can
+    NOT reach the child (SP-05 acceptance(3); the lethal-trifecta exfil guard).
+
+    ``LocalSubprocessSandbox`` passes ``env=`` straight to the child; ``env=None`` would
+    leak the full ``os.environ``, so callers MUST pass this scrubbed dict.
+    """
+    env: dict[str, str] = {k: os.environ[k] for k in _SAFE_ENV_ALLOWLIST if k in os.environ}
+    if extra:
+        for k, v in extra.items():
+            if _SECRET_KEY_RE.search(k):
+                continue  # never honor a secret-shaped override
+            env[k] = str(v)
+    # Defensive: drop anything secret-shaped that slipped through the allowlist/extras.
+    return {k: v for k, v in env.items() if not _SECRET_KEY_RE.search(k)}
 
 
 @dataclass
@@ -91,13 +120,19 @@ async def execute(
     capability: AgentCapability,
     *,
     agent_identity: Any = None,
+    sandbox: Optional[AbstractSandbox] = None,
     peer_timeout_s: float = DEFAULT_PEER_TIMEOUT_S,
     local_timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
 ) -> ExecutionResult:
-    """Dispatch a task to a capability — local or across the A2A boundary.
+    """Dispatch a task to a capability — peer (A2A), sandboxed-local, or in-process.
 
-    If ``capability.peer_endpoint`` is set, routes via A2A ``send_message``.
-    Otherwise executes the agent module in-process via ``cap.invoke()``.
+    Routing precedence:
+      1. ``capability.peer_endpoint`` set → A2A ``send_message`` (unchanged).
+      2. ``sandbox`` injected → **SP-05** sandboxed local exec: the node's
+         ``constraints["sandbox_cmd"]`` runs in a real ``AbstractSandbox.run()`` child
+         (different PID, scrubbed env, no network), NEVER in the harness process.
+      3. otherwise → legacy in-process ``capability.invoke()`` (preserved for the
+         SP-01/SP-04 spine skeleton when no sandbox is injected).
 
     Args:
         request: The task to execute.
@@ -105,8 +140,10 @@ async def execute(
         agent_identity: SA identity for outbound JWT minting (Day 5+).
             Pass ``None`` for the pre-production posture per INTEGRATION.md §P-3
             (fail-open auth).
+        sandbox: SP-05 per-node sandbox. When provided (and no peer endpoint), the
+            local capability is executed inside it instead of in-process.
         peer_timeout_s: httpx timeout for A2A peer requests.
-        local_timeout_s: asyncio timeout for local invoke().
+        local_timeout_s: asyncio timeout for local invoke()/sandbox run.
 
     Returns:
         ``ExecutionResult`` with proper status, timing, and cost accounting.
@@ -117,6 +154,13 @@ async def execute(
             capability,
             agent_identity=agent_identity,
             timeout_s=peer_timeout_s,
+        )
+    if sandbox is not None:
+        return await _execute_sandboxed(
+            request,
+            capability,
+            sandbox=sandbox,
+            timeout_s=local_timeout_s,
         )
     return await _execute_local(
         request,
@@ -340,6 +384,85 @@ async def _execute_local(
             tokens_out=0,
             artifacts=(),
         )
+
+
+async def _execute_sandboxed(
+    request: TaskRequest,
+    capability: AgentCapability,
+    *,
+    sandbox: AbstractSandbox,
+    timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
+) -> ExecutionResult:
+    """SP-05 (slice 1): run the node's command in a REAL sandbox child — not in-process.
+
+    The command is ``request.constraints["sandbox_cmd"]`` (a ``list[str]``). The child
+    runs with a default-deny scrubbed env (no harness secrets) and ``network_allowed=False``
+    (TEST-phase egress posture; per-phase BUILD egress is a later SP-05 slice). The real
+    subprocess exit code drives the status (anti-drift), never agent-emitted output text.
+
+    Deferred to later SP-05 slices: deriving the command from Hermes
+    (``lib/hermes_bridge.py``), per-node git worktree (SP-05b), per-role tool allowlist,
+    per-phase egress allowlist (SP-00g). This slice only proves no-in-process-exec +
+    no-secrets and makes ``AbstractSandbox.run()`` callgraph-reachable (C4).
+    """
+    t0 = time.monotonic()
+    cmd = request.constraints.get("sandbox_cmd")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(a, str) for a in cmd):
+        return ExecutionResult(
+            task_id=request.task_id,
+            status=TaskStatus.FAILED,
+            agent_id=capability.agent_id,
+            output=None,
+            error="sandbox_exec_missing_or_invalid_cmd",
+            duration_s=time.monotonic() - t0,
+        )
+
+    env = _scrubbed_sandbox_env(request.constraints.get("sandbox_env"))
+    effective_timeout = (
+        min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
+    )
+
+    try:
+        result = await sandbox.run(
+            cmd=cmd,
+            env=env,
+            timeout_s=effective_timeout,
+            network_allowed=False,  # SP-05: the sandbox child has NO egress (TEST posture)
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface any sandbox failure as a task failure
+        # logger.exception (not .error) preserves the traceback so an internal sandbox
+        # bug (e.g. a broken AbstractSandbox impl) is debuggable; exc_info is scrubbed
+        # on the log path (lib/scrubber.py). C9 (gemini-2-5-pro) review.
+        logger.exception(
+            "sandbox exec error: task_id=%s sandbox=%s",
+            request.task_id,
+            sandbox.__class__.__name__,
+        )
+        return ExecutionResult(
+            task_id=request.task_id,
+            status=TaskStatus.FAILED,
+            agent_id=capability.agent_id,
+            output=None,
+            error=f"sandbox_exec_error: {exc!r}",
+            duration_s=time.monotonic() - t0,
+        )
+
+    ok = result.returncode == 0
+    return ExecutionResult(
+        task_id=request.task_id,
+        status=TaskStatus.COMPLETED if ok else TaskStatus.FAILED,
+        agent_id=capability.agent_id,
+        output={
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "returncode": result.returncode,
+            "killed": result.killed,
+        },
+        error=None if ok else f"sandbox_exit_{result.returncode}",
+        duration_s=result.duration_s,
+    )
 
 
 def _map_a2a_status(status: str) -> TaskStatus:

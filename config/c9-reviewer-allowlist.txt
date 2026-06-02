@@ -1,0 +1,36 @@
+# C9 reviewer-model allowlist — CODEOWNERS-controlled corroboration source.
+#
+# Purpose (spoof-resistance, C-04 / P1-4):
+#   The C9 reviewer-class gate parses a SELF-DECLARED `Reviewer model:` line from the
+#   PR body.  That value alone is free text an author can fabricate.  This file is the
+#   CI-stamped corroboration source: on P0/P1 PRs the gate requires the declared
+#   reviewer model to be one of the governance-approved reviewer models listed here.
+#
+# Why this is harder to spoof than free text:
+#   This file lives under config/ which is CODEOWNERS-guarded (@Manzela) AND is a
+#   sensitive path for the gate itself — changing it requires a cross-model-reviewed
+#   PR.  An author can no longer hard-gate-PASS by typing an arbitrary "cross-vendor"
+#   string; the value must match a 4-eyes-controlled entry below.
+#
+# Format:
+#   - one entry per line; canonical model-key OR a recognised display name
+#     (both normalise via MODEL_NORM in reviewer_class_gate.py)
+#   - `#` starts a comment; blank lines ignored
+#
+# NOTE (deferred — see PR blockers): this corroborates that the declared reviewer is a
+#   governance-APPROVED model; it does not yet cryptographically PROVE that model ran.
+#   Live cross-vendor invocation / a CI-emitted signed reviewer-id artifact remains
+#   deferred pending SP-06 / SP-27 + a reviewer-credential mechanism.
+#
+# DO NOT run code formatters over this data file (it is plain text, not Python).
+
+# --- Approved cross-vendor judge / reviewer models ---
+gemini-3-1-pro
+gemini-2-5-pro
+
+# --- Approved Anthropic Claude reviewer models ---
+claude-opus-4-8
+claude-opus-4-7
+claude-sonnet-4-6
+claude-sonnet-4-5
+claude-haiku-3-5

@@ -69,12 +69,16 @@ jobs:
             > /tmp/pr_changed_files.txt
 
       - name: Run C9 reviewer-class gate
+        # --reviewer-allowlist corroborates the self-declared `Reviewer model:` line against
+        # the CODEOWNERS-controlled config/c9-reviewer-allowlist.txt (spoof-resistance, P1-4).
+        # A recognised-but-off-allowlist reviewer hard-fails a P0/P1 PR.
         run: |
           python scripts/ci/reviewer_class_gate.py \
             --pr-body /tmp/pr_body.txt \
             --commits /tmp/pr_commits.txt \
             --labels "$(cat /tmp/pr_labels.txt)" \
-            --changed-files /tmp/pr_changed_files.txt
+            --changed-files /tmp/pr_changed_files.txt \
+            --reviewer-allowlist config/c9-reviewer-allowlist.txt
 
       - name: Re-run gate unit tests (committed red-green)
         run: |

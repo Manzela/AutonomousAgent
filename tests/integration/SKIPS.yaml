@@ -8,12 +8,6 @@ skips:
   - test: tests/integration/test_chroma_outage.py::test_chroma_outage_degrades_gracefully
     reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
     issue: P1-6-REVISED
-  - test: tests/integration/test_deepeval_trajectory.py::test_trajectory_7_dim_rubric
-    reason: Requires INTEGRATION_LIVE_STACK=1 for LLM judge evaluation
-    issue: P1-6-REVISED
-  - test: tests/integration/test_deepeval_trajectory.py::test_trajectory_hallucination
-    reason: Requires INTEGRATION_LIVE_STACK=1 for LLM judge evaluation
-    issue: P1-6-REVISED
   - test: tests/integration/test_egress_proxy.py::test_proxy_blocks_evil_example
     reason: docker daemon and/or `docker compose` CLI not available on this host
     issue: SP-00g

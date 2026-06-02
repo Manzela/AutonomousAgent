@@ -162,5 +162,19 @@ app.adapters.inmemory.spec_drafter
 app.adapters.gcp.spec_drafter:VertexSpecDrafter
 lib.anchors.clarification_driver
 lib.anchors:run_clarification
+
+# DeepEval judge adapters (Cluster A) — keep the GEval/HallucinationMetric LLM-as-judge
+# OFF OpenAI. DeterministicDeepEvalJudge is the hermetic CI default (fills the metric's
+# structured schema deterministically); LiteLLMVertexJudge is the live cross-vendor
+# Gemini-via-Vertex judge (staging only, DEEPEVAL_JUDGE=vertex); make_ci_judge() selects.
+# Consumed by tests/integration/test_deepeval_trajectory.py (the LLM-judge eval tests) and
+# by the DEFERRED SP-06 DAGMetric LLM leaf (app/core/eval_gate.py, not yet wired into a
+# runtime path). The AST callgraph cannot see test consumers / the deferred leaf, so these
+# read as unreachable. REMOVE once the SP-06 LLM leaf wires make_ci_judge() at runtime.
+# Operator-reviewed 2026-06-03.
+lib.evaluators.deepeval_judges
+lib.evaluators.deepeval_judges:make_ci_judge
+lib.evaluators.deepeval_judges:DeterministicDeepEvalJudge
+lib.evaluators.deepeval_judges:LiteLLMVertexJudge
 # scripts.ci.license_dep_gate  (auto-detected via __main__)
 # scripts.ci.run_acceptance    (auto-detected via __main__)

@@ -136,3 +136,90 @@ def test_check_test_truth_fails_when_section_absent():
     counts = pmc.parse_junit_counts(JUNIT)
     ok, _ = pmc.check_test_truth("## Summary\nno truth block\n", counts)
     assert ok is False
+
+
+# ---------------------------------------------------------------------------
+# Bot-exemption tests (C1 waiver for automated dependency-bump PRs)
+# ---------------------------------------------------------------------------
+
+
+def test_is_bot_pr_recognises_dependabot():
+    assert pmc.is_bot_pr("dependabot[bot]") is True
+
+
+def test_is_bot_pr_recognises_github_actions_bot():
+    assert pmc.is_bot_pr("github-actions[bot]") is True
+
+
+def test_is_bot_pr_rejects_human_author():
+    assert pmc.is_bot_pr("octocat") is False
+
+
+def test_is_bot_pr_rejects_empty_string():
+    assert pmc.is_bot_pr("") is False
+
+
+def test_bot_author_no_evidence_exits_zero(tmp_path):
+    """dependabot[bot] with NO Evidence section must PASS (bot-exempt)."""
+    body_file = tmp_path / "pr_body.md"
+    body_file.write_text("Bump python from 3.11 to 3.13\n\nNo Evidence section here.\n")
+    junit_file = tmp_path / "junit.xml"
+    junit_file.write_text(JUNIT)
+
+    rc = pmc.main(
+        [
+            "--pr-body",
+            str(body_file),
+            "--junitxml",
+            str(junit_file),
+            "--check",
+            "evidence",
+            "--pr-author",
+            "dependabot[bot]",
+        ]
+    )
+    assert rc == 0, "bot dependency PR without Evidence must exit 0 (exempt)"
+
+
+def test_human_author_no_evidence_exits_nonzero(tmp_path):
+    """A human author with NO Evidence section must FAIL (still enforced)."""
+    body_file = tmp_path / "pr_body.md"
+    body_file.write_text("## Summary\nSome change, no evidence.\n")
+    junit_file = tmp_path / "junit.xml"
+    junit_file.write_text(JUNIT)
+
+    rc = pmc.main(
+        [
+            "--pr-body",
+            str(body_file),
+            "--junitxml",
+            str(junit_file),
+            "--check",
+            "evidence",
+            "--pr-author",
+            "octocat",
+        ]
+    )
+    assert rc != 0, "human PR without Evidence must exit non-zero (still enforced)"
+
+
+def test_human_author_with_evidence_exits_zero(tmp_path):
+    """A human author WITH a proper Evidence section must PASS."""
+    body_file = tmp_path / "pr_body.md"
+    body_file.write_text("## Summary\nFixed the thing.\n\n## Evidence\n```\npytest -q\n```\n")
+    junit_file = tmp_path / "junit.xml"
+    junit_file.write_text(JUNIT)
+
+    rc = pmc.main(
+        [
+            "--pr-body",
+            str(body_file),
+            "--junitxml",
+            str(junit_file),
+            "--check",
+            "evidence",
+            "--pr-author",
+            "octocat",
+        ]
+    )
+    assert rc == 0, "human PR with valid Evidence must exit 0"

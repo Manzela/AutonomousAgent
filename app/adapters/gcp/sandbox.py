@@ -9,9 +9,18 @@ from app.core.sandbox import AbstractSandbox, SandboxResult
 
 
 class FirecrackerSandbox(AbstractSandbox):
-    """GCP Firecracker Sandbox."""
+    """GCP Firecracker Sandbox.
 
-    is_production_grade = True
+    NOT YET IMPLEMENTED — SP-05 scaffolding.  Both __init__ and run() raise
+    NotImplementedError until the Firecracker tier is provisioned (see
+    docs/architecture/h1-firecracker-provision.md).
+
+    is_production_grade=False until run() is real (H-06).  Setting it True
+    on a stub would allow OrchestratorConfig.validate() to falsely accept
+    this class in a production environment, then crash on the first .run().
+    """
+
+    is_production_grade = False
 
     def __init__(self) -> None:
         raise NotImplementedError(

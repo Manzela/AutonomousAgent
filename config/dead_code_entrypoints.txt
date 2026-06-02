@@ -129,5 +129,38 @@ app.core.spine_runner
 app.core.decompose
 app.adapters.inmemory.decompose
 app.adapters.gcp.decompose
+
+# SP-03 clarification driver + spec-drafter (PRD §6 EPIC-1 SP-03). NET-NEW hybrid
+# adapter triple + driver:
+#   app/core/spec_drafter.py            — AbstractSpecDrafter ABC + DraftResult /
+#                                         ClarifyingQuestion / AppliedStandard /
+#                                         Assumption / AmbiguityItem value objects.
+#   app/adapters/inmemory/spec_drafter.py — InMemorySpecDrafter (deterministic, CI).
+#   app/adapters/gcp/spec_drafter.py    — VertexSpecDrafter (DEFERRED stub, raises
+#                                         NotImplementedError; kept as a sibling per
+#                                         the CLAUDE.md builder-agent rule).
+#   lib/anchors/clarification_driver.py — run_clarification_round + ClarificationOutcome.
+#
+# The LIVE path is: hermes plugin-loader → lib.anchors.register(ctx) →
+# lib.anchors.run_clarification(...) (a public plugin entry point, ~L226 of
+# lib/anchors/__init__.py) → clarification_driver.run_clarification_round →
+# InMemorySpecDrafter.draft + decide_next_action. The AST callgraph cannot trace
+# the loader's dynamic register(ctx) dispatch (identical limitation to app.core.trust
+# and lib.durability:register above), so these symbols appear unreachable even
+# though run_clarification is a registered plugin entry point.
+#
+# The session-aware ADAPTER that auto-invokes run_clarification from _on_pre_tool_call
+# on an inbound user-message is owned by the Hermes-integration layer and is
+# DEFERRED (the hook returns None until it lands). The Vertex concretion
+# (VertexSpecDrafter) is also DEFERRED. Both are legitimately-present-not-yet-wired
+# foundation that must not be deleted. They are genuinely exercised by 21 red-green
+# oracles in tests/unit/test_sp03_clarification_driver.py. Pending operator review at
+# PR. REMOVE each line once the Hermes adapter + Vertex drafter wire them (they
+# become genuinely reachable then). Operator-reviewed (2026-06-02).
+app.core.spec_drafter
+app.adapters.inmemory.spec_drafter
+app.adapters.gcp.spec_drafter:VertexSpecDrafter
+lib.anchors.clarification_driver
+lib.anchors:run_clarification
 # scripts.ci.license_dep_gate  (auto-detected via __main__)
 # scripts.ci.run_acceptance    (auto-detected via __main__)

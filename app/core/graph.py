@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import hashlib
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Callable, Optional
-from uuid import uuid4
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -58,6 +58,16 @@ def _digest(state: SpineState) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+# Stable namespace for deriving a DETERMINISTIC spec_id from (thread_id, __pregel_task_id),
+# so a seal_spec re-run (same ptid, verified stable across resume) overwrites the SAME
+# SpecStore file rather than minting a duplicate spec on crash-retry (C9 finding 3).
+_SPEC_NS = uuid.uuid5(uuid.NAMESPACE_URL, "autonomousagent.spine.spec")
+
+
+def _spec_id_for(tid: str, ptid: str) -> uuid.UUID:
+    return uuid.uuid5(_SPEC_NS, f"{tid}:{ptid}")
+
+
 def apply_once(
     state: SpineState,
     *,
@@ -67,11 +77,19 @@ def apply_once(
     node_label: str,
     effect: Callable[[], None],
 ) -> dict:
-    """Ledger-guarded exactly-once wrapper for an irreversible EXTERNAL effect.
+    """Ledger guard for an irreversible EXTERNAL effect.
 
-    write-before-effect: on re-entry a present receipt SKIPS the effect (so the
-    external op runs at most once across loops / fan-out / crash-mid-effect). The
-    receipt + counter are state-channel writes (exactly-once via langgraph)."""
+    GUARANTEE (precise): exactly-once across a node RE-ENTRY where the receipt is
+    already durable in state — loops, fan-out re-dispatch, and a re-driven resume
+    (proven load-bearing by test_apply_once_guard_is_load_bearing_on_reentry). The
+    receipt + counter are state-channel writes (exactly-once via langgraph).
+
+    LIMIT (honest): this is check-then-act WITHIN one node, so a crash STRICTLY between
+    effect() and the node's checkpoint commit leaves no durable receipt and the effect
+    re-runs on resume — AT-LEAST-ONCE. True end-to-end exactly-once for that window comes
+    from the external op being idempotent (spec §12: git content-addressing + check-then-act;
+    here seal_spec uses a deterministic spec_id so the save is idempotent). The ledger is the
+    fast-path dedup, not a substitute for an idempotent effect."""
     key = (tid, ptid, kind)
     if _ledger_has(state, key):
         return {"audit": [f"{node_label} SKIP (receipt {gs._key_str(key)} present)"]}
@@ -86,7 +104,11 @@ def apply_once(
 def _record_decision(gate: str, decision) -> dict:
     """Build a HitlDecision from the resumed value (which the runner stamped with
     the real Interrupt.id), append it to the durable JSONL, return the state delta.
-    Runs AFTER interrupt() -> executes once on the completing resume pass."""
+
+    Runs AFTER interrupt() -> executes once on the completing resume pass. The STATE
+    decision_record (the checkpointed copy) is exactly-once. The external JSONL append
+    is at-least-once-by-design: an audit trail must never LOSE a decision, so a duplicate
+    on a re-driven resume is the safe direction — readers dedup by interrupt_id (§9)."""
     if not isinstance(decision, dict):
         decision = {"verb": str(decision)}
     hitl = {
@@ -133,7 +155,9 @@ def _build_nodes(capability: AgentCapability):
                 scope=Scope(in_scope=["the requested change"], out_of_scope=["unrelated work"]),
                 success_metrics=["acceptance green on the merged commit"],
                 created_by=0,
-                spec_id=uuid4(),
+                spec_id=_spec_id_for(
+                    tid, ptid
+                ),  # deterministic -> idempotent re-save (C9 finding 3)
                 spec_sha="0" * 64,  # placeholder; SpecStore.save() overwrites via compute_spec_sha
                 created_at=datetime.now(timezone.utc),
             )

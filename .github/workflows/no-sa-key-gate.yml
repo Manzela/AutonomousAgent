@@ -1,0 +1,50 @@
+# SP-00b — no-SA-key gate (WIF-only CI auth enforcement).
+#
+# Scans .github/workflows/*.yml and FAILS if any google-github-actions/auth
+# step authenticates with a long-lived SA JSON key (credentials_json / a key
+# file) instead of Workload Identity Federation (OIDC).
+#
+# Anti-pattern killed: long-lived SA keys committed as GitHub Secrets and
+# passed as credentials_json to the auth action.
+#
+# Check name: "no-sa-key-gate (SP-00b)"
+# CODEOWNERS guards .github/, so this gate-config is reviewed by the
+# operator + Gemini (C9).
+name: no-sa-key-gate
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  no-sa-key:
+    name: no-sa-key-gate (SP-00b)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: uv sync --frozen
+        run: uv sync --frozen
+
+      - name: Run no-SA-key gate (SP-00b)
+        # stdlib-only gate; no third-party deps required beyond Python.
+        run: python scripts/ci/no_sa_key_gate.py
+
+      - name: Gate unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_no_sa_key_gate.py -q

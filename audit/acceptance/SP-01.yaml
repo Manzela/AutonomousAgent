@@ -140,7 +140,7 @@ assertions:
 proof:
   ci_workflow: .github/workflows/ci.yml
   artifact: >
-    SP-01 walking-skeleton red-greens (32 unit tests): full SpineState schema + ledger
+    SP-01 walking-skeleton red-greens (the SP-01 unit oracles): full SpineState schema + ledger
     key-choice collision, checkpointer provider ABC, decision-record JSONL, 2-interrupt
     skeleton wrapping orchestrator.execute, SP-R1 scrub-before-persist, DoD-1 exactly-once
     (load-bearing apply_once guard + crash+resume), external-effect-before-interrupt RED,

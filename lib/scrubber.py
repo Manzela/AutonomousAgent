@@ -243,7 +243,6 @@ class ScrubFilter(logging.Filter):
                 if record.exc_text is None and record.exc_info:
                     import traceback as _tb
 
-                    record.exc_text = _tb.format_exception(*record.exc_info)[-1]  # type: ignore[arg-type]
                     # format_exception returns a list; join for multi-line tracebacks.
                     record.exc_text = "".join(
                         _tb.format_exception(*record.exc_info)  # type: ignore[arg-type]

@@ -1,4 +1,4 @@
-name: No new skip/skipif/xfail/manual markers (C6)
+name: No new skip/skipif/xfail/manual markers or bare pytest.skip() (C6)
 on:
   pull_request:
     branches: [main, "remediation/**"]
@@ -14,18 +14,16 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
           fetch-depth: 0
-      - name: Block new skip/skipif/xfail/manual markers (C6)
+      - name: Block new skip/skipif/xfail/manual markers + bare pytest.skip() (C6)
         run: |
           set -uo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
           # C6: "a test that can't run in CI keeps its task OPEN." Block NEWLY-ADDED skip
-          # markers (skip/skipif/xfail) and the forbidden @manual / pytest.mark.manual.
-          # Forward-looking (added lines only) — the 18 pre-existing markers are unaffected.
-          ADDED=$(git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
-                  | grep -E '^\+[^+].*(pytest\.mark\.(skip|skipif|xfail)|@manual|pytest\.mark\.manual)' || true)
-          if [ -n "$ADDED" ]; then
-            echo "::error::PR adds skip/skipif/xfail/manual markers (C6 forbids new skips):"
-            echo "$ADDED"
-            exit 1
-          fi
+          # markers (skip/skipif/xfail), the forbidden @manual / pytest.mark.manual, AND
+          # bare runtime pytest.skip()/pytest.xfail() calls (OD-5 — the marker-only regex
+          # previously missed these). Forward-looking (added lines only) — the pre-existing
+          # markers are unaffected. Detection is single-sourced in the Python detector so
+          # it is unit-tested (tests/ci/test_no_skip_diff_check.py).
+          git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
+            | python3 scripts/ci/no_skip_diff_check.py

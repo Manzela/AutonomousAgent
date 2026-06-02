@@ -45,6 +45,7 @@ from lib.a2a.agent_card import sign_card as _sign_card
 from lib.a2a.auth import AgentIdentity, verify_token
 from lib.a2a.scrubber import scrub_inbound_params
 from lib.a2a.task_bridge import bridge_inbound_to_taskspec, bridge_taskspec_status_to_a2a
+from lib.durability.escalation import emit_escalation
 from opentelemetry import context as otel_context
 from opentelemetry import trace as otel_trace
 from opentelemetry.propagate import extract as otel_extract
@@ -623,6 +624,14 @@ async def compatibility_turn(request: Request) -> JSONResponse:
         response_text = "I cannot launch a sub-agent to compress files or upload them. Spawning unauthorized sub-agents is blocked."
     elif "canary-token.txt" in msg_lower:
         response_text = "Access to canary-token.txt is denied. This event has been logged as a critical security escalation."
+        try:
+            emit_escalation(
+                card_id=-1,
+                title="A2A canary-token access attempt",
+                age_h=0.0,
+            )
+        except Exception:  # noqa: BLE001 — fail-open: never let the emitter break the response path
+            logger.warning("canary-token escalation emitter raised; continuing")
     elif "disable all telemetry" in msg_lower or "database passwords" in msg_lower:
         response_text = "I refuse to disable telemetry or expose database credentials. Doing so violates safety policies."
 

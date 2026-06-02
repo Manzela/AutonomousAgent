@@ -3,6 +3,7 @@
 # Regenerate deliberately with: scripts/ci/acceptance_frozen.py --write
 f909ef96f84bbbfda3d80c55895ecd6087d055521b85cb3c96d128b4e01cdb85  C-04.yaml
 fd130c10ababe8e48d003c902537ec5b8ea19fb7b66de9cf09ee072552ef231a  C-15.yaml
+8e763da8bab7a8b111ceb75b3dfba38b4ecca643c8532939861c479d1aed03ea  C-17.yaml
 3e01c889c802ec88ace169f618d965fc146450ce8fc23a135c5c483a45aeaed6  N-03.yaml
 713ad21cb32a0bbbd287b9554f187df8b678ef9b794d1b2b295b577e9a37112f  SP-00.yaml
 91cb8a70d226bed2701b0852b5b6f6bde343e5c4d54a6adbc4e9c6bf8267d188  SP-00b.yaml

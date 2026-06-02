@@ -118,3 +118,107 @@ async def test_secret_in_goal_absent_from_persisted_checkpoint():
     persisted_goal = runner.get_state(tid).values["goal"]
     assert secret not in persisted_goal  # scrubbed before it entered the checkpoint
     assert runner.get_state(tid).values["scrubbed"] is True
+
+
+# ── Task 5: DoD-1 exactly-once ──────────────────────────────────────────────
+def test_apply_once_guard_is_load_bearing_on_reentry():
+    """The ledger guard is NON-VACUOUS: on re-entry with the receipt present it
+    SKIPs the external effect (count stays 1). Negative control proves the guard —
+    not langgraph — is what dedups: with no receipt in state the effect repeats."""
+    from app.core.graph import apply_once
+
+    calls = []
+    state = {"ledger": []}
+    d1 = apply_once(
+        state,
+        tid="T",
+        ptid="p",
+        kind="ship",
+        node_label="ship_effect",
+        effect=lambda: calls.append(1),
+    )
+    assert calls == [1] and "ledger" in d1  # first entry: effect ran, receipt written
+
+    state2 = {
+        "ledger": gs._ledger_union(state["ledger"], d1["ledger"])
+    }  # accumulate as reducer would
+    d2 = apply_once(
+        state2,
+        tid="T",
+        ptid="p",
+        kind="ship",
+        node_label="ship_effect",
+        effect=lambda: calls.append(1),
+    )
+    assert calls == [1]  # re-entry: SKIP'd, external effect NOT repeated
+    assert "ledger" not in d2 and "SKIP" in d2["audit"][0]
+
+    # NEGATIVE CONTROL: with no receipt in state the guard cannot fire -> effect repeats.
+    apply_once(
+        {"ledger": []},
+        tid="T",
+        ptid="p",
+        kind="ship",
+        node_label="ship_effect",
+        effect=lambda: calls.append(1),
+    )
+    assert calls == [1, 1]  # the guard (not langgraph) is what makes it exactly-once
+
+
+async def test_external_effect_before_interrupt_double_acts_RED():
+    """Why the node-split exists: a REAL external effect placed BEFORE interrupt()
+    in a node body re-runs on resume -> at-least-once (==2). (A state-channel write
+    would be rolled back to 1 — verified — which is exactly why the proof must use
+    an external observable.)"""
+    seen = {"n": 0}
+
+    class S(TypedDict):
+        decision: str
+
+    async def bad_gate(state, config):
+        seen["n"] += 1  # EXTERNAL effect before interrupt -> at-least-once
+        d = interrupt({"q": "?"})
+        return {"decision": d}
+
+    g = StateGraph(S)
+    g.add_node("bad_gate", bad_gate)
+    g.add_edge(START, "bad_gate")
+    g.add_edge("bad_gate", END)
+    app = g.compile(checkpointer=InMemorySaver())
+    cfg = {"configurable": {"thread_id": "red"}}
+    r1 = await app.ainvoke({"decision": ""}, cfg, durability="sync")
+    intr = r1["__interrupt__"][0]
+    await app.ainvoke(Command(resume={intr.id: "APPROVE"}), cfg, durability="sync")
+    assert seen["n"] == 2  # RED: the external effect double-acted (anti-pattern)
+
+
+async def test_ship_effect_exactly_once_under_crash_resume():
+    """DoD-1: drive to ship_gate, simulate process death (a fresh runner over the
+    SAME checkpointer provider), resume APPROVE; the ship effect is witnessed exactly
+    once. (Run-once here is enforced by langgraph re-running only the interrupted
+    node; the apply_once guard's forward-compat idempotency is proven separately by
+    test_apply_once_guard_is_load_bearing_on_reentry.)"""
+    cp = InMemoryCheckpointer()
+    tid = "goal-eo"
+    runner = SpineRunner(cp, capability=_stub_capability())
+    r1 = await runner.start(thread_id=tid, goal="ship X", durability="sync")
+    so = r1["__interrupt__"][0]
+    r2 = await runner.resume(
+        thread_id=tid,
+        interrupt_id=so.id,
+        decision={"verb": "APPROVE", "actor": "op", "reason": "y"},
+        durability="sync",
+    )
+    ship = r2["__interrupt__"][0]
+
+    runner2 = SpineRunner(cp, capability=_stub_capability())  # crash + restart, same saver
+    r3 = await runner2.resume(
+        thread_id=tid,
+        interrupt_id=ship.id,
+        decision={"verb": "APPROVE", "actor": "op", "reason": "y"},
+        durability="sync",
+    )
+    ship_receipts = [r for r in r3["ledger"] if r["action_kind"] == "ship"]
+    assert len(ship_receipts) == 1
+    counts = list(r3["execution_counts"].values())
+    assert counts and all(c == 1 for c in counts)  # every effect witnessed exactly once

@@ -301,3 +301,80 @@ async def test_timeout_maps_to_safe_default_reject():
     )
     assert runner.get_state(tid).next == ()  # halted (TIMEOUT -> safe-default reject)
     assert not r2.get("spec_sha")
+
+
+# ── Task 8: DoD-4 steering primitive + DoD-17 workspace rehydrate ───────────
+async def test_dod4_steering_dedup_survives_resume_and_arbitrate_picks_reject():
+    """DoD-4 (scoped to the proven primitive): pre-normalized SteeringEvents dedup on
+    (channel, origin_id), SURVIVE the resume boundary at-most-once, and arbitrate()
+    deterministically picks REJECT over APPROVE for one interrupt_id. Wiring arbitrate()
+    as the graph's routing signal (so REJECT steering overrides an APPROVE resume) is
+    the deferred SP-17 bus; this proves the reducer + arbitration only."""
+    cp = InMemoryCheckpointer()
+    runner = SpineRunner(cp, capability=_stub_capability())
+    tid = "goal-steer"
+    r1 = await runner.start(thread_id=tid, goal="g", durability="sync")
+    iid = r1["__interrupt__"][0].id
+    events = [
+        {
+            "channel": "telegram",
+            "origin_id": "m1",
+            "verb": "APPROVE",
+            "interrupt_id": iid,
+            "ts": "1",
+        },
+        {
+            "channel": "telegram",
+            "origin_id": "m1",
+            "verb": "APPROVE",
+            "interrupt_id": iid,
+            "ts": "1",
+        },
+        {"channel": "board", "origin_id": "c9", "verb": "REJECT", "interrupt_id": iid, "ts": "2"},
+    ]
+    await runner._app.ainvoke(
+        Command(
+            resume={iid: {"verb": "APPROVE", "actor": "op", "reason": "y", "interrupt_id": iid}},
+            update={"steering_events": events},
+        ),
+        runner._cfg(tid),
+        durability="sync",
+    )
+    survived = runner.get_state(tid).values["steering_events"]
+    keys = {(e["channel"], e["origin_id"]) for e in survived}
+    assert keys == {("telegram", "m1"), ("board", "c9")}  # dedup survived resume
+    assert sum(1 for e in survived if (e["channel"], e["origin_id"]) == ("telegram", "m1")) == 1
+    assert gs.arbitrate(survived, iid) == "REJECT"  # reject beats approve (deterministic C15)
+
+
+async def test_dod17_workspace_ref_byte_equal_across_crash_resume():
+    """DoD-17: the workspace_ref digest (the FS resume piece) is byte-equal after a
+    crash+resume — the second, independent resume-state proof distinct from DoD-1's
+    conversation counter."""
+    cp = InMemoryCheckpointer()
+    runner = SpineRunner(cp, capability=_stub_capability())
+    tid = "goal-ws"
+    r1 = await runner.start(thread_id=tid, goal="g", durability="sync")
+    so = r1["__interrupt__"][0]
+    digest = "deadbeef" * 8
+    r2 = await runner._app.ainvoke(
+        Command(
+            resume={
+                so.id: {"verb": "APPROVE", "actor": "op", "reason": "y", "interrupt_id": so.id}
+            },
+            update={"workspace_ref": {"kind": "branch", "ref": f"agent/{tid}", "digest": digest}},
+        ),
+        runner._cfg(tid),
+        durability="sync",
+    )
+    pre = runner.get_state(tid).values["workspace_ref"]["digest"]
+    sh = r2["__interrupt__"][0]
+    runner2 = SpineRunner(cp, capability=_stub_capability())  # crash + restart, same saver
+    r3 = await runner2.resume(
+        thread_id=tid,
+        interrupt_id=sh.id,
+        decision={"verb": "APPROVE", "actor": "op", "reason": "y"},
+        durability="sync",
+    )
+    post = r3["workspace_ref"]["digest"]
+    assert pre == digest and post == digest  # byte-equal rehydrate across the crash

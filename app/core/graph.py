@@ -250,9 +250,18 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
             deadline_s=60.0,
         )
         result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
+        # SP-06: execute is the AUTHORITATIVE producer of the agent diff the eval_gate scores.
+        # Derive it from the result's artifacts (each {"path","status"} entry) on EVERY run and
+        # write it unconditionally, so eval_gate can never read a STALE changed_paths from a
+        # prior super-step / re-driven resume (C9 fail-safe). Empty in the pure skeleton — the
+        # orchestrator surfaces no diff yet; the real git diff arrives with the SP-05 drive.
+        changed_paths = [
+            [a.get("status", "M"), a["path"]] for a in (result.artifacts or ()) if a.get("path")
+        ]
         delta = {
             "tasks": [result.model_dump(mode="json")],
             "cost_accumulator": {f"{state['thread_id']}|execute": result.cost_usd},
+            "changed_paths": changed_paths,
             "audit": [f"execute status={result.status.value} sandboxed={sandbox is not None}"],
         }
         # SP-R1 (C9 hardening): scrub the ENTIRE delta — every new string value entering
@@ -273,10 +282,14 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
         plan = state.get("plan")
         changed = [tuple(c) for c in (state.get("changed_paths") or [])]
         allowed = _allowed_globs_from_plan(plan)
+        # base/head are non-load-bearing verdict METADATA (the scope decision is over
+        # changed×allowed, not the refs). base defaults to "main" and head to the state
+        # content-digest in the skeleton; both become the real workspace refs when the SP-05
+        # drive attaches a workspace_ref. base is overridable via state['base_ref'] (C9 minor).
         verdict = scope_root_verdict(
             changed,
             allowed,
-            base="main",
+            base=state.get("base_ref") or "main",
             head=_digest(state),
             spec_sha=state.get("spec_sha") or "",
         )
@@ -364,12 +377,11 @@ def _route_after_sign_off(state: SpineState) -> str:
 
 
 def _route_after_eval_gate(state: SpineState) -> str:
-    """SP-06 SHIP PRECONDITION: proceed to ship_gate iff the scope verdict PASSED; a failed
-    (out-of-scope) verdict BLOCKS ship → __halt__. Absent verdict (defensive) ⇒ proceed."""
+    """SP-06 SHIP PRECONDITION — FAIL-CLOSED: proceed to ship_gate ONLY on an explicit
+    passing verdict; an absent OR malformed verdict BLOCKS ship (→ __halt__), so a gate that
+    did not run or returned a bad verdict can never let an unverified change ship (C9)."""
     v = state.get("eval_verdict")
-    if v is None or v.get("passed", True):
-        return "ship_gate"
-    return "__halt__"
+    return "ship_gate" if (v and v.get("passed") is True) else "__halt__"
 
 
 def _route_after_ship_gate(state: SpineState) -> str:

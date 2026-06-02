@@ -391,14 +391,16 @@ async def test_dod17_workspace_ref_byte_equal_across_crash_resume():
 
 
 # ── SP-06: eval_gate as SHIP PRECONDITION ───────────────────────────────────
-def test_route_after_eval_gate_blocks_only_on_failed_verdict():
-    """The router proceeds to ship_gate iff the scope verdict PASSED; a failed (out-of-scope)
-    verdict BLOCKS ship → __halt__; an absent verdict (defensive) proceeds."""
+def test_route_after_eval_gate_is_fail_closed():
+    """FAIL-CLOSED (C9): proceed to ship_gate ONLY on an explicit passing verdict; a failed,
+    ABSENT, or MALFORMED verdict all BLOCK ship → __halt__ (an unverified change never ships)."""
     from app.core.graph import _route_after_eval_gate
 
     assert _route_after_eval_gate({"eval_verdict": {"passed": True}}) == "ship_gate"
     assert _route_after_eval_gate({"eval_verdict": {"passed": False}}) == "__halt__"
-    assert _route_after_eval_gate({}) == "ship_gate"  # no verdict yet → don't block
+    assert _route_after_eval_gate({}) == "__halt__"  # no verdict → fail-closed → block
+    assert _route_after_eval_gate({"eval_verdict": {}}) == "__halt__"  # malformed → block
+    assert _route_after_eval_gate({"eval_verdict": {"passed": "yes"}}) == "__halt__"  # not True
 
 
 def test_allowed_globs_from_plan_unions_node_paths():
@@ -427,59 +429,47 @@ async def test_eval_gate_passes_on_empty_diff_and_records_verdict():
         decision={"verb": "APPROVE", "actor": "op", "reason": "lgtm"},
     )
     assert runner.get_state(tid).next == ("ship_gate",)  # eval_gate passed → reached ship_gate
+    assert r2["changed_paths"] == []  # execute AUTHORITATIVELY produced an empty diff (C9)
     assert r2["eval_verdict"]["passed"] is True
     assert r2["eval_verdict"]["gate"] == "SP-06.scope-root"
     assert r2["eval_verdict"]["violations"] == []
     assert any("eval_gate passed=True" in a for a in r2["audit"])
 
 
-async def test_eval_gate_blocks_ship_on_out_of_scope_change():
-    """SP-06 ship precondition (NON-VACUOUS): an agent diff touching paths OUTSIDE the locked
-    plan's allowed scope makes the verdict FAIL, so the run HALTS before ship_gate — it never
-    reaches the ship interrupt and never writes a ship receipt."""
-    from app.core.graph import build_spine
+async def test_eval_gate_node_fails_verdict_and_router_blocks_on_out_of_scope_diff():
+    """SP-06 ship-precondition NON-VACUOUS proof, exercised at the node level: the skeleton's
+    execute cannot produce a real diff until the SP-05 drive, so we drive the REAL eval_gate
+    node + router directly. An out-of-scope changed_paths against the locked plan's allowed
+    scope yields a FAILING verdict, and the router turns that into a ship BLOCK (__halt__);
+    an in-scope-only diff passes and proceeds to ship_gate."""
+    from app.core.graph import _build_nodes, _route_after_eval_gate
 
-    app = build_spine(InMemorySaver(), capability=_stub_capability())
-    tid = "goal-eval-block"
-    cfg = {"configurable": {"thread_id": tid}}
-    initial = {
-        "thread_id": tid,
-        "goal": "ship a hello-world endpoint",
-        "clarifications": [],
-        "tasks": [],
-        "ledger": [],
-        "execution_counts": {},
-        "decision_record": [],
-        "audit": [],
-        "steering_events": [],
-        "cost_accumulator": {},
-        "fix_attempts": 0,
-        "scrubbed": True,
-        # an out-of-scope diff the agent supposedly produced (no reducer → survives to eval_gate)
-        "changed_paths": [["M", "infra/main.tf"], ["A", "vendor/thirdparty.py"]],
+    eval_gate = _build_nodes(_stub_capability())["eval_gate"]
+    plan = {
+        "nodes": [{"allowed_paths": ["app/feature.py", "tests/test_feature.py"]}],
+        "edges": [],
     }
-    r1 = await app.ainvoke(initial, cfg, durability="sync")
-    signoff = r1["__interrupt__"][0]
-    r2 = await app.ainvoke(
-        Command(
-            resume={
-                signoff.id: {
-                    "verb": "APPROVE",
-                    "actor": "op",
-                    "reason": "lgtm",
-                    "interrupt_id": signoff.id,
-                }
-            }
-        ),
-        cfg,
-        durability="sync",
+    # out-of-scope: app/feature.py is allowed, infra/main.tf is NOT
+    bad = await eval_gate(
+        {
+            "goal": "scoped change",
+            "spec_sha": "deadbeef",
+            "plan": plan,
+            "changed_paths": [["M", "app/feature.py"], ["M", "infra/main.tf"]],
+        },
+        {},
     )
-    assert "__interrupt__" not in r2  # never reached the ship interrupt
-    assert app.get_state(cfg).next == ()  # terminated via __halt__
-    assert r2["eval_verdict"]["passed"] is False
-    assert any(v["reason"] == "out-of-scope" for v in r2["eval_verdict"]["violations"])
-    assert not [r for r in r2.get("ledger", []) if r.get("action_kind") == "ship"]  # never shipped
-    assert any("HALTED" in a for a in r2["audit"])
+    assert bad["eval_verdict"]["passed"] is False
+    assert [v["path"] for v in bad["eval_verdict"]["violations"]] == ["infra/main.tf"]
+    assert _route_after_eval_gate({"eval_verdict": bad["eval_verdict"]}) == "__halt__"
+
+    # in-scope-only diff → passing verdict → proceed to ship_gate
+    ok = await eval_gate(
+        {"goal": "g", "spec_sha": "d", "plan": plan, "changed_paths": [["M", "app/feature.py"]]},
+        {},
+    )
+    assert ok["eval_verdict"]["passed"] is True
+    assert _route_after_eval_gate({"eval_verdict": ok["eval_verdict"]}) == "ship_gate"
 
 
 # ── C9 review fix: deterministic spec_id (idempotent re-seal) ────────────────

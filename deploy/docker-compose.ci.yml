@@ -46,27 +46,27 @@ services:
     # Override the image ENTRYPOINT so `command:` runs the stub directly (the image
     # ENTRYPOINT is ["hermes"]).
     entrypoint: []
-    # Fix NEW-227-A/-C/-D (OD-2). fastapi + uvicorn[standard] live under pyproject
-    # [project.optional-dependencies].a2a (NOT main deps) and are baked into the builder
-    # venv at /app/.venv/lib/python*/site-packages (#243). The boot then failed on
-    # INTERPRETER RESOLUTION, not the deps — through four wrong guesses:
-    #   (A) runtime `pip install` → read_only rootfs → exit(1) (fixed by baking, #243);
-    #   (B) bare `python` → SYSTEM interpreter, no fastapi (ModuleNotFoundError);
-    #   (C) `/app/.venv/bin/python` → "stat: no such file";
-    #   (D) system python + PYTHONPATH → pydantic_core ABI mismatch; and
-    #       `ls /app/.venv/bin/python3*` → none found.
-    # GROUND TRUTH (from `docker run … hermes`): the image ENTRYPOINT `hermes` is a WORKING
-    # console script in the venv, so its shebang names the venv's REAL interpreter. Derive
-    # it from hermes itself instead of guessing a python binary name. Unquoted `$(...)` so a
-    # `#!/usr/bin/env pythonX` shebang word-splits correctly too. read_only-safe; the SP-00h
-    # license/dep gate is unaffected (deps stay off pyproject main).
+    # Fix NEW-227 (OD-2), final. fastapi + uvicorn[standard] are the CI stub's only deps.
+    # GROUND TRUTH (`docker run --entrypoint sh … 'ls /app/.venv/bin'`): there is NO
+    # /app/.venv in this image at all — python is the GLOBAL interpreter. Every venv-based
+    # attempt was built on a false premise (bake-into-venv #243, /app/.venv/bin/python,
+    # PYTHONPATH=venv-site-packages, hermes-shebang). The robust, layout-independent fix:
+    # install the two stub deps FRESH for whatever python3 the image has, into a WRITABLE
+    # tmpfs (read_only:true leaves /tmp writable), then run with that interpreter. pip
+    # compiles pydantic_core for the RUNNING python, so there is no ABI mismatch, and it
+    # does not depend on /app/.venv existing. The deps stay off pyproject main → the SP-00h
+    # license/dep gate is unaffected.
     command:
       - sh
       - -c
       - |
-        PY="$(head -1 /app/.venv/bin/hermes | sed 's/^#!//')"
-        echo "ci_hermes_api: deriving interpreter from hermes shebang -> ${PY:-<none>}" >&2
-        exec $PY /app/deploy/scripts/ci_hermes_api.py
+        PY="$(command -v python3 || command -v python)"
+        echo "ci_hermes_api: interpreter=$PY; installing fastapi/uvicorn into /tmp/pydeps" >&2
+        "$PY" -m pip install --quiet --no-warn-script-location --target /tmp/pydeps \
+          "fastapi>=0.115" "uvicorn[standard]>=0.30" || { echo "pip install failed" >&2; exit 1; }
+        # Prepend the deps but KEEP /app (env PYTHONPATH) so ci_hermes_api's `lib.scrubber`
+        # import still resolves.
+        PYTHONPATH="/tmp/pydeps:${PYTHONPATH:-}" exec "$PY" /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"

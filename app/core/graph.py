@@ -209,15 +209,25 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
             return {"audit": ["decompose: no spec_id in state; skipped"]}
         spec = SpecStore(gs.default_spec_store_root()).get_by_id(spec_id)
         if spec is None:
-            return {"audit": [f"decompose: locked spec {spec_id} not found; skipped"]}
+            # C9: a sealed spec MUST be findable — a miss with spec_id set is a critical
+            # inconsistency (storage failure / corruption). Fail LOUD; never proceed with
+            # an empty plan.
+            raise RuntimeError(
+                f"decompose: locked spec {spec_id} not found in the store — a sealed spec "
+                "must be retrievable; refusing to build an empty plan"
+            )
         plan = InMemoryDecomposer().decompose(spec)
-        return {
-            "plan": plan,
-            "audit": [
-                f"decompose: {len(plan['nodes'])} node(s), {len(plan['edges'])} edge(s) "
-                f"from {len(spec.acceptance_criteria)} criteria"
-            ],
-        }
+        # SP-R1 (C9): scrub before persist — the plan node summaries derive from the
+        # operator's acceptance_criteria text, which can carry PII.
+        return _scrub_persisted(
+            {
+                "plan": plan,
+                "audit": [
+                    f"decompose: {len(plan['nodes'])} node(s), {len(plan['edges'])} edge(s) "
+                    f"from {len(spec.acceptance_criteria)} criteria"
+                ],
+            }
+        )
 
     async def execute(state: SpineState, config) -> dict:
         """Black-box call-through leaf to orchestrator.execute (no new class).

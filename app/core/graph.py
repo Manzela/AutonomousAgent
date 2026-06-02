@@ -33,6 +33,7 @@ from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
 from lib.anchors.spec_store import SpecStore
 from lib.anchors.task_spec import Scope, TaskSpec
+from lib.scrubber import scrub_string
 
 
 # ── small utilities ────────────────────────────────────────────────────────
@@ -130,6 +131,20 @@ def _record_decision(gate: str, decision) -> dict:
 _SKELETON_SANDBOX_CMD = [sys.executable, "-c", "import os; print(os.getpid())"]
 
 
+def _scrub_persisted(obj):
+    """SP-R1: recursively scrub every string in a value before it enters the checkpoint,
+    via the SAME ``lib.scrubber.scrub_string`` as the goal/model path (so PII/secret
+    coverage cannot drift between paths). Used on the execute node's tool output (a
+    sandbox child's stdout/stderr is untrusted — it may print a secret)."""
+    if isinstance(obj, str):
+        return scrub_string(obj, source="execute_tool_output")
+    if isinstance(obj, dict):
+        return {k: _scrub_persisted(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_persisted(v) for v in obj]
+    return obj
+
+
 # ── nodes (closure over the injected capability + sandbox — no callables in state) ──
 def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox] = None):
     async def goal_intake(state: SpineState, config) -> dict:
@@ -197,11 +212,16 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
             deadline_s=60.0,
         )
         result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
-        return {
+        delta = {
             "tasks": [result.model_dump(mode="json")],
             "cost_accumulator": {f"{state['thread_id']}|execute": result.cost_usd},
             "audit": [f"execute status={result.status.value} sandboxed={sandbox is not None}"],
         }
+        # SP-R1 (C9 hardening): scrub the ENTIRE delta — every new string value entering
+        # the checkpoint (untrusted sandbox tool output AND the audit line) routes through
+        # the same lib.scrubber as goal_intake, so no path can leak. Ints/floats (cost,
+        # returncode) pass through unchanged.
+        return _scrub_persisted(delta)
 
     async def ship_gate(state: SpineState, config) -> dict:
         """PURE interrupt node — prod-approval."""

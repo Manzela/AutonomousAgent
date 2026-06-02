@@ -50,8 +50,17 @@ def main(argv: list[str] | None = None) -> int:
     plan = load_locked_plan(args.store_root, args.spec_id, args.spec_sha)
     allowed = [g for node in plan["nodes"] for g in node["allowed_paths"]]
     changed = _git_name_status(args.base, args.head, args.repo_root)
+    # C9 hardening: flag symlinks on the checked-out head — a symlink inside an allowed
+    # dir can point out-of-scope while git diff reports the in-scope symlink path.
+    repo = Path(args.repo_root)
+    symlinks = [p for (_s, p) in changed if (repo / p).is_symlink()]
     verdict = scope_root_verdict(
-        changed, allowed, base=args.base, head=args.head, spec_sha=args.spec_sha
+        changed,
+        allowed,
+        base=args.base,
+        head=args.head,
+        spec_sha=args.spec_sha,
+        symlink_paths=symlinks,
     )
     Path(args.out).write_text(verdict.to_json())
 

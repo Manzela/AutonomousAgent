@@ -28,7 +28,7 @@ from __future__ import annotations
 import fnmatch
 import json
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.core.graph_state import TaskGraph
@@ -55,11 +55,14 @@ class ScopeVerdict:
 
 def _is_test_path(path: str) -> bool:
     """The shared net-new test selector (same semantics as test-integrity-gate's globs):
-    any path under a ``tests/`` dir, or a ``test_*.py`` / ``*_test.py`` / ``conftest.py``."""
-    parts = path.split("/")
-    name = parts[-1]
+    any path under a ``tests/`` dir, or a ``test_*.py`` / ``*_test.py`` / ``conftest.py``.
+
+    Uses ``PurePosixPath`` because ``git diff`` emits POSIX ('/') separators on every
+    platform (so this is portable, not host-dependent)."""
+    p = PurePosixPath(path)
+    name = p.name
     return (
-        "tests" in parts
+        "tests" in p.parts
         or (name.startswith("test_") and name.endswith(".py"))
         or name.endswith("_test.py")
         or name == "conftest.py"
@@ -68,12 +71,13 @@ def _is_test_path(path: str) -> bool:
 
 def _matches_any(path: str, globs: list[str]) -> bool:
     """True iff ``path`` is in scope of any allowed glob. Globs are concrete (catch-alls
-    are banned upstream), so an exact match, an fnmatch, or a directory-prefix all count."""
+    are banned upstream), so an exact match, an fnmatch, or a directory-prefix all count.
+    The exact-match fast-path is kept deliberately: it is glob-metacharacter-safe (e.g. a
+    file literally named ``a[b].py`` would be mis-parsed by fnmatch's ``[`` class)."""
     for g in globs:
         if path == g or fnmatch.fnmatch(path, g):
             return True
-        gp = g.rstrip("/")
-        if path == gp or path.startswith(gp + "/"):
+        if path.startswith(g.rstrip("/") + "/"):  # directory-prefix allow
             return True
     return False
 
@@ -85,16 +89,27 @@ def scope_root_verdict(
     base: str,
     head: str,
     spec_sha: str,
+    symlink_paths: tuple[str, ...] | list[str] = (),
 ) -> ScopeVerdict:
     """Deterministic scope verdict over a ``(status, path)`` diff.
 
     A changed path is a violation iff it is NOT matched by any allowed glob AND it is NOT
     a net-new (status ``A``) test in the shared selector. PASS iff zero violations.
+
+    ``symlink_paths`` (C9 hardening): any changed path that is a symlink ALWAYS violates —
+    even if in-scope or a net-new test. A symlink committed inside an allowed dir can point
+    out-of-scope (e.g. ``../../pyproject.toml``); ``git diff`` reports the in-scope symlink
+    path, so without this a non-conformant change would sneak through. The CLI entrypoint
+    populates this from ``Path(repo_root, p).is_symlink()`` on the checked-out PR head.
     """
-    net_new_tests = [p for (s, p) in changed if s == "A" and _is_test_path(p)]
+    symlinks = set(symlink_paths)
+    net_new_tests = [p for (s, p) in changed if s == "A" and _is_test_path(p) and p not in symlinks]
     excluded = set(net_new_tests)
     violations: list[dict] = []
     for _status, path in changed:
+        if path in symlinks:
+            violations.append({"path": path, "reason": "symlink-escapes-scope"})
+            continue
         if path in excluded:
             continue
         if _matches_any(path, allowed_globs):

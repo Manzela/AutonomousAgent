@@ -125,6 +125,75 @@ def test_spec_sha_mismatch_fails(tmp_path):
         load_locked_plan(store.root, str(sealed.spec_id), "deadbeef" * 8)
 
 
+# ── symlink-escape hardening (C9) ───────────────────────────────────────────
+def test_symlink_changed_path_is_violation_even_if_in_scope(tmp_path):
+    store = SpecStore(tmp_path)
+    sealed = _locked_spec(store)
+    allowed = _allowed_globs(store, sealed)
+    # app/core/widget.py is in-scope, but as a symlink it can point out-of-scope -> violation.
+    v = scope_root_verdict(
+        [("A", "app/core/widget.py")],
+        allowed,
+        base="b",
+        head="h",
+        spec_sha=sealed.spec_sha,
+        symlink_paths=["app/core/widget.py"],
+    )
+    assert v.passed is False
+    assert v.violations[0]["reason"] == "symlink-escapes-scope"
+
+
+def test_symlink_test_path_not_excused_by_net_new_carveout(tmp_path):
+    store = SpecStore(tmp_path)
+    sealed = _locked_spec(store)
+    allowed = _allowed_globs(store, sealed)
+    # a net-new test path that is a symlink must NOT be excused by the net-new carve-out.
+    v = scope_root_verdict(
+        [("A", "tests/unit/test_evil.py")],
+        allowed,
+        base="b",
+        head="h",
+        spec_sha=sealed.spec_sha,
+        symlink_paths=["tests/unit/test_evil.py"],
+    )
+    assert v.passed is False
+    assert v.violations[0]["reason"] == "symlink-escapes-scope"
+    assert "tests/unit/test_evil.py" not in v.net_new_tests_excluded
+
+
+def test_entrypoint_flags_real_symlink(tmp_path, monkeypatch):
+    from scripts.ci import sp06_scope_gate as gate
+
+    store = SpecStore(tmp_path)
+    sealed = _locked_spec(store)
+    # a real symlink at an otherwise in-scope path, on the checked-out head (repo_root=tmp_path)
+    (tmp_path / "app" / "core").mkdir(parents=True)
+    (tmp_path / "secret_target").write_text("out of scope")
+    (tmp_path / "app" / "core" / "widget.py").symlink_to(tmp_path / "secret_target")
+    monkeypatch.setattr(
+        gate, "_git_name_status", lambda base, head, root: [("A", "app/core/widget.py")]
+    )
+    rc = gate.main(
+        [
+            "--base",
+            "b",
+            "--head",
+            "h",
+            "--spec-id",
+            str(sealed.spec_id),
+            "--spec-sha",
+            sealed.spec_sha,
+            "--store-root",
+            str(tmp_path),
+            "--repo-root",
+            str(tmp_path),
+            "--out",
+            str(tmp_path / "verdict.json"),
+        ]
+    )
+    assert rc == 1
+
+
 # ── machine-readable verdict ────────────────────────────────────────────────
 def test_verdict_json_schema(tmp_path):
     store = SpecStore(tmp_path)

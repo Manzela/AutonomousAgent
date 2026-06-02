@@ -118,6 +118,8 @@ proof:
         Blocked on: SP-05 as the event source.
 
     (d) Production HTTP_PROXY wiring into deploy/docker-compose.yml (8 egress services).
-        Gated: needs staging validation; LiteLLM→Vertex gRPC ignores HTTP_PROXY.
+        Gated: needs staging validation; Squid HTTPS-intercept requires a trusted CA
+        injected into LiteLLM container (LiteLLM→Vertex uses httpx, not gRPC; httpx
+        honours HTTPS_PROXY but will receive cert errors unless the Squid CA is trusted).
 
   status: PARTIAL/OPEN per C8

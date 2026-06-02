@@ -28,7 +28,7 @@ from app.core import graph_state as gs
 from app.core.decision_record import append_decision
 from app.core.graph_state import SpineState
 from app.core.orchestrator import execute as orchestrate
-from app.core.schemas import AgentCapability, ExecutionResult, TaskRequest, TaskStatus
+from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
 from lib.anchors.spec_store import SpecStore
 from lib.anchors.task_spec import Scope, TaskSpec
 
@@ -201,13 +201,16 @@ def _build_nodes(capability: AgentCapability):
         tid = state["thread_id"]
         ptid = config["configurable"]["__pregel_task_id"]
 
+        ship_decision = state.get("ship")
+        ship_iid = ship_decision["interrupt_id"] if ship_decision else "<unknown>"
+
         def _effect() -> None:
             append_decision(
                 {
                     "verb": "SHIPPED",
                     "actor": "spine",
                     "reason": "ship_effect",
-                    "interrupt_id": (state.get("ship") or {}).get("interrupt_id", "<unknown>"),
+                    "interrupt_id": ship_iid,
                     "ts": _now(),
                 }
             )
@@ -235,7 +238,8 @@ def _build_nodes(capability: AgentCapability):
 
 # ── conditional routing (code-decided, deterministic on the HITL verb) ──────
 def _route_after_sign_off(state: SpineState) -> str:
-    verb = (state.get("sign_off") or {}).get("verb", "APPROVE")
+    d = state.get("sign_off")
+    verb = d["verb"] if d else "APPROVE"
     return {
         "APPROVE": "seal_spec",
         "REJECT": "__halt__",
@@ -245,7 +249,8 @@ def _route_after_sign_off(state: SpineState) -> str:
 
 
 def _route_after_ship_gate(state: SpineState) -> str:
-    verb = (state.get("ship") or {}).get("verb", "APPROVE")
+    d = state.get("ship")
+    verb = d["verb"] if d else "APPROVE"
     return {
         "APPROVE": "ship_effect",
         "REJECT": "__halt__",
@@ -275,7 +280,7 @@ def _default_capability() -> AgentCapability:
         return ExecutionResult(task_id=request.task_id, status=TaskStatus.COMPLETED)
 
     return AgentCapability(
-        agent_id="spine-local",
+        agent_id=AgentID("spine-local"),
         version="1",
         phase="draft",
         description="skeleton local stub",

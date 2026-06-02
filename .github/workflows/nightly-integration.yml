@@ -83,7 +83,14 @@ jobs:
             2>&1 | tail -20
 
       # ------------------------------------------------------------------
-      # 5. Run integration suite
+      # 5. Install cosign (required by test_cosign_verify_negative.py — N-03)
+      #    SHA-pinned ref reused from .github/workflows/phase-0a-deploy.yml.
+      # ------------------------------------------------------------------
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      # ------------------------------------------------------------------
+      # 6. Run integration suite
       # ------------------------------------------------------------------
       - name: Run integration tests
         env:
@@ -96,7 +103,7 @@ jobs:
             2>&1 | tee pytest-output.txt
 
       # ------------------------------------------------------------------
-      # 6. Assert zero skips + require the previously-failing manifest
+      # 7. Assert zero skips + require the previously-failing manifest
       #    (tests that SKIPS.yaml listed as "Requires INTEGRATION_LIVE_STACK=1")
       # ------------------------------------------------------------------
       - name: Assert zero skips + required nodeids passed
@@ -107,14 +114,14 @@ jobs:
             --require-nodeid "tests/integration/test_budget_cap.py::test_budget_cap_enforced"
 
       # ------------------------------------------------------------------
-      # 7. SP-00c acceptance assertions
+      # 8. SP-00c acceptance assertions
       # ------------------------------------------------------------------
       - name: Run SP-00c acceptance
         run: |
           uv run python scripts/ci/run_acceptance.py audit/acceptance/SP-00c.yaml
 
       # ------------------------------------------------------------------
-      # 8. Upload artifacts
+      # 9. Upload artifacts
       # ------------------------------------------------------------------
       - name: Upload junit + pytest output
         if: always()
@@ -127,7 +134,7 @@ jobs:
           retention-days: 30
 
       # ------------------------------------------------------------------
-      # 9. Tear down compose stack
+      # 10. Tear down compose stack
       # ------------------------------------------------------------------
       - name: Tear down CI compose stack
         if: always()

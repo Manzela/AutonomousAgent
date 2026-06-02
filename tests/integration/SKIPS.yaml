@@ -98,3 +98,9 @@ skips:
   - test: tests/integration/test_otel_redaction.py::test_otel_collector_redacts_pii
     reason: docker daemon not available
     issue: P0-5
+  - test: tests/integration/test_cosign_verify_negative.py::test_signed_image_verify_passes
+    reason: requires docker daemon + cosign binary; skips cleanly on CI hosts where either is absent
+    issue: N-03
+  - test: tests/integration/test_cosign_verify_negative.py::test_unsigned_image_verify_fails
+    reason: requires docker daemon + cosign binary; skips cleanly on CI hosts where either is absent
+    issue: N-03

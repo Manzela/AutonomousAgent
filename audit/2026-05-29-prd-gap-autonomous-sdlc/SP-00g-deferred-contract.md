@@ -66,14 +66,16 @@ Routing the 8 egress-enabled services in `deploy/docker-compose.yml`
 
 **Why deferred / gated:**
 
-1. **LiteLLM → Vertex gRPC ignores HTTP_PROXY.**  The LiteLLM proxy makes gRPC
-   calls to `*.googleapis.com`.  gRPC's Python channel uses its own TCP stack and
-   does NOT honour the `HTTP_PROXY` / `http_proxy` env var.  Routing it through
-   Squid requires either:
-   - `GRPC_PROXY` support (experimental, version-dependent), OR
-   - A transparent (TPROXY) iptables redirect — which requires `NET_ADMIN` cap
-     inside the container and a different Squid config (tproxy port + mark rules).
-   Neither approach is safe to wire without staging validation.
+1. **Squid HTTPS-intercept requires a trusted CA injected into containers.**
+   LiteLLM's Vertex AI backend uses **httpx** (not gRPC) — confirmed: zero
+   `import grpc` / `from grpc` statements exist in
+   `.venv/lib/*/site-packages/litellm/llms/vertex_ai/`.  httpx honours
+   `HTTPS_PROXY` by default (`trust_env=True`), so the proxy env var WILL be
+   picked up.  The actual blocker is that Squid re-signs TLS with its own CA;
+   any container that does not have the Squid CA in its trust store will receive
+   cert errors against `*.googleapis.com`.  Wiring `HTTPS_PROXY` without first
+   injecting the Squid CA into the LiteLLM container trust store will silently
+   break Vertex AI calls.
 
 2. **QUIC / HTTP3 bypasses Squid.**  Any service that negotiates HTTP/3 (QUIC over
    UDP) will bypass the TCP-level Squid proxy entirely.  Mitigation options
@@ -155,7 +157,7 @@ def test_planted_injection_blocked(agent, egress_proxy_network):
 | Deferred item | Blocked on | Unblocking condition |
 |---|---|---|
 | C16 untrusted-read quarantine | SP-05 read paths + C17 `action_class` object | SP-05 + SP-03 TaskSpec |
-| Prod HTTP_PROXY wiring (compose.yml) | Staging validation; gRPC/QUIC issues | Staging green run + CA trust review |
+| Prod HTTP_PROXY wiring (compose.yml) | Staging validation; Squid CA trust injection; QUIC bypass | Staging green run + CA injected into LiteLLM container |
 | Blocked-egress → PR-comment emitter | SP-05 executor + SP-06 PR pipeline | SP-05 + SP-06 |
 | RED/GREEN agent-behavior acceptance | SP-05 real sandbox | SP-05 |
 

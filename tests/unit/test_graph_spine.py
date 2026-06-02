@@ -222,3 +222,47 @@ async def test_ship_effect_exactly_once_under_crash_resume():
     assert len(ship_receipts) == 1
     counts = list(r3["execution_counts"].values())
     assert counts and all(c == 1 for c in counts)  # every effect witnessed exactly once
+
+
+# ── Task 6: REJECT + REPLAN ─────────────────────────────────────────────────
+async def test_reject_at_sign_off_halts_nothing_built():
+    runner = SpineRunner(InMemoryCheckpointer(), capability=_stub_capability())
+    tid = "goal-reject"
+    r1 = await runner.start(thread_id=tid, goal="do X")
+    so = r1["__interrupt__"][0]
+    r2 = await runner.resume(
+        thread_id=tid,
+        interrupt_id=so.id,
+        decision={"verb": "REJECT", "actor": "op", "reason": "no"},
+    )
+    assert "__interrupt__" not in r2  # no ship gate reached
+    assert runner.get_state(tid).next == ()  # halted at END
+    assert not r2.get("spec_sha")  # seal_spec never ran (nothing built before approval)
+    assert not [r for r in r2.get("ledger", []) if r["action_kind"] == "ship"]
+    assert any("HALTED" in a for a in r2["audit"])
+    assert r2["decision_record"][-1]["verb"] == "REJECT"  # audited
+
+
+async def test_replan_at_sign_off_marks_fork_old_thread_immutable():
+    """REPLAN marks the fork (replan_parent set) and leaves the old thread + its
+    (unsealed) spec immutable. The actual continue-as-new child-thread spawn is the
+    deferred REPLAN native-time-travel layer."""
+    cp = InMemoryCheckpointer()
+    runner = SpineRunner(cp, capability=_stub_capability())
+    old = "goal-replan"
+    r1 = await runner.start(thread_id=old, goal="do X")
+    so = r1["__interrupt__"][0]
+    r2 = await runner.resume(
+        thread_id=old,
+        interrupt_id=so.id,
+        decision={"verb": "REPLAN", "actor": "op", "reason": "redo"},
+    )
+    assert r2["replan_parent"] == old
+    assert runner.get_state(old).next == ()  # old thread terminal
+    assert not r2.get("spec_sha")  # nothing sealed on REPLAN
+    # a fresh thread_id starts independently on the same saver (continue-as-new)
+    r3 = await runner.start(thread_id="goal-replan-2", goal="do X (replanned)")
+    assert "__interrupt__" in r3
+    # old thread state is preserved/immutable
+    assert runner.get_state(old).values["thread_id"] == old
+    assert runner.get_state(old).values["replan_parent"] == old

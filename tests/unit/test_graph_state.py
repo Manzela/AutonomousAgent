@@ -7,6 +7,8 @@ stays distinct) and the SP-R1 serialize-time no-callable + scrub guards.
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 
 from app.core import graph_state as gs
@@ -121,3 +123,45 @@ def test_scrub_state_redacts_secrets_in_strings():
 def test_key_str_roundtrips_ledger_key():
     key = gs.ledger_key({"thread_id": "T", "pregel_task_id": "p", "action_kind": "ship"})
     assert gs._key_str(key) == "T|p|ship"
+
+
+def test_steering_event_matches_prd_shape():
+    """P0-2: SteeringEvent must carry the PRD §5/§8 (L181/L346) contract —
+    {thread_id, channel, origin_id, kind∈{approve,reject,steer,abort,answer},
+    interrupt_id?, payload, ts}. thread_id is the §8 sole-correlation key;
+    payload + the on-the-loop kinds (steer/abort/answer) are NEW vs the merged
+    {channel, origin_id, verb, interrupt_id, ts} shape."""
+    # SteeringKind exposes exactly the five PRD kinds (override is an ambiguity-report
+    # enum per C15 L117, NOT a SteeringEvent.kind).
+    assert set(get_args(gs.SteeringKind)) == {"approve", "reject", "steer", "abort", "answer"}
+
+    # The merged contract names every PRD field (TypedDict.__annotations__ is the oracle).
+    ann = gs.SteeringEvent.__annotations__
+    assert "thread_id" in ann  # §8 sole correlation key (NEW)
+    assert "channel" in ann
+    assert "origin_id" in ann
+    assert "kind" in ann  # SteeringKind (NEW)
+    assert "interrupt_id" in ann  # optional
+    assert "payload" in ann  # NEW
+    assert "ts" in ann
+    # the existing verb field stays so arbitrate()/_merge_steering keep working
+    assert "verb" in ann
+
+    # A §5-shaped event constructs and round-trips through the reducer + the
+    # (channel,origin_id) idempotency key; kind accepts the on-the-loop verbs.
+    for k in ("steer", "abort", "answer"):
+        evt: gs.SteeringEvent = {
+            "thread_id": "goal-7",
+            "channel": "board",
+            "origin_id": "c-9",
+            "kind": k,
+            "verb": "REJECT",
+            "interrupt_id": "i7",
+            "payload": {"text": "redirect to plan B"},
+            "ts": "z",
+        }
+        out = gs._merge_steering([], [evt])
+        assert len(out) == 1
+        assert out[0]["thread_id"] == "goal-7"
+        assert out[0]["kind"] == k
+        assert out[0]["payload"] == {"text": "redirect to plan B"}

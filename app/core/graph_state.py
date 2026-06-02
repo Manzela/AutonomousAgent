@@ -46,6 +46,9 @@ from lib.scrubber import scrub_string
 # ── Verbs / kinds ──────────────────────────────────────────────────────────
 HitlVerb = Literal["APPROVE", "REJECT", "REPLAN", "TIMEOUT"]
 ActionKind = Literal["seal_spec", "ship"]  # the skeleton's two irreversible effect kinds
+# PRD §5/§8 (L181) SteeringEvent.kind. `override` is an SP-03 ambiguity-report-item enum
+# (C15 L117), DISTINCT from SteeringEvent.kind, so it is NOT a member here.
+SteeringKind = Literal["approve", "reject", "steer", "abort", "answer"]
 
 # Deterministic arbitration precedence (C15): higher number wins. REJECT/REPLAN beat
 # APPROVE; TIMEOUT maps to the safe default (treated as REJECT-strength).
@@ -90,10 +93,23 @@ class LedgerReceipt(TypedDict):
 
 
 class SteeringEvent(TypedDict):
+    """PRD §5/§8 (L181/L346) inbound-human-message contract. `thread_id` is the SOLE
+    correlation key (§8); `(channel, origin_id)` is the C15 idempotency key. `kind` is the
+    PRD-facing verb (approve/reject/steer/abort/answer); `verb` is the legacy C15 arbitration
+    verb (HitlVerb) that arbitrate()/_merge_steering read — kept so the SP-01 reducers and
+    DoD-4 oracle keep working until SP-17 wires the full bus."""
+
+    thread_id: str  # §8 sole correlation key — every channel adapter reads/writes via this
     channel: str  # "telegram" | "board" | ...
     origin_id: str  # provider message id — the (channel,origin_id) idempotency key
-    verb: HitlVerb
-    interrupt_id: Optional[str]
+    kind: SteeringKind  # PRD §5 verb: approve|reject|steer|abort|answer
+    verb: HitlVerb  # legacy C15 arbitration verb — arbitrate()/_merge_steering read this
+    interrupt_id: Optional[
+        str
+    ]  # PRD-optional: present for approve/reject/answer, absent for free steer/abort
+    payload: Optional[
+        dict
+    ]  # free-form steer/answer content (e.g. {"text": ...}); None for bare approve/reject
     ts: str
 
 

@@ -525,7 +525,7 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'a2a'", specifier = ">=0.0.20" },
     { name = "python-ulid", marker = "extra == 'a2a'", specifier = ">=3.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "redis", extras = ["asyncio"], marker = "extra == 'a2a'", specifier = ">=5.0,<8" },
+    { name = "redis", extras = ["asyncio"], marker = "extra == 'a2a'", specifier = ">=5.0,<9" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6.9" },
     { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.8,<5" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'a2a'", specifier = ">=0.30" },

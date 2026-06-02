@@ -81,6 +81,15 @@ app.core.trust
 # this line once SP-05 wires FirecrackerSandbox (it becomes genuinely reachable then).
 app.adapters.gcp.sandbox:FirecrackerSandbox
 
+# lib.scrubber.ScrubFilter is installed on the ROOT logger via
+# lib/observability/otel_setup.py:310 (root.addFilter(ScrubFilter())); its
+# .filter() is invoked by the Python logging framework's per-record dispatch —
+# a runtime entrypoint the AST callgraph cannot trace (the import is local to
+# setup_json_logging()). The scrubber PR adds exc_text scrubbing to .filter,
+# making it a changed public symbol; this declares the genuine entrypoint so C4
+# stops flagging ScrubFilter / ScrubFilter.filter as unreachable.
+lib.scrubber:ScrubFilter
+
 # scripts/ci/* are all __main__-guarded scripts; they auto-detect themselves.
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)

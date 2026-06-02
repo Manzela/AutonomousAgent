@@ -1,0 +1,264 @@
+# Acceptance — C-04 / H-05 · C9 reviewer-model-class gate (machine-enforce model-inequality)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# Operator-resolved rule (2026-06-01): a DIFFERENT MODEL constitutes a different class.
+# The class IS the specific model.  Opus reviewing Sonnet → ALLOWED; Opus reviewing
+# Opus → FORBIDDEN; Claude → Gemini → ALLOWED.  Vendor-sameness alone does NOT
+# make same-class.
+#
+# HARD-GATE TRIGGERS (any one fires the hard gate):
+#   (a) GitHub label matching /^P[01]$/i
+#   (b) PR body contains a Priority: field (markdown-tolerant) whose value starts with
+#       P0 or P1 — accepts leading **, -, >, whitespace; trailing text after token.
+#   (c) Changed files touch a sensitive/governance-critical path prefix (SENSITIVE_PATH_PREFIXES).
+#       Fail-closed safety net so the gate does not depend solely on author-controlled body text.
+#       The broader "hard-gate ALL PRs by default" policy is an operator activation decision.
+#
+# SPOOF-RESISTANCE LIMITATION (documented, not solved):
+#   This gate parses SELF-DECLARED metadata (`Reviewer model:` line + `Co-Authored-By:`
+#   trailers).  It CANNOT cryptographically prove the review was performed by the
+#   declared model.  Live cross-vendor invocation hardening is deferred pending
+#   SP-06 / SP-27 + a dedicated reviewer-credential mechanism.
+#
+# PRD §6 C-04: "the `Reviewer model:` PR-template field is parsed; same-model reviewer
+#   fails CI; different-model reviewer passes; closed-default on missing/unparseable
+#   value."
+
+task: C-04
+title: "C9 reviewer-model-class gate — machine-enforce model-inequality (H-05)"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: opus-reviews-sonnet-pass
+    description: >
+      GREEN: Opus reviewer + Sonnet implementer → PASS.
+      Different models → allowed (the canonical valid case).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate
+
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: claude-opus-4-8\n\n"
+          "Priority: P0\n"
+      )
+      commits = "feat: impl\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\n"
+      r = evaluate(body, commits, ["P0"])
+      if not r.ok:
+          print("FAIL: Opus-reviews-Sonnet must PASS:", r.failures)
+          sys.exit(1)
+      print("OK: Opus reviewer / Sonnet implementer → PASS")
+      PYEOF
+    expect_exit: 0
+
+  - id: opus-reviews-opus-fail
+    description: >
+      RED: Opus reviewer + Opus implementer (same model) → HARD FAIL.
+      This is the core invariant being enforced.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate
+
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: claude-opus-4-8\n\n"
+          "Priority: P0\n"
+      )
+      commits = "feat: impl\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
+      r = evaluate(body, commits, ["P0"])
+      if r.ok:
+          print("FAIL: same-model (Opus→Opus) must FAIL the gate"); sys.exit(1)
+      if not any("independence" in f.lower() or "co-author" in f.lower() for f in r.failures):
+          print("FAIL: failure message must mention independence/co-author:", r.failures); sys.exit(1)
+      print("OK: same-model correctly rejected:", r.failures[0][:80])
+      PYEOF
+    expect_exit: 0
+
+  - id: closed-default-missing-reviewer-fail
+    description: >
+      RED (closed-default): no `Reviewer model:` line in a P0 PR body → HARD FAIL.
+      Silent pass is not acceptable — the gate is closed by default.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate
+
+      body = "## Summary\nJust a fix.\n\nPriority: P0\n"
+      commits = "feat: impl\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\n"
+      r = evaluate(body, commits, ["P0"])
+      if r.ok:
+          print("FAIL: missing Reviewer model must FAIL (closed-default)"); sys.exit(1)
+      if not any("closed-default" in f.lower() or "missing" in f.lower() for f in r.failures):
+          print("FAIL: failure must mention closed-default/missing:", r.failures); sys.exit(1)
+      print("OK: missing reviewer model → closed-default FAIL:", r.failures[0][:80])
+      PYEOF
+    expect_exit: 0
+
+  - id: gemini-reviews-claude-pass
+    description: >
+      GREEN: cross-vendor (Gemini reviewer, Claude implementer) → PASS.
+      Different model keys; vendor-sameness does not trigger the rule.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate
+
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: Gemini 3.1 Pro\n\n"
+          "Priority: P0\n"
+      )
+      commits = "feat: impl\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\n"
+      r = evaluate(body, commits, ["P0"])
+      if not r.ok:
+          print("FAIL: Gemini-reviews-Claude must PASS:", r.failures); sys.exit(1)
+      print("OK: cross-vendor (Gemini reviewer / Claude implementer) → PASS")
+      PYEOF
+    expect_exit: 0
+
+  - id: reviewer-also-coauthor-fail
+    description: >
+      RED (mixed-authorship independence): the declared reviewer also appears as a
+      code co-author in this PR's commits → HARD FAIL.  The reviewer must not have
+      co-authored the code under review.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate
+
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: claude-opus-4-8\n\n"
+          "Priority: P0\n"
+      )
+      # Both Sonnet AND Opus co-authored; Opus is the declared reviewer
+      commits = (
+          "feat: initial impl\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>\n\n"
+          "fix: small fixup\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
+      )
+      r = evaluate(body, commits, ["P0"])
+      if r.ok:
+          print("FAIL: reviewer-also-coauthor must FAIL (independence violation)"); sys.exit(1)
+      if not any("independence" in f.lower() or "co-author" in f.lower() for f in r.failures):
+          print("FAIL: failure must mention independence/co-author:", r.failures); sys.exit(1)
+      print("OK: reviewer-also-coauthor correctly rejected:", r.failures[0][:80])
+      PYEOF
+    expect_exit: 0
+
+  - id: non-p01-advisory-not-hard-gated
+    description: >
+      SCOPE: a non-P0/P1 PR with a rule violation → advisory warning, gate exits 0.
+      The hard gate applies only to P0/P1 PRs.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate
+
+      # Same model — would fail a P0 PR, but this has no P0/P1 signal
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: claude-opus-4-8\n"
+      )
+      commits = "feat: impl\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
+      r = evaluate(body, commits, [])   # no P0/P1 label, no Priority: in body
+      if not r.ok:
+          print("FAIL: non-P0/P1 must exit 0 (advisory) even with a violation"); sys.exit(1)
+      if not r.advisory_only:
+          print("FAIL: advisory_only must be True for non-P0/P1"); sys.exit(1)
+      if not r.warnings:
+          print("FAIL: advisory warnings must be emitted for the violation"); sys.exit(1)
+      print("OK: non-P0/P1 advisory — gate passes, warnings emitted:", r.warnings[0][:80])
+      PYEOF
+    expect_exit: 0
+
+  - id: gate-unit-tests-pass
+    description: >
+      The gate's committed unit tests (tests/ci/test_reviewer_class_gate.py)
+      all pass — confirming the full RED-GREEN matrix holds.
+    cmd: |
+      python -m pytest tests/ci/test_reviewer_class_gate.py -q
+    expect_exit: 0
+
+  - id: path-based-fail-closed-trigger
+    description: >
+      HARDENING (FIX 1b): a same-model PR with NO label and NO Priority: body but
+      with a changed file under a sensitive path prefix → hard-gate FAIL.
+      Hard-gate fires on (P0/P1 label) OR (Priority body field) OR (sensitive changed path).
+      Note: broad "hard-gate ALL PRs" policy is left as an operator activation decision.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.reviewer_class_gate import evaluate, SENSITIVE_PATH_PREFIXES
+
+      # Same model, no label, no Priority body — only a sensitive changed file
+      body = (
+          "## Reviewer model\n"
+          "Reviewer model: claude-opus-4-8\n"
+      )
+      commits = "feat: impl\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n"
+      changed = ["audit/acceptance/foo.yaml"]
+      r = evaluate(body, commits, [], changed)
+      if r.ok:
+          print("FAIL: sensitive path must trigger hard gate"); sys.exit(1)
+      if r.advisory_only:
+          print("FAIL: advisory_only must be False for sensitive-path hard gate"); sys.exit(1)
+      # Also verify a trivial path does NOT trigger
+      changed_trivial = ["README.md"]
+      r2 = evaluate(body, commits, [], changed_trivial)
+      if not r2.ok:
+          print("FAIL: trivial path must remain advisory — gate must not hard-fail"); sys.exit(1)
+      if not r2.advisory_only:
+          print("FAIL: advisory_only must be True for trivial path"); sys.exit(1)
+      print(f"OK: sensitive path hard-gates ({SENSITIVE_PATH_PREFIXES[0]}...), trivial path stays advisory")
+      PYEOF
+    expect_exit: 0
+
+  - id: gate-is-main-guarded
+    description: >
+      reviewer_class_gate.py has a `if __name__ == "__main__":` guard so the
+      dead-code reachability gate (C4) auto-detects it as an entrypoint.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      src = open("scripts/ci/reviewer_class_gate.py").read()
+      if '__name__ == "__main__"' not in src and "__name__ == '__main__'" not in src:
+          print("FAIL: missing __main__ guard"); sys.exit(1)
+      print("OK: __main__ guard present — C4 auto-detects as entrypoint")
+      PYEOF
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/c9-reviewer-class-gate.yml
+  hard_gate_triggers: |
+    The hard gate fires on (P0/P1 label) OR (Priority body field, markdown-tolerant)
+    OR (sensitive changed path).  The path-based trigger is the fail-closed safety net
+    so the gate does not depend solely on author-controlled body text.
+    Broader "hard-gate ALL PRs by default" policy is left as an operator activation decision.
+  sensitive_paths: |
+    audit/acceptance/, .github/, scripts/ci/, terraform/, deploy/,
+    lib/scrubber, lib/a2a/, app/core/trust, CLAUDE.md,
+    config/dead_code_entrypoints.txt
+  spoof_resistance: >
+    DOCUMENTED LIMITATION: this gate parses self-declared metadata (PR body +
+    commit trailers).  It cannot cryptographically prove the declared model
+    actually performed the review.  Live cross-vendor invocation hardening is
+    deferred pending SP-06 / SP-27 + a dedicated reviewer-credential mechanism.
+    The gate raises the cost of accidental same-model review to a deliberate lie,
+    sufficient for the gate-0 threat model.
+  artifact: |
+    Gate script:  scripts/ci/reviewer_class_gate.py
+    Workflow:     .github/workflows/c9-reviewer-class-gate.yml
+    Unit tests:   tests/ci/test_reviewer_class_gate.py
+    Acceptance:   audit/acceptance/C-04.yaml (this file)

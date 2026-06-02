@@ -94,5 +94,22 @@ lib.scrubber:ScrubFilter
 # Listed here for discoverability only.
 # scripts.ci.dead_code_gate    (auto-detected via __main__)
 # scripts.ci.import_hygiene    (auto-detected via __main__)
+
+# SP-01 LangGraph spine (walking skeleton) — the P0 control-plane TRUNK. build_spine()
+# + SpineRunner are THE control plane a future FastAPI lifespan invokes (spec §2/§3:
+# "checkpointer injected at FastAPI lifespan"); that runner-wiring layer is deliberately
+# DEFERRED (no FastAPI app exists in app/ yet), so the AST callgraph has no runtime
+# entrypoint to trace from. The spine is genuinely exercised by tests/unit/test_graph_spine.py
+# (32 red-green oracles) and ~11 downstream items (SP-02/05/06/11/13/16/27/R1/R7) inherit
+# its SpineState schema + node contracts. Listed as legitimately-present-not-yet-wired
+# foundation that must not be deleted (same pattern as app.core.trust + FirecrackerSandbox).
+# Pending operator review at PR. REMOVE each line once the FastAPI lifespan / downstream
+# layer wires it (it becomes genuinely reachable then).
+app.core.graph_state
+app.core.checkpointer
+app.adapters.inmemory.checkpointer
+app.core.decision_record
+app.core.graph
+app.core.spine_runner
 # scripts.ci.license_dep_gate  (auto-detected via __main__)
 # scripts.ci.run_acceptance    (auto-detected via __main__)

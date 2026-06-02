@@ -25,5 +25,10 @@ jobs:
           # previously missed these). Forward-looking (added lines only) — the pre-existing
           # markers are unaffected. Detection is single-sourced in the Python detector so
           # it is unit-tested (tests/ci/test_no_skip_diff_check.py).
+          # The detector itself + its test fixtures legitimately CONTAIN the patterns
+          # (as detection logic / test data, not real skipped tests), so they are
+          # excluded from the scan to avoid the gate flagging its own implementation.
           git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
+            ':(exclude)scripts/ci/no_skip_diff_check.py' \
+            ':(exclude)tests/ci/test_no_skip_diff_check.py' \
             | python3 scripts/ci/no_skip_diff_check.py

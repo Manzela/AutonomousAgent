@@ -25,6 +25,7 @@ from typing import Callable, Optional
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.core import graph_state as gs
 from app.core.decision_record import append_decision
 from app.core.graph_state import SpineState
@@ -195,6 +196,39 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
         delta.update(out)
         return delta
 
+    async def decompose(state: SpineState, config) -> dict:
+        """SP-02: decompose the LOCKED TaskSpec into a TaskGraph DAG, wiring the
+        InMemoryDecomposer into the live spine flow (seal_spec -> decompose -> execute).
+
+        A pure, deterministic read of the sha-pinned locked spec into ``state['plan']`` —
+        no LLM, no side effect (so no ledger guard needed; re-running yields the same plan).
+        The parallel fan-out OVER this plan (ready-node dispatch) is the deferred SP-11
+        layer; today ``execute`` still runs the single skeleton leaf."""
+        spec_id = state.get("spec_id")
+        if not spec_id:
+            return {"audit": ["decompose: no spec_id in state; skipped"]}
+        spec = SpecStore(gs.default_spec_store_root()).get_by_id(spec_id)
+        if spec is None:
+            # C9: a sealed spec MUST be findable — a miss with spec_id set is a critical
+            # inconsistency (storage failure / corruption). Fail LOUD; never proceed with
+            # an empty plan.
+            raise RuntimeError(
+                f"decompose: locked spec {spec_id} not found in the store — a sealed spec "
+                "must be retrievable; refusing to build an empty plan"
+            )
+        plan = InMemoryDecomposer().decompose(spec)
+        # SP-R1 (C9): scrub before persist — the plan node summaries derive from the
+        # operator's acceptance_criteria text, which can carry PII.
+        return _scrub_persisted(
+            {
+                "plan": plan,
+                "audit": [
+                    f"decompose: {len(plan['nodes'])} node(s), {len(plan['edges'])} edge(s) "
+                    f"from {len(spec.acceptance_criteria)} criteria"
+                ],
+            }
+        )
+
     async def execute(state: SpineState, config) -> dict:
         """Black-box call-through leaf to orchestrator.execute (no new class).
 
@@ -266,6 +300,7 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
         "goal_intake": goal_intake,
         "sign_off": sign_off,
         "seal_spec": seal_spec,
+        "decompose": decompose,
         "execute": execute,
         "ship_gate": ship_gate,
         "ship_effect": ship_effect,
@@ -351,7 +386,8 @@ def build_spine(
         _route_after_sign_off,
         {"seal_spec": "seal_spec", "__halt__": "__halt__", "__replan__": "__replan__"},
     )
-    g.add_edge("seal_spec", "execute")
+    g.add_edge("seal_spec", "decompose")
+    g.add_edge("decompose", "execute")
     g.add_edge("execute", "ship_gate")
     g.add_conditional_edges(
         "ship_gate",

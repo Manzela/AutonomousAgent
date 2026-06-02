@@ -46,38 +46,23 @@ services:
     # Override the image ENTRYPOINT so `command:` runs the stub directly (the image
     # ENTRYPOINT is ["hermes"]).
     entrypoint: []
-    # Fix NEW-227 (OD-2), final. fastapi + uvicorn[standard] are the CI stub's only deps.
-    # GROUND TRUTH (`docker run --entrypoint sh … 'ls /app/.venv/bin'`): there is NO
-    # /app/.venv in this image at all — python is the GLOBAL interpreter. Every venv-based
-    # attempt was built on a false premise (bake-into-venv #243, /app/.venv/bin/python,
-    # PYTHONPATH=venv-site-packages, hermes-shebang). The robust, layout-independent fix:
-    # install the two stub deps FRESH for whatever python3 the image has, into a WRITABLE
-    # tmpfs (read_only:true leaves /tmp writable), then run with that interpreter. pip
-    # compiles pydantic_core for the RUNNING python, so there is no ABI mismatch, and it
-    # does not depend on /app/.venv existing. The deps stay off pyproject main → the SP-00h
-    # license/dep gate is unaffected.
+    # Fix NEW-227 (OD-2), DEFINITIVE — root-caused by a static-trace workflow after 8
+    # failed shell-form attempts. TWO bugs, BOTH here (the Dockerfile + image are sound):
+    #   1. Docker Compose INTERPOLATES `$VAR`/`${VAR:-x}` in the `command:` STRING at parse
+    #      time, before the container shell runs. Every prior attempt wrote `PY="$(...)"`
+    #      then read a bare `$PY` that Compose had already blanked — so the interpreter was
+    #      always empty (the "<none>" was Compose substituting `${PY:-<none>}`, not a shell
+    #      default). `docker compose config` emitted "variable PY is not set" warnings.
+    #   2. The `..:/app:ro` volume below mounted the HOST repo (no .venv — gitignored) OVER
+    #      the image-baked /app/.venv, hiding the venv (python + hermes + fastapi/uvicorn).
+    # FIX (immune to both): run the BAKED venv python (which already has fastapi+uvicorn,
+    # #243) via LITERAL list args — zero `$`, so nothing for Compose to interpolate — and
+    # retarget the source mount to /src so /app/.venv survives. No runtime pip, no network,
+    # no tmpfs-exec needed. PYTHONPATH=/src (below) resolves the stub's `lib.scrubber`.
     command:
-      - sh
-      - -c
-      - |
-        # NOTHING is on PATH in the CI-built image: dispatches #6/#7 showed `command -v
-        # python3` AND `command -v hermes` both empty. So locate the python BINARY by direct
-        # directory glob (PATH-independent) — a python:slim base always ships
-        # /usr/local/bin/python3.X. Emit a self-diagnostic on miss so a future failure is
-        # not another blind round-trip.
-        PY="$(ls /usr/local/bin/python3.1[0-9] /usr/local/bin/python3 /usr/bin/python3.1[0-9] /usr/bin/python3 2>/dev/null | head -1)"
-        echo "ci_hermes_api: interpreter = ${PY:-<none>}" >&2
-        if [ -z "$PY" ]; then
-          echo "no python binary found; /usr/local/bin + /usr/bin python entries:" >&2
-          ls -la /usr/local/bin /usr/bin 2>/dev/null | grep -i py >&2
-          exit 1
-        fi
-        $PY -m pip install --quiet --no-warn-script-location --target /tmp/pydeps \
-          "fastapi>=0.115" "uvicorn[standard]>=0.30" || { echo "pip install failed" >&2; exit 1; }
-        # Prepend the deps but KEEP /app (env PYTHONPATH) so ci_hermes_api's `lib.scrubber`
-        # import still resolves.
-        PYTHONPATH="/tmp/pydeps:${PYTHONPATH:-}" exec $PY /app/deploy/scripts/ci_hermes_api.py
-    working_dir: /app
+      - /app/.venv/bin/python
+      - /src/deploy/scripts/ci_hermes_api.py
+    working_dir: /src
     ports:
       - "127.0.0.1:7878:7878"
     environment:
@@ -86,7 +71,8 @@ services:
       CLOUD_SQL_DSN: ""
       OTEL_TRACES_EXPORTER: "none"
       OTEL_METRICS_EXPORTER: "none"
-      PYTHONPATH: /app
+      # /src (NOT /app) so we don't shadow the image-baked /app/.venv; resolves lib.scrubber.
+      PYTHONPATH: /src
     # No GCP credentials, no Telegram token, no LiteLLM key needed.
     # The stub is fully in-memory.
     cap_drop: [ALL]
@@ -96,10 +82,11 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
     volumes:
-      # Mount the full repo into /app so imports resolve.
-      - ..:/app:ro
-      # Writable override for /app/deploy/scripts (read_only:true + ro mount).
-      - ../deploy/scripts:/app/deploy/scripts:ro
+      # Mount the repo at /src (NOT /app) so it does NOT shadow the image-baked /app/.venv
+      # (the venv that holds the python interpreter + fastapi/uvicorn). PYTHONPATH=/src
+      # resolves first-party imports (lib.scrubber).
+      - ..:/src:ro
+      - ../deploy/scripts:/src/deploy/scripts:ro
     networks: [internal, egress]
     healthcheck:
       test:

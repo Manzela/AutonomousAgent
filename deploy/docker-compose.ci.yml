@@ -60,13 +60,18 @@ services:
       - sh
       - -c
       - |
-        # `python3`/`python` are NOT on PATH in this image (dispatch #6: `interpreter=` empty),
-        # but the ENTRYPOINT `hermes` is a working python console script — its shebang names
-        # the real interpreter. Find hermes via PATH (not a hardcoded venv path) and read its
-        # shebang. Unquoted $PY so a `#!/usr/bin/env pythonX` shebang word-splits correctly.
-        PY="$(head -1 "$(command -v hermes)" 2>/dev/null | sed 's/^#!//')"
-        echo "ci_hermes_api: interpreter (from hermes shebang) = ${PY:-<none>}" >&2
-        [ -n "$PY" ] || { echo "no hermes interpreter found" >&2; exit 1; }
+        # NOTHING is on PATH in the CI-built image: dispatches #6/#7 showed `command -v
+        # python3` AND `command -v hermes` both empty. So locate the python BINARY by direct
+        # directory glob (PATH-independent) — a python:slim base always ships
+        # /usr/local/bin/python3.X. Emit a self-diagnostic on miss so a future failure is
+        # not another blind round-trip.
+        PY="$(ls /usr/local/bin/python3.1[0-9] /usr/local/bin/python3 /usr/bin/python3.1[0-9] /usr/bin/python3 2>/dev/null | head -1)"
+        echo "ci_hermes_api: interpreter = ${PY:-<none>}" >&2
+        if [ -z "$PY" ]; then
+          echo "no python binary found; /usr/local/bin + /usr/bin python entries:" >&2
+          ls -la /usr/local/bin /usr/bin 2>/dev/null | grep -i py >&2
+          exit 1
+        fi
         $PY -m pip install --quiet --no-warn-script-location --target /tmp/pydeps \
           "fastapi>=0.115" "uvicorn[standard]>=0.30" || { echo "pip install failed" >&2; exit 1; }
         # Prepend the deps but KEEP /app (env PYTHONPATH) so ci_hermes_api's `lib.scrubber`

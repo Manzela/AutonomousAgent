@@ -16,6 +16,7 @@ distinct post-resume nodes and are ledger-guarded via apply_once().
 from __future__ import annotations
 
 import hashlib
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -28,6 +29,7 @@ from app.core import graph_state as gs
 from app.core.decision_record import append_decision
 from app.core.graph_state import SpineState
 from app.core.orchestrator import execute as orchestrate
+from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
 from lib.anchors.spec_store import SpecStore
 from lib.anchors.task_spec import Scope, TaskSpec
@@ -122,8 +124,14 @@ def _record_decision(gate: str, decision) -> dict:
     return {gate: hitl, "decision_record": [hitl]}
 
 
-# ── nodes (closure over the injected capability — no callables in state) ────
-def _build_nodes(capability: AgentCapability):
+# SP-05: the skeleton's execute node runs a real subprocess probe inside the sandbox
+# (different PID, scrubbed env, no egress) — the honest minimal "work" until the Hermes
+# drive lands (next SP-05 slice). It emits the child PID so the isolation is observable.
+_SKELETON_SANDBOX_CMD = [sys.executable, "-c", "import os; print(os.getpid())"]
+
+
+# ── nodes (closure over the injected capability + sandbox — no callables in state) ──
+def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox] = None):
     async def goal_intake(state: SpineState, config) -> dict:
         tid = config["configurable"]["thread_id"]
         return {
@@ -173,18 +181,26 @@ def _build_nodes(capability: AgentCapability):
         return delta
 
     async def execute(state: SpineState, config) -> dict:
-        """Black-box call-through leaf to orchestrator.execute (no new class)."""
+        """Black-box call-through leaf to orchestrator.execute (no new class).
+
+        SP-05: when a ``sandbox`` is injected, the node runs its work in a REAL
+        sandbox child (different PID, scrubbed env, no egress) instead of in-process;
+        the command is carried on ``TaskRequest.constraints["sandbox_cmd"]``. With no
+        sandbox the merged SP-01/SP-04 in-process skeleton path is unchanged.
+        """
+        constraints = {"sandbox_cmd": _SKELETON_SANDBOX_CMD} if sandbox is not None else {}
         req = TaskRequest(
             task_id=state["thread_id"],
             phase="draft",
             summary=state.get("goal", ""),
+            constraints=constraints,
             deadline_s=60.0,
         )
-        result: ExecutionResult = await orchestrate(req, capability)
+        result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
         return {
             "tasks": [result.model_dump(mode="json")],
             "cost_accumulator": {f"{state['thread_id']}|execute": result.cost_usd},
-            "audit": [f"execute status={result.status.value}"],
+            "audit": [f"execute status={result.status.value} sandboxed={sandbox is not None}"],
         }
 
     async def ship_gate(state: SpineState, config) -> dict:
@@ -288,13 +304,20 @@ def _default_capability() -> AgentCapability:
     )
 
 
-def build_spine(saver, *, capability: Optional[AgentCapability] = None):
+def build_spine(
+    saver,
+    *,
+    capability: Optional[AgentCapability] = None,
+    sandbox: Optional[AbstractSandbox] = None,
+):
     """Compile the spine StateGraph with the single writable checkpointer.
 
-    `capability` is injected here (NOT in state — no callables in state); defaults
-    to a local stub for the skeleton."""
+    `capability` and `sandbox` are injected here (NOT in state — no callables in
+    state); `capability` defaults to a local stub for the skeleton. When `sandbox`
+    is provided (SP-05), the `execute` node runs its work in that sandbox instead of
+    in-process; default `None` preserves the merged in-process skeleton."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability)
+    nodes = _build_nodes(capability, sandbox)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)

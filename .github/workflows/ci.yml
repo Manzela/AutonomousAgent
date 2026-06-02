@@ -775,3 +775,28 @@ jobs:
         run: |
           source .venv/bin/activate
           python scripts/check_skips.py
+
+  # ------------------------------------------------------------------
+  # Drift-guard: required_status_checks coverage
+  # Asserts that config/required_gates.txt ↔ branch_protection.tf stays
+  # in sync and that no path-filtered or advisory gate was accidentally
+  # added to the required list (which would brick merges).
+  # Wired here (ci.yml) so it runs on every PR unconditionally.
+  # ------------------------------------------------------------------
+  required-gates-coverage:
+    name: required-gates coverage drift-guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.5.x"
+
+      - name: Run required-gates coverage drift-guard
+        run: |
+          uv run --no-project --with pytest --with pyyaml \
+            python -m pytest tests/ci/test_required_gates_coverage.py -q

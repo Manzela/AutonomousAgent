@@ -94,3 +94,22 @@ async def test_clean_tool_output_unchanged():
     out = await _run_execute(_LeakySandbox(stdout="all good: 42 widgets built"))
     assert out["tasks"][0]["output"]["stdout"] == "all good: 42 widgets built"
     assert out["tasks"][0]["status"] == "completed"
+
+
+def test_scrub_persisted_recurses_whole_delta_and_keeps_non_strings():
+    # C9 hardening: the WHOLE returned delta is scrubbed (tasks + audit), not just tasks;
+    # ints/floats/bools survive intact (only strings are scrubbed).
+    from app.core.graph import _scrub_persisted
+
+    delta = {
+        "tasks": [{"output": {"stdout": f"x {_API_KEY}", "returncode": 0}}],
+        "audit": [f"leak {_AWS}"],
+        "cost_accumulator": {"t|execute": 1.25},
+        "flag": True,
+    }
+    scrubbed = _scrub_persisted(delta)
+    blob = json.dumps(scrubbed)
+    assert _API_KEY not in blob and _AWS not in blob, "a secret survived in a non-task field"
+    assert scrubbed["tasks"][0]["output"]["returncode"] == 0  # int preserved
+    assert scrubbed["cost_accumulator"]["t|execute"] == 1.25  # float preserved
+    assert scrubbed["flag"] is True  # bool preserved

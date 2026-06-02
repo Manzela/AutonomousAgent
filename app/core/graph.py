@@ -212,14 +212,16 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
             deadline_s=60.0,
         )
         result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
-        # SP-R1: scrub the tool output (untrusted sandbox stdout/stderr) before it is
-        # persisted into the checkpoint — same scrubber as goal_intake.
-        task = _scrub_persisted(result.model_dump(mode="json"))
-        return {
-            "tasks": [task],
+        delta = {
+            "tasks": [result.model_dump(mode="json")],
             "cost_accumulator": {f"{state['thread_id']}|execute": result.cost_usd},
             "audit": [f"execute status={result.status.value} sandboxed={sandbox is not None}"],
         }
+        # SP-R1 (C9 hardening): scrub the ENTIRE delta — every new string value entering
+        # the checkpoint (untrusted sandbox tool output AND the audit line) routes through
+        # the same lib.scrubber as goal_intake, so no path can leak. Ints/floats (cost,
+        # returncode) pass through unchanged.
+        return _scrub_persisted(delta)
 
     async def ship_gate(state: SpineState, config) -> dict:
         """PURE interrupt node — prod-approval."""

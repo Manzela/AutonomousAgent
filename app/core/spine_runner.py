@@ -200,5 +200,18 @@ class SpineRunner:
             durability=durability or self.durability,
         )
 
+    def require_bus(self) -> SteeringEventBus:
+        """Return the injected SteeringEventBus or raise RuntimeError if unconfigured.
+
+        Intended callers: SP-13 Telegram adapter, any component that needs the C15
+        inbound arbitration hub at runtime.  Makes SteeringEventBus C4-reachable via
+        this public method (class->method edge from SpineRunner).
+        """
+        if not isinstance(self._bus, SteeringEventBus):
+            raise RuntimeError(
+                "SteeringEventBus not configured; pass bus=SteeringEventBus(...) to SpineRunner"
+            )
+        return self._bus
+
     def get_state(self, thread_id: str):
         return self._app.get_state(self._cfg(thread_id))

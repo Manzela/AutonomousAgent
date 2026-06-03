@@ -159,22 +159,18 @@ def test_project_plan_rejects_malformed_plan():
         project_plan(_board(), {"nodes": [{"summary": "no id"}], "edges": []}, thread_id="th1")
 
 
-# ── O9 outbound-only invariant: graph nodes MUST NOT read board state directly (SP-16/C15) ──
+# ── O9 outbound-only invariant: graph nodes WRITE the board projection but never READ it (C15) ──
 def test_graph_nodes_do_not_read_board_state():
-    # The board is an OUTBOUND projection; inbound human board comments reach the graph ONLY via
-    # the (deferred) SP-17 SteeringEventBus. So app/core/graph.py must touch NO board symbol.
+    # SP-16 slice-2 WIRES the board: a spine node WRITES the outbound projection (project_plan ->
+    # create_card, set_status). C15 still forbids a node from READING board state for control flow —
+    # inbound board state reaches the graph ONLY via the (deferred) SP-17 SteeringEventBus. So NO
+    # board READ call appears in the spine; a read would make the board a parallel store and break
+    # thread_id-is-the-single-source-of-truth. RED: a node calling board.get_card/list_comment fails.
     import app.core.graph as graph_mod
 
     src = inspect.getsource(graph_mod)
-    for token in (
-        "app.core.board",
-        "app.adapters.inmemory.board",
-        "AbstractBoard",
-        "InMemoryBoard",
-        "BoardProjection",
-        "project_plan",
-    ):
-        assert token not in src, (
-            f"app/core/graph.py references board symbol {token!r} — the board must stay "
-            f"outbound-only (a graph node never reads board state; SP-16/C15)"
+    for read_call in (".get_card(", ".list_cards(", ".get_comment(", ".list_comment("):
+        assert read_call not in src, (
+            f"a spine node READS board state via {read_call!r} — the board is outbound-only; "
+            f"inbound board state reaches the graph ONLY via the SP-17 SteeringEventBus (C15)"
         )

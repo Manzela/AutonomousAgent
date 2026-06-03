@@ -141,26 +141,23 @@ app.adapters.gcp.decompose
 #                                         the CLAUDE.md builder-agent rule).
 #   lib/anchors/clarification_driver.py — run_clarification_round + ClarificationOutcome.
 #
-# The LIVE path is: hermes plugin-loader → lib.anchors.register(ctx) →
-# lib.anchors.run_clarification(...) (a public plugin entry point, ~L226 of
-# lib/anchors/__init__.py) → clarification_driver.run_clarification_round →
-# InMemorySpecDrafter.draft + decide_next_action. The AST callgraph cannot trace
-# the loader's dynamic register(ctx) dispatch (identical limitation to app.core.trust
-# and lib.durability:register above), so these symbols appear unreachable even
-# though run_clarification is a registered plugin entry point.
+# WIRED 2026-06-03 (audit F-3): the SP-03 clarify loop is now on the live spine —
+# app/core/graph.py imports InMemorySpecDrafter + run_clarification_round and drives them
+# from the `clarify` node (goal_intake → clarify ⇄ → sign_off). So app.core.spec_drafter,
+# app.adapters.inmemory.spec_drafter, and lib.anchors.clarification_driver are now
+# genuinely reachable via the graph and have been REMOVED from this allowlist (per the
+# header rule "REMOVE each line once [...] they become genuinely reachable").
 #
-# The session-aware ADAPTER that auto-invokes run_clarification from _on_pre_tool_call
-# on an inbound user-message is owned by the Hermes-integration layer and is
-# DEFERRED (the hook returns None until it lands). The Vertex concretion
-# (VertexSpecDrafter) is also DEFERRED. Both are legitimately-present-not-yet-wired
-# foundation that must not be deleted. They are genuinely exercised by 21 red-green
-# oracles in tests/unit/test_sp03_clarification_driver.py. Pending operator review at
-# PR. REMOVE each line once the Hermes adapter + Vertex drafter wire them (they
-# become genuinely reachable then). Operator-reviewed (2026-06-02).
-app.core.spec_drafter
-app.adapters.inmemory.spec_drafter
+# STILL DEFERRED / present-not-yet-wired (kept):
+#   - app.adapters.gcp.spec_drafter:VertexSpecDrafter — the Vertex structured-output
+#     concretion (raises NotImplementedError); the spine injects InMemory in CI, Vertex
+#     in prod once it lands. Sibling kept per the CLAUDE.md builder-agent rule.
+#   - lib.anchors:run_clarification — the hermes plugin entry point (lib/anchors/__init__.py
+#     register(ctx) → run_clarification). graph.py wires clarification_driver DIRECTLY
+#     (run_clarification_round), so the loader's dynamic register(ctx) dispatch to
+#     run_clarification is still untraceable by the AST callgraph until the session-aware
+#     Hermes pre_tool_call adapter lands. Genuinely exercised by the SP-03 oracles.
 app.adapters.gcp.spec_drafter:VertexSpecDrafter
-lib.anchors.clarification_driver
 lib.anchors:run_clarification
 
 # DeepEval judge adapters (Cluster A) — keep the GEval/HallucinationMetric LLM-as-judge

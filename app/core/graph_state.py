@@ -240,6 +240,12 @@ class SpineState(TypedDict, total=False):
     goal: str
     # spec contracts
     clarifications: Annotated[list, _append]
+    # SP-03: the drafted PRD the clarify ⇄ loop produced (TaskSpec fields + the surfaced
+    # ambiguity report / applied_standards / assumptions + confidence). Its presence is
+    # the clarify-loop terminator (_route_after_clarify); sign_off gates on it and
+    # seal_spec locks its TaskSpec fields. Last-write (no reducer): the final clarify
+    # round writes it once.
+    spec_draft: Optional[dict]
     plan: Optional[TaskGraph]
     spec_sha: Optional[str]
     spec_id: Optional[str]

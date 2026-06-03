@@ -123,6 +123,26 @@ async def test_ship_effect_done_not_redone_on_skip():
     assert gate2.calls == []  # mark_done short-circuited the already-done card; gate not consulted
 
 
+# ── O4b the LEDGER GUARD is load-bearing — distinct from mark_done's idempotency (post-audit I-2) ──
+async def test_ship_effect_ledger_guard_skips_mark_done():
+    # O4 closes the root (passing gate), so its replay short-circuits on ALREADY-done — masking
+    # whether the `if "ledger"` guard works (verified: dedenting mark_done out of the guard still
+    # passes O4). Here the FIRST run REFUSES (root stays `todo`), so there is NO idempotency
+    # short-circuit: the ONLY thing that can stop the replay from re-consulting the gate is the
+    # ledger guard. RED: move mark_done OUT of the `if "ledger"` branch and this FAILS.
+    board = InMemoryBoard()
+    state, parent_id = _ship_state(board)
+    nodes = _build_nodes(_default_capability(), board=board, gate=_Gate(False))
+    out = await nodes["ship_effect"](state, _CFG)  # effect RAN, gate refused -> root stays todo
+    assert board.get_card(parent_id).status == "todo" and out.get("ledger")  # receipt produced
+    replayed_ledger = (state.get("ledger") or []) + out["ledger"]
+    replay_gate = _Gate(False)
+    nodes2 = _build_nodes(_default_capability(), board=board, gate=replay_gate)
+    await nodes2["ship_effect"]({**state, "ledger": replayed_ledger}, _CFG)  # effect SKIPPED
+    assert replay_gate.calls == []  # ledger guard: mark_done NOT reached on the skipped re-entry
+    assert board.get_card(parent_id).status == "todo"  # never closed
+
+
 # ── O5 LIVE end-to-end: a full SpineRunner run ships and closes the root card via the stub gate ──
 async def test_live_spine_closes_root_card_on_ship(tmp_path, monkeypatch):
     monkeypatch.setenv("SPINE_SPEC_STORE", str(tmp_path))

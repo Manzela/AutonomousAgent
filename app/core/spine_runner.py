@@ -11,6 +11,7 @@ asserts the initial state carries no callables BEFORE it enters the graph/checkp
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 from typing import Any, Optional
@@ -27,6 +28,8 @@ from app.core.schemas import AgentCapability
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from lib.scrubber import scrub_string
 
+logger = logging.getLogger(__name__)
+
 
 def _default_cap() -> GlobalThreadCap:
     """SP-11/SP-R6 fan-out concurrency cap. SPINE_MAX_ACTIVE bounds simultaneously-active
@@ -42,16 +45,36 @@ def _default_cap() -> GlobalThreadCap:
 def _default_budget() -> Optional[float]:
     """SP-R2 per-graph USD budget. SPINE_BUDGET_USD caps the cumulative cost_accumulator a SINGLE
     graph may spend before fan_out pre-empts the next wave (INLINE, independent of the F21 daily
-    poller). Unset / non-positive / malformed => None == budget OFF (the spine behaves exactly as
-    before — a deliberate opt-in so existing deployments are unaffected). Operator-tunable per env."""
+    poller). Unset => None == budget OFF (opt-in; existing deployments unaffected). A SET-but-invalid
+    value (non-positive or unparseable) is a MISCONFIG, not "off" — it logs a loud WARNING and falls
+    back to OFF (we never silently treat ``SPINE_BUDGET_USD=0`` as "block all spend").
+
+    HONEST LIMIT (post-audit I-1): the per-graph cap is a LIVE NO-OP until a capability reports a real
+    ``ExecutionResult.cost_usd`` — the default/stub capability and every app.core.orchestrator path
+    return ``cost_usd=0.0``, so ``aggregate_spend`` is 0.0 and ``budget_verdict`` never pre-empts even
+    with SPINE_BUDGET_USD set. The pre-emption MECHANISM is wired + tested (with a cost-reporting
+    capability); making it bite in production needs real LLM/sandbox cost threaded into cost_usd
+    (reuse lib/observability._llm_request_cost_usd) — DEFERRED. So setting a budget today is dormant,
+    not enforcing; ship is still gated by the SP-06 eval_gate + the operator's HITL approval."""
     raw = os.environ.get("SPINE_BUDGET_USD")
     if raw is None:
         return None
     try:
         v = float(raw)
     except ValueError:
+        logger.warning(
+            "SPINE_BUDGET_USD=%r is not a number — the per-graph budget is OFF (no cost guardrail)",
+            raw,
+        )
         return None
-    return v if v > 0 else None
+    if v <= 0:
+        logger.warning(
+            "SPINE_BUDGET_USD=%s is non-positive — the per-graph budget is OFF (it does NOT block "
+            "all spend); set a positive USD cap to enforce",
+            raw,
+        )
+        return None
+    return v
 
 
 def _initial_state(thread_id: str, goal: str) -> dict:

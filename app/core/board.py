@@ -31,9 +31,11 @@ C14 — `done` is GATE-DERIVED (PRD §6 SP-16, "card `done` is gate-derived (rea
   caller that deliberately reaches past the facade into `_put` (or a subclass that overrides the
   concrete methods) can forge a `done` card. That is the adapter author's trust boundary, NOT the
   C14 adversary; the `test_c14_invariant_is_in_the_abstract_base` meta-test guards the shipped
-  InMemoryBoard against the override path. The GateReader is likewise CALLER-INJECTED this slice —
-  it becomes a binding safety control only once slice-2 binds it to the trusted `gh pr checks`
-  concretion OUT of the agent's reach (DEFERRED); until then `done` is caller-trust-derived.
+  InMemoryBoard against the override path. The GateReader is likewise CALLER-INJECTED — and the
+  live default (SpineRunner, slice-3) is AlwaysReadyGate, a NON-withholding null stub, so today
+  `done` is caller-trust-derived/auto-closed. It becomes a binding safety control only once SP-12
+  injects the trusted `gh pr checks --required` reader (against a populated card gate_ref) OUT of
+  the agent's reach (DEFERRED).
 
 DEFERRED (named, NOT silently dropped):
   * the spine->cards PROJECTION wiring (decompose -> cards, status transitions) — SP-16 slice-2;
@@ -90,7 +92,8 @@ class GateReader(Protocol):
     """The C14 gate: answers whether a card's required checks are green (so it may move to
     `done`). Prod concretion shells `gh pr checks <card.gate_ref> --required`; CI injects a mock.
     NOTE: this is a duck-type — `mark_done` trusts whatever gate the caller injects; it is a
-    binding control only once slice-2 binds the trusted concretion out of the agent's reach."""
+    binding control only once SP-12 injects the trusted gh-pr-checks concretion out of the agent's
+    reach (the live default today is AlwaysReadyGate, a non-withholding stub)."""
 
     def required_checks_passed(self, card: Card) -> bool: ...
 

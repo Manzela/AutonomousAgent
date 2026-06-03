@@ -44,14 +44,17 @@ assertions:
       and the gate was consulted on the root card); a FAILING gate is CONSULTED-and-REFUSED — the gate was
       called on the root card and the root is left EXACTLY at todo (not merely != done; fail-safe RED); gate=None (the default, every existing direct caller) performs
       NO done transition (byte-identical to pre-slice-3); and the transition is LEDGER-guarded +
-      idempotent — a SKIPPED (already-shipped) ship_effect re-entry does NOT re-consult the gate
-      (a now-failing gate is never called and the already-done root stays done).
+      idempotent. The ledger-guard is tested DISTINCTLY from idempotency (post-audit I-2): the skip
+      oracle alone passes even if mark_done is moved OUT of the `if "ledger"` branch (the already-done
+      root short-circuits), so a separate oracle REFUSES on the first run (root stays todo) and proves
+      the gate is NOT re-consulted on the skipped replay — bites only because of the ledger guard.
     cmd: |
       OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
         tests/unit/test_sp16_ship_done.py::test_ship_effect_marks_root_done_on_passing_gate \
         tests/unit/test_sp16_ship_done.py::test_ship_effect_failing_gate_leaves_root_open \
         tests/unit/test_sp16_ship_done.py::test_ship_effect_gate_none_no_done_transition \
-        tests/unit/test_sp16_ship_done.py::test_ship_effect_done_not_redone_on_skip -q
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_done_not_redone_on_skip \
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_ledger_guard_skips_mark_done -q
     expect_exit: 0
 
   - id: sp16c-live-and-default-gate

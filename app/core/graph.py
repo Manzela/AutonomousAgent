@@ -3,9 +3,15 @@
 Topology (interrupt-split — never co-locate interrupt() with an EXTERNAL side-effect):
 
     goal_intake -> clarify ⇄[interrupt, ≤5 Qs/round] -> sign_off[interrupt] -> seal_spec
-                -> decompose -> execute -> eval_gate --[pass]--> ship_gate[interrupt]
+                -> decompose -> fan_out -> eval_gate --[pass]--> ship_gate[interrupt]
                 -> ship_effect -> END
-                            --[out-of-scope]--> __halt__
+       fan_out   --[over-budget (SP-R2)]--> __halt__   (budget pre-empts before eval_gate/ship)
+       eval_gate --[out-of-scope (SP-06)]-> __halt__
+
+SP-11 fan_out (was `execute`): walks the SP-02 DAG, dispatches the ready frontier concurrently
+(asyncio.gather), each leaf in its own worktree+sandbox. SP-16: the spine also projects its DAG onto
+an injected kanban board (OUTBOUND, C15) — decompose -> parent+child cards; fan_out -> running/
+blocked; ship_effect closes the root card via the C14 gate.
 
 SP-03 clarify ⇄ Q-gen (PRD §3 journey / §6 SP-03): the clarify node drafts the PRD
 via the injected spec-drafter and loops (ask_next) until the draft locks, then sign_off
@@ -16,8 +22,8 @@ sign-off, but SP-04 ("interrupt gate AFTER clarify; nothing builds before resume
 Control flow is ALWAYS code-decided via conditional edges over the deterministic
 HITL verb (and, at eval_gate, the deterministic SP-06 scope verdict). No top-level
 LLM router/supervisor. See graph_state.py for the
-exactly-once doctrine. `execute` wraps app.core.orchestrator.execute as a black-box
-call-through leaf (no new orchestrator class). Irreversible EXTERNAL effects
+exactly-once doctrine. `fan_out` wraps app.core.orchestrator.execute per leaf as a black-box
+call-through (no new orchestrator class). Irreversible EXTERNAL effects
 (SpecStore.save in seal_spec, the durable ship record in ship_effect) live in
 distinct post-resume nodes and are ledger-guarded via apply_once().
 """
@@ -814,6 +820,10 @@ def _build_nodes(
             # AND the parent card's gate_ref populated with the real PR (both SP-12, DEFERRED). Closing
             # at ship is the slice-3 proxy. Ledger-guarded (effect-ran branch) + mark_done-idempotent
             # => a skipped re-entry never re-consults the gate. gate/board/root None => no-op.
+            # ACCEPTED PROJECTION STATE (post-audit): only the ROOT card is closed here — a ship that
+            # passed eval_gate with a partial diff can leave a child card `blocked` (a failed leaf)
+            # while the root reads `done`. That partial-failure is authoritative in the ledger/
+            # decision_record (the board is OUTBOUND-only, C15); per-child terminalization is deferred.
             parent_card_id = (state.get("board_cards") or {}).get("parent")
             if board is not None and gate is not None and parent_card_id:
                 try:

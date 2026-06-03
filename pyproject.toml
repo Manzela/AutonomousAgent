@@ -79,6 +79,9 @@ gcp = [
   # Vertex AI embeddings (VertexEmbeddingsEmbedder in app/adapters/gcp/embedder.py).
   # Uses the gapic PredictionServiceClient from the high-level aiplatform package.
   "google-cloud-aiplatform>=1.50",
+  # SP-05c: Cloud Run Jobs sandbox (CloudRunJobSandbox in app/adapters/gcp/cloud_run_sandbox.py).
+  # Lazy-imported; CI runs against LocalSubprocessSandbox (no GCP credentials needed).
+  "google-cloud-run>=0.10",
 ]
 # A2A spike extra — Day 1 scaffolding pulls the runtime deps the Day 2-10
 # build-out will use (FastAPI/uvicorn for the JSON-RPC server, httpx + httpx-sse

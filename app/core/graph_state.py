@@ -243,6 +243,14 @@ class SpineState(TypedDict, total=False):
     plan: Optional[TaskGraph]
     spec_sha: Optional[str]
     spec_id: Optional[str]
+    # SP-06 PRD-conformance: the agent's diff (list of [status, path]) the eval_gate scores
+    # against the locked plan's allowed scope, and the resulting ScopeVerdict (as a dict).
+    # Last-write (no reducer): the execute node AUTHORITATIVELY overwrites changed_paths every
+    # run (empty in the skeleton; the real git diff arrives with the SP-05 drive). base_ref is
+    # the optional base branch for the verdict metadata (defaults to "main").
+    changed_paths: Optional[list]
+    base_ref: Optional[str]
+    eval_verdict: Optional[dict]
     # HITL decisions
     sign_off: Optional[HitlDecision]
     ship: Optional[HitlDecision]

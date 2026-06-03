@@ -227,6 +227,13 @@ app.core.board:project_plan
 app.adapters.inmemory.board:InMemoryBoard
 app.adapters.inmemory.board:AlwaysReadyGate
 
+# SP-R3 SqliteFileCheckpointer — the vendor-lock fallback adapter. Follows the same
+# pattern as app.adapters.inmemory.checkpointer: the FastAPI lifespan (deferred) selects
+# the checkpointer based on env config (InMemory for CI, Sqlite for fallback, Postgres
+# for prod). The AST callgraph cannot trace the env-conditional lifespan selection
+# (same limitation as app.core.spine_runner above). Operator-reviewed 2026-06-04.
+app.adapters.inmemory.file_checkpointer
+
 # SP-05d WorkspaceReaper + reap_orphaned_worktrees — called from SpineRunner.__init__
 # (app/core/spine_runner.py). Both symbols are genuinely reachable: WorkspaceReaper is
 # instantiated in __init__, and reap_orphaned_worktrees() is called in the same scope.

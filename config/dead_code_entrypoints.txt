@@ -226,3 +226,13 @@ app.core.board:GateReader
 app.core.board:project_plan
 app.adapters.inmemory.board:InMemoryBoard
 app.adapters.inmemory.board:AlwaysReadyGate
+
+# SP-05d WorkspaceReaper + reap_orphaned_worktrees — called from SpineRunner.__init__
+# (app/core/spine_runner.py). Both symbols are genuinely reachable: WorkspaceReaper is
+# instantiated in __init__, and reap_orphaned_worktrees() is called in the same scope.
+# The AST callgraph cannot trace through class-method bodies when the entrypoint is the
+# module root (the identical limitation behind app.core.spine_runner being listed above).
+# _default_reaper() is a factory helper used only by tests that bypass SpineRunner; it
+# is not a dead symbol — it is the intended test-override entry point for the reaper.
+# Operator-reviewed 2026-06-03.
+app.core.reaper

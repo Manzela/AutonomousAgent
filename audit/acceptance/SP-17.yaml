@@ -26,11 +26,19 @@
 #   * cross-thread "blocked on you" legibility (criterion 6 / U-3);
 #   * Telegram aiogram adapter (SP-13) and board poll/webhook adapters.
 #
-# C9 REVIEW (Gemini 3.1 Pro Preview — different model class from claude-sonnet-4-6,
-#            2026-06-04): No blocking issues found. Module defers the correct items;
-#            the APPROVE pass-through default is safe (caller had no opposing signal);
-#            SQLite check_same_thread=False + threading.Lock correctly serialises
-#            concurrent access from asyncio + background poller threads.
+# C9 REVIEW (Opus — different model class from claude-sonnet-4-6, 2026-06-04):
+#   H1 (HIGH, FIXED): unknown/malformed verb raised uncaught KeyError in arbitrate().
+#      Fixed: verb validated at put() time against _VALID_VERBS; unknown verbs are
+#      dropped (warn-log) before entering the ledger.
+#   H2 (MEDIUM, FIXED): origin= kwarg was Optional[str], making the agent-authorship
+#      filter a by-convention caller duty (structurally unenforceable). Fixed: origin
+#      is now a required positional kwarg; callers MUST pass "human" or "agent" —
+#      omitting it raises TypeError.
+#   A4 (LOW, FIXED): route_to_interrupt applied any event matching interrupt_id across
+#      all threads. Fixed: result filtered to e["thread_id"] == thread_id so a REJECT
+#      stored for tA cannot bleed into tB's routing.
+#   SQLite check_same_thread=False + threading.Lock correctly serialises concurrent
+#   access from asyncio + background poller threads. APPROVE pass-through is safe.
 
 task: SP-17
 title: "SteeringEventBus — inbound channel arbitration (C15), 12 hermetic oracles"
@@ -41,7 +49,7 @@ run_from: repo_root
 assertions:
   - id: sp-17-steering-bus
     description: >
-      12 hermetic oracles covering SP-17 acceptance criteria:
+      16 hermetic oracles covering SP-17 acceptance criteria + C9 fixes:
       ① dedup on (channel, origin_id) — same event twice → ledger_count==1;
       ② persisted SQLite ledger — new bus instance over same db_path still deduplicates;
       ③ origin="agent" dropped at ingest (C15 agent-comment filter);
@@ -49,7 +57,10 @@ assertions:
       ⑤ abort/TIMEOUT routes as halting verb;
       ⑥ no events → APPROVE pass-through (fail-safe default);
       ⑦ get_for_thread + get_for_interrupt return thread/interrupt-scoped subsets;
-      ⑧ in-memory SteeringEventBus (no db_path) full smoke.
+      ⑧ in-memory SteeringEventBus (no db_path) full smoke;
+      H1 (C9) unknown verb dropped at ingest; route safe after bad verb attempts;
+      H2 (C9) origin= is required kwarg — omitting raises TypeError;
+      A4 (C9) route_to_interrupt filters by thread_id (cross-thread isolation).
     cmd: |
       OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
         tests/unit/test_steering_bus.py \
@@ -59,16 +70,18 @@ assertions:
 proof:
   ci_workflow: .github/workflows/ci.yml
   artifact: >
-    12 hermetic oracles in tests/unit/test_steering_bus.py.
+    16 hermetic oracles in tests/unit/test_steering_bus.py.
     app/core/steering.py implements SteeringEventBus: SQLite idempotency ledger (persisted
-    across kill+resume); put(event, origin=) deduplicates on (channel, origin_id) and drops
-    origin="agent" events; get_for_interrupt(iid) and get_for_thread(tid) return scoped subsets;
-    route_to_interrupt(runner, thread_id, interrupt_id) calls graph_state.arbitrate() then
-    runner.resume() with the effective verb (REJECT beats APPROVE per C15); defaults to APPROVE
-    when no events match the interrupt_id.
+    across kill+resume); put(event, origin=) (origin REQUIRED) deduplicates on (channel,
+    origin_id), drops origin="agent" events (C15), drops unknown verbs (C9-H1 fail-safe);
+    get_for_interrupt(iid) and get_for_thread(tid) return scoped subsets;
+    route_to_interrupt(runner, thread_id, interrupt_id) filters events to matching thread_id
+    (C9-A4), calls graph_state.arbitrate(), then runner.resume() with effective verb (REJECT
+    beats APPROVE per C15); defaults to APPROVE when no events match.
+    C9 review (Opus, 2026-06-04) found 2 blocking + 1 advisory: H1 unknown verb KeyError
+    (fixed: verb validation at put()); H2 optional origin kwarg unenforceable (fixed: required
+    kwarg); A4 cross-thread contamination (fixed: thread_id filter in route_to_interrupt).
     DEFERRED: per-super-step ON-the-loop delivery (criterion 2 — steer mid-execute);
     cross-thread "blocked on you" legibility (criterion 6 / U-3);
     Telegram aiogram adapter (SP-13) and board poll/webhook adapters.
-    C9 review (Gemini 3.1 Pro Preview, 2026-06-04): no blocking issues; SQLite
-    check_same_thread=False + threading.Lock serial-safe for asyncio+background-poller.
-    969 unit tests passing, 0 regressions (12 new oracles added).
+    973 unit tests passing, 0 regressions (16 new oracles added).

@@ -11,6 +11,11 @@ Coverage map (PRD §6 SP-17 acceptance criteria):
   ⑦ events from multiple threads are returned scoped to each thread_id.
   ⑧ SteeringEventBus with no db_path (in-memory) — full happy-path smoke.
 
+C9 fix tests (adversarial review 2026-06-04 — Gemini/Opus):
+  H1  unknown verb dropped at ingest — never enters ledger; route_to_interrupt safe.
+  H2  origin parameter is required (structural enforcement, not optional kwarg).
+  A4  route_to_interrupt filters by thread_id (cross-thread contamination impossible).
+
 DEFERRED (not tested here):
   * per-super-step ON-the-loop delivery (criterion 2 — steer mid-execute);
   * cross-thread "blocked on you" legibility (criterion 6 / U-3);
@@ -74,8 +79,8 @@ def test_sp17_dedup_same_event_twice():
     """Criterion ①: second put with same (channel, origin_id) is deduplicated."""
     bus = SteeringEventBus()
     event = _ev()
-    first = bus.put(event)
-    second = bus.put(event)
+    first = bus.put(event, origin="human")
+    second = bus.put(event, origin="human")
     assert first is True
     assert second is False
     assert bus.ledger_count("telegram", "m1") == 1
@@ -84,9 +89,9 @@ def test_sp17_dedup_same_event_twice():
 def test_sp17_dedup_different_channel_accepted():
     """Different (channel, origin_id) combinations are stored independently."""
     bus = SteeringEventBus()
-    assert bus.put(_ev(channel="telegram", origin_id="m1")) is True
-    assert bus.put(_ev(channel="board", origin_id="m1")) is True  # different channel
-    assert bus.put(_ev(channel="telegram", origin_id="m2")) is True  # different origin_id
+    assert bus.put(_ev(channel="telegram", origin_id="m1"), origin="human") is True
+    assert bus.put(_ev(channel="board", origin_id="m1"), origin="human") is True
+    assert bus.put(_ev(channel="telegram", origin_id="m2"), origin="human") is True
     assert bus.ledger_count("telegram", "m1") == 1
     assert bus.ledger_count("board", "m1") == 1
 
@@ -99,11 +104,11 @@ def test_sp17_persisted_ledger_survives_restart(tmp_path: Path):
     db = tmp_path / "steering.db"
 
     bus1 = SteeringEventBus(db_path=db)
-    bus1.put(_ev())
+    bus1.put(_ev(), origin="human")
     bus1.close()
 
     bus2 = SteeringEventBus(db_path=db)
-    duplicate = bus2.put(_ev())
+    duplicate = bus2.put(_ev(), origin="human")
     bus2.close()
 
     assert duplicate is False, "event must be deduped even after bus restart (persisted ledger)"
@@ -121,10 +126,10 @@ def test_sp17_agent_origin_dropped():
 
 
 def test_sp17_human_origin_accepted():
-    """Explicit origin=None (or absent) → accepted normally."""
+    """Explicit origin='human' → accepted normally."""
     bus = SteeringEventBus()
-    assert bus.put(_ev(), origin=None) is True
-    assert bus.put(_ev(origin_id="m2")) is True
+    assert bus.put(_ev(), origin="human") is True
+    assert bus.put(_ev(origin_id="m2"), origin="human") is True
 
 
 # ── ④ reject beats approve (C15 arbitration) ──────────────────────────────
@@ -136,8 +141,10 @@ async def test_sp17_reject_beats_approve():
     bus = SteeringEventBus()
     runner = _mock_runner()
 
-    bus.put(_ev(channel="telegram", origin_id="tg-1", verb="APPROVE", kind="approve"))
-    bus.put(_ev(channel="board", origin_id="board-1", verb="REJECT", kind="reject"))
+    bus.put(
+        _ev(channel="telegram", origin_id="tg-1", verb="APPROVE", kind="approve"), origin="human"
+    )
+    bus.put(_ev(channel="board", origin_id="board-1", verb="REJECT", kind="reject"), origin="human")
 
     verb = await bus.route_to_interrupt(runner, thread_id="t1", interrupt_id="iid1")
     assert verb == "REJECT"
@@ -156,13 +163,16 @@ async def test_sp17_dedup_then_reject_wins():
     iid = "iid-x"
 
     bus.put(
-        _ev(channel="telegram", origin_id="tg-1", verb="APPROVE", kind="approve", interrupt_id=iid)
+        _ev(channel="telegram", origin_id="tg-1", verb="APPROVE", kind="approve", interrupt_id=iid),
+        origin="human",
     )
     bus.put(
-        _ev(channel="telegram", origin_id="tg-1", verb="APPROVE", kind="approve", interrupt_id=iid)
+        _ev(channel="telegram", origin_id="tg-1", verb="APPROVE", kind="approve", interrupt_id=iid),
+        origin="human",
     )  # dup
     bus.put(
-        _ev(channel="board", origin_id="board-1", verb="REJECT", kind="reject", interrupt_id=iid)
+        _ev(channel="board", origin_id="board-1", verb="REJECT", kind="reject", interrupt_id=iid),
+        origin="human",
     )
 
     assert bus.ledger_count("telegram", "tg-1") == 1  # deduped
@@ -182,8 +192,13 @@ async def test_sp17_abort_routes_as_timeout():
 
     bus.put(
         _ev(
-            channel="telegram", origin_id="tg-abort", verb="TIMEOUT", kind="abort", interrupt_id=iid
-        )
+            channel="telegram",
+            origin_id="tg-abort",
+            verb="TIMEOUT",
+            kind="abort",
+            interrupt_id=iid,
+        ),
+        origin="human",
     )
 
     verb = await bus.route_to_interrupt(runner, thread_id="t1", interrupt_id=iid)
@@ -211,9 +226,9 @@ async def test_sp17_no_events_defaults_to_approve():
 def test_sp17_get_for_thread_scoped():
     """Criterion ⑦: get_for_thread returns only events for that thread_id."""
     bus = SteeringEventBus()
-    bus.put(_ev(thread_id="t1", channel="telegram", origin_id="m1"))
-    bus.put(_ev(thread_id="t2", channel="telegram", origin_id="m2"))
-    bus.put(_ev(thread_id="t1", channel="board", origin_id="m3"))
+    bus.put(_ev(thread_id="t1", channel="telegram", origin_id="m1"), origin="human")
+    bus.put(_ev(thread_id="t2", channel="telegram", origin_id="m2"), origin="human")
+    bus.put(_ev(thread_id="t1", channel="board", origin_id="m3"), origin="human")
 
     t1_events = bus.get_for_thread("t1")
     t2_events = bus.get_for_thread("t2")
@@ -229,9 +244,9 @@ def test_sp17_get_for_interrupt_scoped():
     bus = SteeringEventBus()
     iid_a = "iid-a"
     iid_b = "iid-b"
-    bus.put(_ev(origin_id="m1", interrupt_id=iid_a, verb="APPROVE"))
-    bus.put(_ev(origin_id="m2", interrupt_id=iid_b, verb="REJECT"))
-    bus.put(_ev(channel="board", origin_id="m3", interrupt_id=iid_a, verb="REJECT"))
+    bus.put(_ev(origin_id="m1", interrupt_id=iid_a, verb="APPROVE"), origin="human")
+    bus.put(_ev(origin_id="m2", interrupt_id=iid_b, verb="REJECT"), origin="human")
+    bus.put(_ev(channel="board", origin_id="m3", interrupt_id=iid_a, verb="REJECT"), origin="human")
 
     events_a = bus.get_for_interrupt(iid_a)
     events_b = bus.get_for_interrupt(iid_b)
@@ -251,11 +266,24 @@ async def test_sp17_in_memory_smoke():
     runner = _mock_runner()
 
     # one approve, one reject — reject wins
-    assert bus.put(_ev(channel="telegram", origin_id="t1", verb="APPROVE", kind="approve")) is True
-    assert bus.put(_ev(channel="board", origin_id="b1", verb="REJECT", kind="reject")) is True
+    assert (
+        bus.put(
+            _ev(channel="telegram", origin_id="t1", verb="APPROVE", kind="approve"), origin="human"
+        )
+        is True
+    )
+    assert (
+        bus.put(_ev(channel="board", origin_id="b1", verb="REJECT", kind="reject"), origin="human")
+        is True
+    )
 
     # dedup check
-    assert bus.put(_ev(channel="telegram", origin_id="t1", verb="APPROVE", kind="approve")) is False
+    assert (
+        bus.put(
+            _ev(channel="telegram", origin_id="t1", verb="APPROVE", kind="approve"), origin="human"
+        )
+        is False
+    )
     assert bus.ledger_count("telegram", "t1") == 1
 
     # agent-authored drop
@@ -264,3 +292,60 @@ async def test_sp17_in_memory_smoke():
     # route → REJECT wins
     verb = await bus.route_to_interrupt(runner, thread_id="t1", interrupt_id="iid1")
     assert verb == "REJECT"
+
+
+# ── C9 fix tests ─────────────────────────────────────────────────────────
+
+
+def test_sp17_h1_unknown_verb_dropped_at_ingest():
+    """C9-H1: an event with an unknown/malformed verb is dropped at put() time.
+    This prevents a future KeyError in arbitrate() from poisoning route_to_interrupt.
+    """
+    bus = SteeringEventBus()
+    bad = bus.put(_ev(verb="MAYBE"), origin="human")
+    assert bad is False, "unknown verb must be dropped (never enters ledger)"
+    assert bus.ledger_count("telegram", "m1") == 0
+
+
+@pytest.mark.asyncio
+async def test_sp17_h1_route_safe_after_known_and_bad_verbs():
+    """C9-H1: route_to_interrupt does not raise even if a bad-verb event was attempted."""
+    bus = SteeringEventBus()
+    runner = _mock_runner()
+    iid = "iid-safe"
+
+    # A bad verb is dropped at ingest; the valid APPROVE gets through.
+    bus.put(_ev(verb="GARBAGE", kind="approve", interrupt_id=iid), origin="human")
+    bus.put(_ev(verb="APPROVE", kind="approve", interrupt_id=iid), origin="human")
+
+    # Should route to APPROVE (the only valid event), not crash.
+    verb = await bus.route_to_interrupt(runner, thread_id="t1", interrupt_id=iid)
+    assert verb == "APPROVE"
+
+
+def test_sp17_h2_origin_is_required():
+    """C9-H2: put() requires the origin kwarg — callers cannot accidentally omit it.
+    Missing origin → TypeError (structural enforcement, not silent acceptance).
+    """
+    bus = SteeringEventBus()
+    with pytest.raises(TypeError):
+        bus.put(_ev())  # type: ignore[call-arg]  # missing required kwarg
+
+
+@pytest.mark.asyncio
+async def test_sp17_a4_route_filters_by_thread_id():
+    """C9-A4: route_to_interrupt only applies events that match thread_id.
+    A REJECT stored for thread tA must NOT route to thread tB (cross-thread safety).
+    """
+    bus = SteeringEventBus()
+    runner = _mock_runner()
+    iid = "iid-shared"
+
+    # Store a REJECT for thread tA on this interrupt_id.
+    bus.put(
+        _ev(thread_id="tA", verb="REJECT", kind="reject", interrupt_id=iid),
+        origin="human",
+    )
+    # Route the same interrupt_id but for thread tB — tA's REJECT must NOT apply.
+    verb = await bus.route_to_interrupt(runner, thread_id="tB", interrupt_id=iid)
+    assert verb == "APPROVE", "tA's REJECT must not bleed into tB's routing"

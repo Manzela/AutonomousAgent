@@ -40,6 +40,9 @@ from app.core.graph_state import SteeringEvent, arbitrate
 
 logger = logging.getLogger(__name__)
 
+# Valid HitlVerb values — mirrors graph_state._VERB_PRECEDENCE.
+_VALID_VERBS: frozenset[str] = frozenset({"APPROVE", "REJECT", "REPLAN", "TIMEOUT"})
+
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS steering_ledger (
     channel      TEXT NOT NULL,
@@ -122,17 +125,35 @@ class SteeringEventBus:
 
     # ── Ingestion ─────────────────────────────────────────────────────────
 
-    def put(self, event: SteeringEvent, *, origin: Optional[str] = None) -> bool:
+    def put(self, event: SteeringEvent, *, origin: str) -> bool:
         """Ingest a normalised SteeringEvent.
+
+        ``origin`` is REQUIRED — caller must pass "human" (or any non-"agent"
+        value) for human events, and "agent" for bot-authored board comments.
+        Making origin required is the structural enforcement that callers cannot
+        accidentally omit the agent-authorship filter (C9-H2 fix).
 
         Returns True if the event is new (stored in the ledger).
         Returns False when the event is:
-          * a duplicate (same (channel, origin_id) already in the ledger), OR
-          * agent-authored (origin="agent") — dropped at ingest per C15.
+          * a duplicate (same (channel, origin_id) already in the ledger);
+          * agent-authored (origin="agent") — dropped at ingest per C15; OR
+          * malformed (unknown/invalid verb) — dropped to prevent downstream
+            KeyError in arbitrate() (C9-H1 fix; logs a warning).
         """
         if origin == "agent":
             logger.debug(
                 "steering_bus.put: dropped agent-authored event channel=%s origin_id=%s",
+                event.get("channel"),
+                event.get("origin_id"),
+            )
+            return False
+
+        verb = event.get("verb", "")
+        if verb not in _VALID_VERBS:
+            logger.warning(
+                "steering_bus.put: dropped event with unknown verb=%r "
+                "(channel=%s origin_id=%s) — not a valid HitlVerb",
+                verb,
                 event.get("channel"),
                 event.get("origin_id"),
             )
@@ -204,13 +225,18 @@ class SteeringEventBus:
     ) -> str:
         """Arbitrate accumulated events for interrupt_id and resume the runner.
 
-        Calls graph_state.arbitrate() on every stored event whose interrupt_id matches.
+        Calls graph_state.arbitrate() on events matching both interrupt_id AND
+        thread_id (defence-in-depth: a UUID collision across threads is improbable
+        but filtering by thread_id makes cross-thread contamination impossible by
+        construction — C9 advisory #4 fix).
+
         If no matching events → defaults to "APPROVE" (pass-through, fail-safe for
         an interrupt with no opposing signal).
 
         Returns the effective HitlVerb applied to runner.resume().
         """
-        events = self.get_for_interrupt(interrupt_id)
+        all_for_interrupt = self.get_for_interrupt(interrupt_id)
+        events = [e for e in all_for_interrupt if e.get("thread_id") == thread_id]
         verb = arbitrate(events, interrupt_id) or "APPROVE"
 
         logger.info(

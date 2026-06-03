@@ -237,7 +237,7 @@ async def test_sandbox_run_exception_maps_failed():
 async def test_spine_execute_node_runs_in_sandbox():
     sb = _RecordingSandbox()
     nodes = _build_nodes(_default_capability(), sandbox=sb)
-    out = await nodes["execute"](
+    out = await nodes["fan_out"](
         {"thread_id": "t1", "goal": "do x"}, {"configurable": {"thread_id": "t1"}}
     )
     assert len(sb.calls) == 1, "the spine execute node must drive AbstractSandbox.run()"
@@ -247,7 +247,7 @@ async def test_spine_execute_node_runs_in_sandbox():
 async def test_spine_execute_node_legacy_without_sandbox():
     # back-compat: no sandbox injected => the merged in-process skeleton path is unchanged.
     nodes = _build_nodes(_default_capability(), sandbox=None)
-    out = await nodes["execute"](
+    out = await nodes["fan_out"](
         {"thread_id": "t2", "goal": "legacy"}, {"configurable": {"thread_id": "t2"}}
     )
     assert out["tasks"][0]["status"] == TaskStatus.COMPLETED.value

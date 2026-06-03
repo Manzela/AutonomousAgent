@@ -164,6 +164,24 @@ def _assert_acyclic(nodes: list[TaskNode]) -> None:
         raise DecompositionError(f"TaskGraph has a cycle (unresolvable nodes: {remaining})")
 
 
+def ready_nodes(graph: TaskGraph, done_ids: set[str]) -> list[TaskNode]:
+    """SP-11 ready frontier: the TaskNodes dispatchable in the NEXT super-step — every
+    ``depends_on`` already in ``done_ids`` and the node itself not yet done.
+
+    Validates structure first (acyclic + resolvable deps), so the frontier is well-defined.
+    With ``done_ids`` empty this is exactly the indegree-0 ROOTS (the breadth dispatched in
+    the first wave); on a pure dependency CHAIN it yields a single node per wave — so fan-out
+    happens ONLY where the DAG permits, never over-parallelizing coupled work (PRD §6 SP-11
+    sequential control)."""
+    validate_taskgraph(graph)
+    done = set(done_ids)
+    return [
+        n
+        for n in graph["nodes"]
+        if n["id"] not in done and all(dep in done for dep in n["depends_on"])
+    ]
+
+
 def assert_decomposition_fidelity(graph: TaskGraph, spec: TaskSpec) -> None:
     """The SP-02 fidelity oracle (SP-02 (3)+(4)).
 

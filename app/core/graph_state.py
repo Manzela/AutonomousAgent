@@ -279,6 +279,11 @@ class SpineState(TypedDict, total=False):
     pre_decompose_checkpoint_id: Optional[str]
     # workspace (DoD-17) — content-addressed digest, never inline bytes
     workspace_ref: Optional[WorkspaceRef]
+    # SP-11: EVERY fan-out leaf's snapshot ref (distinct refs/aa-snapshots/<tid>/<node> keys),
+    # so a multi-leaf wave records ALL snapshots in state — not just the one ship_effect points
+    # to (workspace_ref). Makes the PRD "A/B snapshot to DISTINCT keys" observable; nothing is
+    # silently dropped. C9 (gemini-3.1-pro) finding 2.
+    workspace_refs: Optional[list[WorkspaceRef]]
     # cost / caps
     cost_accumulator: Annotated[dict, _merge_cost]
     fix_attempts: int

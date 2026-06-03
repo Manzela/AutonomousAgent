@@ -24,15 +24,18 @@ distinct post-resume nodes and are ledger-guarded via apply_once().
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sys
+import tempfile
 import time
 import uuid
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, AsyncIterator, Callable, Mapping, Optional
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -41,8 +44,10 @@ from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
 from app.core import graph_state as gs
 from app.core.decision_record import append_decision
+from app.core.decompose import ready_nodes, task_graph_to_requests
 from app.core.eval_gate import scope_root_verdict
 from app.core.graph_state import SpineState, TaskGraph
+from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from app.core.workspace import WorkspaceSession
 from app.core.orchestrator import execute as orchestrate
 from app.core.sandbox import AbstractSandbox
@@ -196,15 +201,128 @@ def _scrub_persisted(obj):
 
 
 # ── nodes (closure over the injected capability + sandbox + drafter — no callables in state) ──
+@asynccontextmanager
+async def _async_cm(sync_cm) -> AsyncIterator[None]:
+    """Bridge a SYNC context manager (SP-R6 ``GlobalThreadCap.slot`` / ``BranchLease.hold`` —
+    both wrap a BLOCKING ``BoundedSemaphore.acquire`` / ``fcntl.flock``) into an async one:
+    enter/exit OFF the event loop via a worker thread, so a contended acquire never FREEZES the
+    loop (the other fan-out leaves + any heartbeat keep running)."""
+    await asyncio.to_thread(sync_cm.__enter__)
+    exc_info: tuple = (None, None, None)
+    try:
+        yield
+    except BaseException:
+        # Forward the REAL exc_info to __exit__ (protocol-correct) so a CM that inspects it for
+        # rollback sees the failure; for the SP-R6 lock/semaphore CMs __exit__ ignores args and
+        # always releases, so this never leaks — but the bridge stays correct for any CM.
+        exc_info = sys.exc_info()
+        raise
+    finally:
+        await asyncio.to_thread(sync_cm.__exit__, *exc_info)
+
+
+async def _run_node(
+    req: TaskRequest,
+    *,
+    sandbox: Optional[AbstractSandbox],
+    capability: AgentCapability,
+    cap: GlobalThreadCap,
+    lease: BranchLease,
+    repo_dir: Path,
+    base_ref: str,
+    thread_id: str,
+) -> dict:
+    """Run ONE ready node concurrently. Acquire the SP-R6 global-cap slot FIRST (admission —
+    BEFORE creating a worktree, so disk is bounded by the cap), then (only when a real worktree
+    will exist) the per-branch lease (serialize same-branch writers — no lost-update). Do the
+    node's sandboxed work in its OWN git worktree, snapshot to its OWN node-keyed ref BEFORE
+    close(). Returns {node_id, result, changed_paths, symlink_paths, workspace_ref}."""
+    node_id = req.task_id
+    allowed = req.constraints.get("allowed_paths") if isinstance(req.constraints, dict) else None
+    use_ws = sandbox is not None and bool(allowed)
+
+    async with AsyncExitStack() as stack:
+        await stack.enter_async_context(_async_cm(cap.slot()))  # admission cap (acquire→create)
+        if use_ws:
+            await stack.enter_async_context(_async_cm(lease.hold(f"agent/{thread_id}/{node_id}")))
+
+        ws: Optional[WorkspaceSession] = None
+        symlink_paths: list[str] = []
+        workspace_ref: Optional[dict] = None
+        try:
+            run_req = req
+            if use_ws:
+                ws = WorkspaceSession.create(
+                    repo_dir=repo_dir, base_ref=base_ref, thread_id=thread_id, node_id=node_id
+                )
+                if ws.ok:
+                    rel = _node_output_relpath({"allowed_paths": allowed})
+                    manifest = [{"path": rel, "content": "# autonomousagent sp05 node output\n"}]
+                    run_req = req.model_copy(
+                        update={
+                            "constraints": {
+                                **req.constraints,
+                                "sandbox_cmd": [sys.executable, _APPLIER, json.dumps(manifest)],
+                                "workdir": str(ws.ws_dir),
+                            }
+                        }
+                    )
+                else:  # degraded worktree → the probe, empty diff
+                    run_req = req.model_copy(
+                        update={
+                            "constraints": {
+                                **(req.constraints or {}),
+                                "sandbox_cmd": _SKELETON_SANDBOX_CMD,
+                            }
+                        }
+                    )
+            elif sandbox is not None:
+                run_req = req.model_copy(
+                    update={
+                        "constraints": {
+                            **(req.constraints or {}),
+                            "sandbox_cmd": _SKELETON_SANDBOX_CMD,
+                        }
+                    }
+                )
+
+            result: ExecutionResult = await orchestrate(run_req, capability, sandbox=sandbox)
+            if ws is not None and ws.ok and result.status == TaskStatus.COMPLETED:
+                diff = ws.diff()
+                result = result.model_copy(update={"artifacts": diff})
+                symlink_paths = ws.symlinks([(d["status"], d["path"]) for d in diff])
+                workspace_ref = ws.snapshot(thread_id=thread_id, node_id=node_id)  # BEFORE close()
+            changed_paths = [
+                [a.get("status", "M"), a["path"]] for a in (result.artifacts or ()) if a.get("path")
+            ]
+            return {
+                "node_id": node_id,
+                "result": result,
+                "changed_paths": changed_paths,
+                "symlink_paths": symlink_paths,
+                "workspace_ref": workspace_ref,
+            }
+        finally:
+            if ws is not None:
+                ws.close()  # snapshot already taken; close while the lease is still held
+
+
 def _build_nodes(
     capability: AgentCapability,
     sandbox: Optional[AbstractSandbox] = None,
     drafter: Optional[AbstractSpecDrafter] = None,
+    cap: Optional[GlobalThreadCap] = None,
+    lease: Optional[BranchLease] = None,
 ):
     # SP-03: the clarification spec-drafter is injected (InMemory deterministic in CI;
     # the DEFERRED VertexSpecDrafter in prod). Default to the hermetic in-memory drafter
     # so the spine stays runnable without live Vertex (CLAUDE.md hybrid-adapter rule).
     drafter = drafter or InMemorySpecDrafter()
+    # SP-11/SP-R6: the fan-out concurrency cap + per-branch lease. Defaults keep every existing
+    # caller working — cap=1 (serial, no behaviour change for single-node plans) + an ephemeral
+    # lease dir. SpineRunner injects the real cap (SPINE_MAX_ACTIVE) + a per-runner lease dir.
+    cap = cap or GlobalThreadCap(1)
+    lease = lease or BranchLease(tempfile.mkdtemp(prefix="aa-lease-"))
 
     async def goal_intake(state: SpineState, config) -> dict:
         tid = config["configurable"]["thread_id"]
@@ -416,108 +534,103 @@ def _build_nodes(
             }
         )
 
-    async def execute(state: SpineState, config) -> dict:
-        """SP-05: the code→test→fix leaf — runs the per-node command in a REAL sandbox.
+    async def fan_out(state: SpineState, config) -> dict:
+        """SP-11: dispatch the READY DAG frontier CONCURRENTLY (asyncio.gather), each ready
+        node in its OWN git worktree+branch (SP-05b) under the SP-R6 global-cap + per-branch
+        lease, joining at this single super-step. Fan-out is DAG-topology-driven — a pure
+        dependency CHAIN yields ONE ready node per wave (no spurious parallelism). The
+        N=1 / no-plan / sandbox=None paths reduce to the F-1/F-2 single-leaf behaviour.
 
-        When a ``sandbox`` is injected AND there is a sealed plan, F-1 materialises a REAL
-        per-node git worktree (``WorkspaceSession``), runs the deterministic applier INSIDE
-        it via ``sandbox.run(workdir=...)`` (scrubbed env, returncode-drives-status, egress
-        per-phase default-deny), then extracts the REAL ``git diff`` into the agent diff that
-        eval_gate (SP-06) scope-scores — so an out-of-scope write BLOCKS ship. With no
-        sandbox (or no plan, or a degraded worktree) the in-process skeleton path is
-        unchanged. The worktree is git-diff SCOPE-SCORED, NOT kernel-confined (EROFS is
-        SP-05c, integration-tier); the external Hermes binary is NOT wired (it host-execs +
-        raises). See app/core/workspace.py + app/core/_workspace_apply.py.
-        """
+        NO `interrupt` call here (interrupt-split doctrine — a gather'd leaf cannot cleanly suspend);
+        irreversible effects stay in ship_effect. DEFERRED: per-leaf Pregel checkpointing
+        (gather hides leaves behind ONE __pregel_task_id, so a mid-fan-out crash re-runs all
+        leaves idempotently into FRESH worktrees, _merge_by_task_id dedups by task_id); kernel
+        FS-confinement (EROFS/gVisor is SP-05c — a git worktree is path-isolation, not a kernel
+        boundary); a cross-process cap (the cap is process-local); multi-WAVE re-fan-out (this
+        slice dispatches the single ready frontier once)."""
+        tid = state["thread_id"]
         plan = state.get("plan")
-        nodes = (plan or {}).get("nodes") if isinstance(plan, dict) else None
+        repo_dir = Path(__file__).resolve().parents[2]
+        base_ref = state.get("base_ref") or "HEAD"
 
-        ws: Optional[WorkspaceSession] = None
-        symlink_paths: list[str] = []
-        workspace_ref: Optional[dict] = None  # SP-R7: the real durable snapshot ref
-        try:
-            if sandbox is not None and nodes:  # `and nodes` narrows it non-None for the body
-                node0 = nodes[0]
-                repo_dir = Path(__file__).resolve().parents[2]
-                ws = WorkspaceSession.create(
+        # isinstance narrows Optional[TaskGraph] -> TaskGraph; the .get("nodes") guard keeps the
+        # empty-plan case on the skeleton path (an empty DAG has no ready frontier to dispatch).
+        if isinstance(plan, dict) and plan.get("nodes"):
+            # The ready frontier is computed against the ALREADY-COMPLETED nodes (NOT a hardcoded
+            # empty set): on the first/only entry tasks is empty so this is exactly the roots, but
+            # the computation stays correct if a future eval_gate->fan_out loop re-enters for the
+            # next wave (a done node is never re-dispatched). C9 (gemini-3.1-pro) finding 1.
+            done_ids = {
+                t["task_id"]
+                for t in (state.get("tasks") or [])
+                if t.get("status") == TaskStatus.COMPLETED.value
+            }
+            ready_ids = {n["id"] for n in ready_nodes(plan, done_ids)}
+            reqs = [r for r in task_graph_to_requests(plan) if r.task_id in ready_ids]
+        else:
+            # no plan: a single skeleton leaf — back-compat with F-1's no-plan execute path
+            reqs = [
+                TaskRequest(
+                    task_id=tid,
+                    phase="draft",
+                    summary=state.get("goal", ""),
+                    constraints={},
+                    deadline_s=60.0,
+                )
+            ]
+
+        async def _one(req: TaskRequest) -> dict:
+            # A leaf failure must NOT crash the super-step — surface it as a scored FAILED result.
+            try:
+                return await _run_node(
+                    req,
+                    sandbox=sandbox,
+                    capability=capability,
+                    cap=cap,
+                    lease=lease,
                     repo_dir=repo_dir,
-                    base_ref=state.get("base_ref") or "HEAD",
-                    thread_id=state["thread_id"],
+                    base_ref=base_ref,
+                    thread_id=tid,
                 )
-                if ws.ok:
-                    rel = _node_output_relpath(node0)
-                    manifest = [{"path": rel, "content": "# autonomousagent sp05 node output\n"}]
-                    constraints = {
-                        "sandbox_cmd": [sys.executable, _APPLIER, json.dumps(manifest)],
-                        "workdir": str(ws.ws_dir),
-                    }
-                else:  # degraded (no git / not a repo): fall back to the probe, empty diff
-                    constraints = {"sandbox_cmd": _SKELETON_SANDBOX_CMD}
-                phase = node0.get("phase", "draft")
-            elif sandbox is not None:
-                constraints = {"sandbox_cmd": _SKELETON_SANDBOX_CMD}
-                phase = "draft"
-            else:
-                constraints = {}
-                phase = "draft"
+            except Exception as exc:  # noqa: BLE001 — degrade a broken leaf, never abort the join
+                return {
+                    "node_id": req.task_id,
+                    "result": ExecutionResult(
+                        task_id=req.task_id,
+                        status=TaskStatus.FAILED,
+                        error=f"fan_out_leaf_error: {exc!r}",
+                    ),
+                    "changed_paths": [],
+                    "symlink_paths": [],
+                    "workspace_ref": None,
+                }
 
-            req = TaskRequest(
-                task_id=state["thread_id"],
-                phase=phase,
-                summary=state.get("goal", ""),
-                constraints=constraints,
-                deadline_s=60.0,
-            )
-            result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
+        outcomes = await asyncio.gather(*[_one(r) for r in reqs])  # gather IS the super-step join
 
-            # F-1: extract the REAL diff from the worktree ONLY on a clean (COMPLETED) run;
-            # a FAILED applier leaves artifacts empty (no diff scored). The git diff — never
-            # the child's stdout — is the authoritative change set (anti-fabrication).
-            if ws is not None and ws.ok and result.status == TaskStatus.COMPLETED:
-                diff = ws.diff()
-                result = result.model_copy(update={"artifacts": diff})
-                symlink_paths = ws.symlinks([(d["status"], d["path"]) for d in diff])
-                # SP-R7: snapshot the worktree to a DURABLE content-addressed git ref BEFORE
-                # close() tears it down (ordering is load-bearing — the ref must outlive the
-                # worktree so a kill loses nothing). workspace_ref carries a REAL content
-                # digest; resume rehydrates a fresh sandbox via WorkspaceSession.rehydrate.
-                workspace_ref = ws.snapshot(
-                    thread_id=state["thread_id"], node_id=str(node0.get("id") or "n0")
-                )
-        finally:
-            if ws is not None:
-                ws.close()  # ALWAYS tear the worktree down (success or failure)
-
-        # SP-06: execute is the AUTHORITATIVE producer of the agent diff the eval_gate scores.
-        # Written unconditionally so eval_gate can never read a STALE changed_paths from a
-        # prior super-step / re-driven resume (C9 fail-safe).
-        changed_paths = [
-            [a.get("status", "M"), a["path"]] for a in (result.artifacts or ()) if a.get("path")
-        ]
+        # Merge: per-task entries (the tasks reducer dedups by task_id across kill+resume),
+        # PER-TASK cost keys, and the UNION of every leaf's changed_paths/symlinks (eval_gate
+        # scope-scores the whole batch against the union of the plan's allowed globs).
         delta = {
-            "tasks": [result.model_dump(mode="json")],
-            "cost_accumulator": {f"{state['thread_id']}|execute": result.cost_usd},
-            "changed_paths": changed_paths,
-            "symlink_paths": symlink_paths,
+            "tasks": [o["result"].model_dump(mode="json") for o in outcomes],
+            "cost_accumulator": {f"{tid}|{o['node_id']}": o["result"].cost_usd for o in outcomes},
+            "changed_paths": [cp for o in outcomes for cp in o["changed_paths"]],
+            "symlink_paths": [sp for o in outcomes for sp in o["symlink_paths"]],
             "audit": [
-                f"execute status={result.status.value} sandboxed={sandbox is not None} "
-                f"workspace={ws.ok if ws is not None else False} changed={len(changed_paths)}"
+                f"fan_out nodes={len(reqs)} sandboxed={sandbox is not None} "
+                f"changed={sum(len(o['changed_paths']) for o in outcomes)}"
             ],
         }
-        # SP-R1 (C9 hardening): scrub the ENTIRE delta — every new string value entering
-        # the checkpoint (untrusted sandbox tool output AND the audit line) routes through
-        # the same lib.scrubber as goal_intake, so no path can leak. Ints/floats (cost,
-        # returncode) pass through unchanged.
+        # SP-R1: scrub the whole delta (untrusted leaf stdout + audit) via the same lib.scrubber.
         scrubbed = _scrub_persisted(delta)
-        # SP-R7: stamp the snapshot ref AFTER scrubbing. Its digest is a 64-hex sha256 CONTENT
-        # hash (not a secret) that SP-R1's high-entropy filter would otherwise REDACT, which
-        # would destroy the byte-equal oracle; kind/ref are structural and the thread_id/
-        # node_id woven into the ref are already persisted unscrubbed as the correlation key,
-        # so bypassing the scrub here leaks nothing new. ship_effect prefers this real ref over
-        # the synthetic sha256(goal+spec_sha); absent on the degraded path → ship_effect falls
-        # back, never crashes.
-        if workspace_ref is not None:
-            scrubbed["workspace_ref"] = workspace_ref
+        # SP-R7: stamp REAL snapshot refs AFTER scrubbing (the digest is a content hash, not a
+        # secret SP-R1's entropy filter must redact). Each leaf's ref is durable under
+        # refs/aa-snapshots/<tid>/<node_id> regardless. Record EVERY leaf's ref in workspace_refs
+        # (nothing silently dropped — C9 finding 2) and point the single workspace_ref ship_effect
+        # consumes at the FIRST real one. Absent (degraded/sandbox=None) → ship_effect falls back.
+        all_refs = [o["workspace_ref"] for o in outcomes if o["workspace_ref"]]
+        if all_refs:
+            scrubbed["workspace_refs"] = all_refs
+            scrubbed["workspace_ref"] = all_refs[0]
         return scrubbed
 
     async def eval_gate(state: SpineState, config) -> dict:
@@ -603,7 +716,7 @@ def _build_nodes(
         "sign_off": sign_off,
         "seal_spec": seal_spec,
         "decompose": decompose,
-        "execute": execute,
+        "fan_out": fan_out,
         "eval_gate": eval_gate,
         "ship_gate": ship_gate,
         "ship_effect": ship_effect,
@@ -694,6 +807,8 @@ def build_spine(
     capability: Optional[AgentCapability] = None,
     sandbox: Optional[AbstractSandbox] = None,
     drafter: Optional[AbstractSpecDrafter] = None,
+    cap: Optional[GlobalThreadCap] = None,
+    lease: Optional[BranchLease] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -705,7 +820,7 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter)
+    nodes = _build_nodes(capability, sandbox, drafter, cap, lease)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)
@@ -725,8 +840,8 @@ def build_spine(
         {"seal_spec": "seal_spec", "__halt__": "__halt__", "__replan__": "__replan__"},
     )
     g.add_edge("seal_spec", "decompose")
-    g.add_edge("decompose", "execute")
-    g.add_edge("execute", "eval_gate")
+    g.add_edge("decompose", "fan_out")
+    g.add_edge("fan_out", "eval_gate")
     g.add_conditional_edges(
         "eval_gate",
         _route_after_eval_gate,

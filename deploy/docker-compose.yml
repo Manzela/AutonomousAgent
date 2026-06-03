@@ -337,8 +337,8 @@ services:
       #   Option B (target, SP-00f.3): token-refresh sidecar that re-mints
       #     ~5 min before expiry and SIGHUPs / docker-restarts github-mcp.
       # See lib/github_auth.py docstring for full rationale.
-      GITHUB_APP_ID: ${GITHUB_APP_ID}
-      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
       # Path inside the container to the SOPS-decrypted PEM key (bind-mounted
       # from secrets/ at runtime by the operator bootstrap script).
       GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github_app_key

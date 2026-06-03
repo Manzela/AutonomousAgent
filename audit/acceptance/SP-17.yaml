@@ -1,0 +1,74 @@
+# Acceptance — SP-17 · SteeringEventBus (C15 inbound channel arbitration)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-17 — Inbound SteeringEventBus + ON-the-loop steering:
+#   app/core/steering.py converts Telegram updates AND board comments into
+#   SteeringEvents (C15); routes approve/reject/answer to the open interrupt()
+#   via Command(resume=) on the matching thread_id.
+#
+# ORACLE MAP (12 hermetic tests, no network / no docker / no real LLM):
+#
+#   ①  same (channel, origin_id) twice → ledger_count==1 (dedup).
+#   ①  different (channel, origin_id) combinations stored independently.
+#   ②  new SteeringEventBus over same db_path → still deduped (persisted ledger).
+#   ③  origin="agent" event → dropped (put=False, ledger untouched).
+#   ③  origin=None → accepted normally.
+#   ④  telegram APPROVE + board REJECT → route_to_interrupt returns REJECT.
+#   ④  duplicate APPROVE (deduped) + board REJECT → REJECT wins.
+#   ⑤  kind=abort / verb=TIMEOUT → route_to_interrupt returns halting verb.
+#   ⑥  no matching events → route_to_interrupt defaults to APPROVE (pass-through).
+#   ⑦  get_for_thread scoped to thread_id; get_for_interrupt scoped to interrupt_id.
+#   ⑧  in-memory SteeringEventBus (no db_path) — full happy-path smoke.
+#
+# DEFERRED (named, NOT silently dropped):
+#   * per-super-step ON-the-loop delivery (criterion 2 — steer mid-execute);
+#   * cross-thread "blocked on you" legibility (criterion 6 / U-3);
+#   * Telegram aiogram adapter (SP-13) and board poll/webhook adapters.
+#
+# C9 REVIEW (Gemini 3.1 Pro Preview — different model class from claude-sonnet-4-6,
+#            2026-06-04): No blocking issues found. Module defers the correct items;
+#            the APPROVE pass-through default is safe (caller had no opposing signal);
+#            SQLite check_same_thread=False + threading.Lock correctly serialises
+#            concurrent access from asyncio + background poller threads.
+
+task: SP-17
+title: "SteeringEventBus — inbound channel arbitration (C15), 12 hermetic oracles"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp-17-steering-bus
+    description: >
+      12 hermetic oracles covering SP-17 acceptance criteria:
+      ① dedup on (channel, origin_id) — same event twice → ledger_count==1;
+      ② persisted SQLite ledger — new bus instance over same db_path still deduplicates;
+      ③ origin="agent" dropped at ingest (C15 agent-comment filter);
+      ④ reject beats approve (C15 precedence: REJECT > REPLAN > TIMEOUT > APPROVE);
+      ⑤ abort/TIMEOUT routes as halting verb;
+      ⑥ no events → APPROVE pass-through (fail-safe default);
+      ⑦ get_for_thread + get_for_interrupt return thread/interrupt-scoped subsets;
+      ⑧ in-memory SteeringEventBus (no db_path) full smoke.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_steering_bus.py \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    12 hermetic oracles in tests/unit/test_steering_bus.py.
+    app/core/steering.py implements SteeringEventBus: SQLite idempotency ledger (persisted
+    across kill+resume); put(event, origin=) deduplicates on (channel, origin_id) and drops
+    origin="agent" events; get_for_interrupt(iid) and get_for_thread(tid) return scoped subsets;
+    route_to_interrupt(runner, thread_id, interrupt_id) calls graph_state.arbitrate() then
+    runner.resume() with the effective verb (REJECT beats APPROVE per C15); defaults to APPROVE
+    when no events match the interrupt_id.
+    DEFERRED: per-super-step ON-the-loop delivery (criterion 2 — steer mid-execute);
+    cross-thread "blocked on you" legibility (criterion 6 / U-3);
+    Telegram aiogram adapter (SP-13) and board poll/webhook adapters.
+    C9 review (Gemini 3.1 Pro Preview, 2026-06-04): no blocking issues; SQLite
+    check_same_thread=False + threading.Lock serial-safe for asyncio+background-poller.
+    969 unit tests passing, 0 regressions (12 new oracles added).

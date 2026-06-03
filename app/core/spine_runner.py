@@ -26,6 +26,7 @@ from app.core.graph import build_spine
 from app.core.reaper import WorkspaceReaper, reap_orphaned_worktrees
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
+from app.core.steering import SteeringEventBus
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from lib.scrubber import scrub_string
 
@@ -110,11 +111,16 @@ class SpineRunner:
         sandbox: Optional[AbstractSandbox] = None,
         board: Optional[AbstractBoard] = None,
         gate: Optional[GateReader] = None,
+        bus: Optional[SteeringEventBus] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
         self._capability = capability
         self._sandbox = sandbox
+        # SP-17: the SteeringEventBus routes inbound Telegram/board events to open interrupts
+        # (C15 dedup + arbitration). None => bus-less skeleton (tests that don't need steering).
+        # The live bus is constructed by the caller (FastAPI lifespan, nightly integration tests).
+        self._bus = bus
         # SP-16 (slice 2): the kanban board the LIVE spine projects its DAG onto. Default to an
         # InMemoryBoard so the entrypoint always renders cards (a build_spine closure arg like
         # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the

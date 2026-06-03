@@ -48,6 +48,7 @@ from app.core.decompose import ready_nodes, task_graph_to_requests
 from app.core.eval_gate import scope_root_verdict
 from app.core.graph_state import SpineState, TaskGraph
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
+from lib.durability.graph_budget import aggregate_spend, budget_verdict
 from app.core.workspace import WorkspaceSession
 from app.core.orchestrator import execute as orchestrate
 from app.core.sandbox import AbstractSandbox
@@ -313,6 +314,7 @@ def _build_nodes(
     drafter: Optional[AbstractSpecDrafter] = None,
     cap: Optional[GlobalThreadCap] = None,
     lease: Optional[BranchLease] = None,
+    budget_usd: Optional[float] = None,
 ):
     # SP-03: the clarification spec-drafter is injected (InMemory deterministic in CI;
     # the DEFERRED VertexSpecDrafter in prod). Default to the hermetic in-memory drafter
@@ -553,6 +555,35 @@ def _build_nodes(
         repo_dir = Path(__file__).resolve().parents[2]
         base_ref = state.get("base_ref") or "HEAD"
 
+        # SP-R2: INLINE per-graph budget enforcement. Reads ONLY this graph's accumulated
+        # cost_accumulator (NO DB, no F21 daily watchdog, no HALT sentinel — that is the SEPARATE
+        # all-graphs UTC-day poller in lib/durability/budget_watchdog.py). budget_usd None (default,
+        # injected by SpineRunner from SPINE_BUDGET_USD) => OFF => no verdict, delta byte-identical
+        # to pre-SP-R2. Two checks bracket the dispatch:
+        #   (1) PRE-dispatch ADMISSION (below): if PRIOR waves already reached the cap, dispatch
+        #       NOTHING this wave — protects a resumed graph and every wave AFTER the first.
+        #   (2) POST-dispatch ENFORCEMENT (after the gather): if THIS wave pushed cumulative spend
+        #       to/over the cap, stamp preempt=True so _route_after_fan_out parks at __halt__ BEFORE
+        #       eval_gate/ship — an over-budget run never SHIPS. The crossing wave's spend is already
+        #       incurred (recorded for accounting); preventing it needs mid-fan-out in-flight
+        #       cancellation or a pre-run cost oracle — DEFERRED (graph_budget.py header / SP-27).
+        # The single-wave live spine (no eval_gate->fan_out loop yet — SP-11-deferred) therefore
+        # caps blast radius at ONE wave's overspend and then halts; a multi-wave driver gets full
+        # per-wave admission via check (1).
+        prior_spend = aggregate_spend(state.get("cost_accumulator"))
+        if budget_usd is not None:
+            pre = budget_verdict(prior_spend, budget_usd)
+            if pre.preempt:
+                return _scrub_persisted(
+                    {
+                        "budget_verdict": asdict(pre),
+                        "audit": [
+                            f"fan_out PRE-EMPTED (pre-dispatch admission) by SP-R2 "
+                            f"per-graph budget: {pre.reason}"
+                        ],
+                    }
+                )
+
         # isinstance narrows Optional[TaskGraph] -> TaskGraph; the .get("nodes") guard keeps the
         # empty-plan case on the skeleton path (an empty DAG has no ready frontier to dispatch).
         if isinstance(plan, dict) and plan.get("nodes"):
@@ -620,6 +651,18 @@ def _build_nodes(
                 f"changed={sum(len(o['changed_paths']) for o in outcomes)}"
             ],
         }
+        # SP-R2 POST-dispatch enforcement: did THIS wave push cumulative spend (prior + this wave)
+        # to/over the cap? Stamp the verdict (observable budget posture on every super-step) and,
+        # when over, append an audit line — _route_after_fan_out then parks at __halt__ BEFORE
+        # eval_gate/ship. OFF (budget_usd None) => no key (delta byte-identical to pre-SP-R2).
+        if budget_usd is not None:
+            wave_spend = sum(o["result"].cost_usd for o in outcomes)
+            post = budget_verdict(prior_spend + wave_spend, budget_usd)
+            delta["budget_verdict"] = asdict(post)
+            if post.preempt:
+                delta["audit"].append(
+                    f"fan_out OVER-BUDGET after wave — parking before ship (SP-R2): {post.reason}"
+                )
         # SP-R1: scrub the whole delta (untrusted leaf stdout + audit) via the same lib.scrubber.
         scrubbed = _scrub_persisted(delta)
         # SP-R7: stamp REAL snapshot refs AFTER scrubbing (the digest is a content hash, not a
@@ -753,6 +796,14 @@ def _route_after_sign_off(state: SpineState) -> str:
     }.get(verb, "__halt__")
 
 
+def _route_after_fan_out(state: SpineState) -> str:
+    """SP-R2: after a fan_out super-step, route to __halt__ (fail-safe park — the over-budget
+    run never reaches eval_gate/ship) iff the per-graph budget pre-empted this wave; otherwise
+    continue to the SP-06 eval_gate. Deterministic on the stamped verdict — never an LLM
+    decision; absent verdict (budget OFF) => the normal eval_gate path (zero behaviour change)."""
+    return "__halt__" if (state.get("budget_verdict") or {}).get("preempt") else "eval_gate"
+
+
 def _route_after_eval_gate(state: SpineState) -> str:
     """SP-06 SHIP PRECONDITION — FAIL-CLOSED: proceed to ship_gate ONLY on an explicit
     passing verdict; an absent OR malformed verdict BLOCKS ship (→ __halt__), so a gate that
@@ -773,6 +824,10 @@ def _route_after_ship_gate(state: SpineState) -> str:
 
 
 async def halt(state: SpineState, config) -> dict:
+    # SP-R2: distinguish an AUTOMATED budget park from an operator halt — the __halt__ terminal is
+    # shared, so read the stamped verdict rather than mislabel a cap event as an operator action.
+    if (state.get("budget_verdict") or {}).get("preempt"):
+        return {"audit": ["HALTED by SP-R2 per-graph budget (over cap — parked before ship)"]}
     return {"audit": ["HALTED by operator"]}
 
 
@@ -809,6 +864,7 @@ def build_spine(
     drafter: Optional[AbstractSpecDrafter] = None,
     cap: Optional[GlobalThreadCap] = None,
     lease: Optional[BranchLease] = None,
+    budget_usd: Optional[float] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -820,7 +876,7 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter, cap, lease)
+    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)
@@ -841,7 +897,13 @@ def build_spine(
     )
     g.add_edge("seal_spec", "decompose")
     g.add_edge("decompose", "fan_out")
-    g.add_edge("fan_out", "eval_gate")
+    # SP-R2: fan_out routes through the per-graph budget gate — __halt__ (parked) when the wave was
+    # pre-empted over-budget, else eval_gate. Replaces the unconditional fan_out -> eval_gate edge.
+    g.add_conditional_edges(
+        "fan_out",
+        _route_after_fan_out,
+        {"eval_gate": "eval_gate", "__halt__": "__halt__"},
+    )
     g.add_conditional_edges(
         "eval_gate",
         _route_after_eval_gate,

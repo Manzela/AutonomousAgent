@@ -37,6 +37,21 @@ def _default_cap() -> GlobalThreadCap:
     return GlobalThreadCap(max(1, n))
 
 
+def _default_budget() -> Optional[float]:
+    """SP-R2 per-graph USD budget. SPINE_BUDGET_USD caps the cumulative cost_accumulator a SINGLE
+    graph may spend before fan_out pre-empts the next wave (INLINE, independent of the F21 daily
+    poller). Unset / non-positive / malformed => None == budget OFF (the spine behaves exactly as
+    before — a deliberate opt-in so existing deployments are unaffected). Operator-tunable per env."""
+    raw = os.environ.get("SPINE_BUDGET_USD")
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except ValueError:
+        return None
+    return v if v > 0 else None
+
+
 def _initial_state(thread_id: str, goal: str) -> dict:
     state = {
         "thread_id": thread_id,
@@ -74,12 +89,20 @@ class SpineRunner:
         # are build_spine closure args (like capability/sandbox) — NEVER in SpineState.
         self._cap = _default_cap()
         self._lease = BranchLease(tempfile.mkdtemp(prefix="aa-lease-"))
+        # SP-R2: the per-graph USD budget (SPINE_BUDGET_USD) — a build_spine closure arg like
+        # cap/lease, NEVER in SpineState. None => budget OFF (zero behaviour change).
+        self._budget = _default_budget()
         # SP-05 (F-1): thread the sandbox to build_spine so the LIVE entrypoint actually runs
         # in a sandbox (production previously ran sandbox=None — the in-process path).
         # assert_serializable_state's no-callable invariant is preserved (cap/lease/sandbox are
         # closure args, never state). sandbox=None keeps the legacy in-process skeleton.
         self._app = build_spine(
-            self._saver, capability=capability, sandbox=sandbox, cap=self._cap, lease=self._lease
+            self._saver,
+            capability=capability,
+            sandbox=sandbox,
+            cap=self._cap,
+            lease=self._lease,
+            budget_usd=self._budget,
         )
 
     @property

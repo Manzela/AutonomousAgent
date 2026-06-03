@@ -48,11 +48,25 @@ _CFG = {"configurable": {"thread_id": "t-sp05"}}
 
 @pytest.fixture(autouse=True)
 def _prune_worktrees():
-    """Belt-and-suspenders: prune any worktree a crashed test left registered, so the
-    cleanup oracle can't be polluted by a sibling's leak."""
+    """Belt-and-suspenders: prune any worktree a crashed test left registered AND sweep any
+    refs/aa-snapshots/* a crashed SP-R7 test left behind, so neither a worktree nor a snapshot
+    ref leaks into a sibling's cleanup/no-leak oracle."""
     repo = Path(__file__).resolve().parents[2]
+
+    def _sweep_snapshot_refs():
+        out = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/aa-snapshots/"],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+        ).stdout
+        for ref in out.split():
+            subprocess.run(["git", "update-ref", "-d", ref], cwd=str(repo), capture_output=True)
+
+    _sweep_snapshot_refs()
     yield
     subprocess.run(["git", "worktree", "prune"], cwd=str(repo), capture_output=True)
+    _sweep_snapshot_refs()
 
 
 # ── doubles (both implement AbstractSandbox — the ABC is NOT collapsed) ──────────────
@@ -310,3 +324,105 @@ def test_node_output_relpath_lands_in_scope():
     for allowed in (["app/sp05_probe.py"], ["app/foo"], ["lib/bar/baz.py"]):
         rel = _node_output_relpath({"allowed_paths": allowed})
         assert _matches_any(rel, allowed), f"{rel} not in scope of {allowed}"
+
+
+# ════════════════════════════════════════════════════════════════════════════════════
+# SP-R7 (F-2): lossless workspace snapshot/rehydrate mechanism + wiring oracles.
+# NON-VACUOUS: snapshot()/rehydrate() do not exist on the F-1 base (AttributeError); the
+# execute node emits no workspace_ref; today's digest is the content-BLIND _digest.
+# ════════════════════════════════════════════════════════════════════════════════════
+_REPO = Path(__file__).resolve().parents[2]
+
+
+def _gx(*a):
+    return subprocess.run(["git", *a], cwd=str(_REPO), capture_output=True, text=True)
+
+
+def _mk_ws(tid="spr7"):
+    return WorkspaceSession.create(repo_dir=_REPO, base_ref="HEAD", thread_id=tid)
+
+
+# ── durability: the snapshot ref outlives the worktree AND survives git gc ───────────
+def test_snapshot_ref_durable_across_close_and_gc():
+    ws = _mk_ws()
+    assert ws.ok
+    (ws.ws_dir / "app" / "__spr7_dur.txt").write_text("durable\n")
+    ref = ws.snapshot(thread_id="spr7", node_id="dur")
+    assert ref is not None
+    ws.close()  # worktree gone
+    _gx("gc", "--prune=now")  # an UNREFERENCED commit-tree object would be pruned here
+    assert _gx("rev-parse", "--verify", ref["ref"] + "^{commit}").returncode == 0
+    assert "commit" in _gx("cat-file", "-t", ref["ref"] + "^{commit}").stdout
+    # the edited content is still reachable through the durable ref
+    assert "__spr7_dur.txt" in _gx("ls-tree", "-r", "--name-only", ref["ref"] + "^{tree}").stdout
+
+
+# ── the digest is a real, deterministic content-address (NOT the synthetic _digest) ──
+def test_snapshot_digest_content_addressed_and_distinct_from_synthetic():
+    from app.core.graph import _digest
+
+    ws1 = _mk_ws("dca")
+    (ws1.ws_dir / "app" / "__spr7_x.txt").write_text("content-A\n")
+    r1 = ws1.snapshot(thread_id="dca", node_id="a")
+    ws1.close()
+    ws2 = _mk_ws("dca")
+    (ws2.ws_dir / "app" / "__spr7_x.txt").write_text("content-B-different\n")
+    r2 = ws2.snapshot(thread_id="dca", node_id="b")
+    ws2.close()
+    # content-sensitive: different file bytes → different digest
+    assert r1["digest"] != r2["digest"]
+    # NOT the content-blind synthetic placeholder (which is independent of file bytes)
+    synthetic = _digest({"goal": "g", "spec_sha": ""})
+    assert r1["digest"] != synthetic and len(r1["digest"]) == 64
+
+
+# ── _slug blocks ref-path forgery (a hostile node_id cannot traverse the ref store) ──
+def test_snapshot_node_id_slug_blocks_ref_forgery():
+    ws = _mk_ws("forge")
+    (ws.ws_dir / "app" / "__spr7_f.txt").write_text("x\n")
+    ref = ws.snapshot(thread_id="forge", node_id="../../HEAD")
+    ws.close()
+    # '..' and '/' are slugged away to a single valid segment — no traversal, no nested ref,
+    # and (critically) a VALID git ref (git forbids '..' in a ref, so snapshot would fail-open).
+    assert ref is not None and ref["ref"] == "refs/aa-snapshots/forge/HEAD"
+
+
+# ── fail-open: a degraded workspace / bogus ref never raises into the spine ──────────
+def test_snapshot_and_rehydrate_fail_open():
+    degraded = WorkspaceSession(ws_dir=None, parent=None, repo_dir=_REPO, base_sha="", ok=False)
+    assert degraded.snapshot(thread_id="x", node_id="y") is None
+    rs = WorkspaceSession.rehydrate(
+        repo_dir=_REPO, ref="refs/aa-snapshots/nope/nope", thread_id="x"
+    )
+    assert rs.ok is False and rs.ws_dir is None
+
+
+# ── no leak: re-snapshotting the same (tid,node) OVERWRITES one ref (bounded) ─────────
+def test_snapshot_ref_overwrite_is_idempotent_no_leak():
+    for body in ("v1\n", "v2\n"):
+        ws = _mk_ws("ovr")
+        (ws.ws_dir / "app" / "__spr7_o.txt").write_text(body)
+        ws.snapshot(thread_id="ovr", node_id="same")
+        ws.close()
+    refs = _gx("for-each-ref", "--format=%(refname)", "refs/aa-snapshots/ovr/").stdout.split()
+    assert refs == ["refs/aa-snapshots/ovr/same"]  # exactly ONE, not two
+
+
+# ── WIRING: the execute node stamps a REAL content-addressed workspace_ref ────────────
+async def test_execute_stamps_real_workspace_ref():
+    from app.core.graph import _digest
+
+    plan = _plan(["app/sp05_probe.py"])
+    delta = await _run_execute(_RealChild(), plan)
+    wr = delta.get("workspace_ref")
+    assert wr is not None, "execute emitted no workspace_ref (RED on the F-1 base)"
+    assert wr["kind"] == "branch" and wr["ref"].startswith("refs/aa-snapshots/")
+    assert len(wr["digest"]) == 64  # survived SP-R1 scrub (stamped AFTER _scrub_persisted)
+    assert wr["digest"] != _digest({"goal": "g", "spec_sha": ""})  # not the synthetic placeholder
+
+
+# ── back-compat: sandbox=None (no workspace) emits NO workspace_ref → ship_effect falls back ──
+async def test_sandbox_none_emits_no_workspace_ref():
+    nodes = _build_nodes(_default_capability(), sandbox=None)
+    delta = await nodes["execute"](_state(_plan(["app/sp05_probe.py"])), _CFG)
+    assert "workspace_ref" not in delta  # degraded path → ship_effect uses the synthetic fallback

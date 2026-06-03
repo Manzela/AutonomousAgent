@@ -21,7 +21,9 @@ path — the spine never crashes on a workspace problem.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -31,6 +33,20 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT_S = 30
+
+
+def _slug(s: str) -> str:
+    """Sanitise a thread_id/node_id into ONE valid git-ref path segment.
+
+    git refs forbid '..', a leading/trailing '.', '.lock', '/', and many chars. So map
+    everything outside [A-Za-z0-9_-] to '-' (NOTE: '.' is EXCLUDED, so no '..'/'.lock'/
+    leading-dot can form — a hostile node_id like '../../HEAD' collapses to 'HEAD', not a
+    traversal), then collapse dash runs and trim, leaving a non-empty single segment with no
+    '/' (a '/' would make a NESTED ref — ref 'a' blocks locking 'a/b'). The snapshot ref is
+    therefore always exactly refs/aa-snapshots/<seg>/<seg>."""
+    slug = re.sub(r"[^A-Za-z0-9_-]", "-", s)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug or "snap"
 
 
 def _git(args: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
@@ -131,3 +147,78 @@ class WorkspaceSession:
             _git(["worktree", "prune"], cwd=self._repo_dir)
         except (subprocess.SubprocessError, OSError):
             pass
+
+    # ── SP-R7: lossless snapshot / rehydrate (the FS resume piece) ───────────────────
+    def snapshot(self, *, thread_id: str, node_id: str) -> Optional[dict]:
+        """Snapshot the live worktree as a DURABLE, content-addressed git object — call
+        BEFORE close() (the ordering is load-bearing: the ref must outlive the worktree).
+
+        Mechanism (the PRD §5.1 "committed agent branch IS the snapshot" alternative —
+        no GCS/zstd needed): ``git write-tree`` + ``git commit-tree`` capture the worktree
+        content as an immutable object; ``git update-ref refs/aa-snapshots/<tid>/<node>``
+        anchors it in the COMMON ref store so it survives the worktree teardown AND a
+        ``git gc`` (an unreferenced commit-tree object would be pruned). Resume rehydrates
+        a FRESH sandbox from this ref via :meth:`rehydrate`.
+
+        Returns a ``WorkspaceRef``-shaped dict ``{kind:'branch', ref, digest}`` or ``None``
+        on any git error (FAIL-OPEN, same posture as :meth:`diff`/:meth:`close` — a
+        snapshot failure degrades to the synthetic ship_effect ref, never crashes the spine).
+
+        The commit is UNSIGNED (``commit-tree`` does not sign without ``-S`` even though
+        ``commit.gpgsign=true``); these objects live only under ``refs/aa-snapshots/*`` and
+        are never pushed/merged/main-bound, so the signed-commit rule never evaluates them.
+
+        ``digest`` = sha256 of ``git ls-tree -r --full-tree`` (a deterministic per-file
+        ``mode/type/blob-sha/path`` manifest) — a genuine content hash, byte-equal iff the
+        content is. NOT ``git archive`` (whose tar embeds mtimes → non-deterministic)."""
+        if not self.ok or self.ws_dir is None:
+            return None
+        try:
+            _git(["add", "-A"], cwd=self.ws_dir)
+            tree = _git(["write-tree"], cwd=self.ws_dir).stdout.strip()
+            # Pin a deterministic identity inline: commit-tree (like git commit) REQUIRES a
+            # committer name/email and exits 128 ("empty ident") wherever user.name/email are
+            # unset — e.g. a fresh CI runner (works locally only by accident of host config).
+            # These snapshot objects never reach main, so a fixed synthetic identity is correct;
+            # the digest is from ls-tree, so identity/date never affect it.
+            commit = _git(
+                [
+                    "-c",
+                    "user.name=aa-snapshot",
+                    "-c",
+                    "user.email=aa-snapshot@autonomousagent.invalid",
+                    "commit-tree",
+                    tree,
+                    "-p",
+                    self.base_sha,
+                    "-m",
+                    f"aa-snapshot {thread_id}/{node_id}",
+                ],
+                cwd=self.ws_dir,
+            ).stdout.strip()
+            ref = f"refs/aa-snapshots/{_slug(thread_id)}/{_slug(node_id)}"
+            # update-ref into the COMMON store (idempotent OVERWRITE per (tid,node) bounds leak).
+            _git(["update-ref", ref, commit], cwd=self._repo_dir)
+            manifest = _git(["ls-tree", "-r", "--full-tree", tree], cwd=self.ws_dir).stdout
+            digest = hashlib.sha256(manifest.encode("utf-8")).hexdigest()
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("WorkspaceSession.snapshot failed (fail-open): %s", exc)
+            return None
+        return {"kind": "branch", "ref": ref, "digest": digest}
+
+    @classmethod
+    def rehydrate(cls, *, repo_dir: Path, ref: str, thread_id: str) -> "WorkspaceSession":
+        """Materialise a FRESH worktree from a snapshot ref (resume into a new sandbox).
+        Graceful-degrades (ok=False) on any git error so a bad/expired ref never crashes
+        the spine. The fresh worktree has a DIFFERENT path from the killed original."""
+        try:
+            snap_sha = _git(
+                ["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo_dir
+            ).stdout.strip()
+            parent = Path(tempfile.mkdtemp(prefix=f"aa-rehydrate-{_slug(thread_id)}-"))
+            ws_dir = parent / "wt"
+            _git(["worktree", "add", "--detach", str(ws_dir), snap_sha], cwd=repo_dir)
+            return cls(ws_dir=ws_dir, parent=parent, repo_dir=repo_dir, base_sha=snap_sha, ok=True)
+        except (subprocess.SubprocessError, OSError) as exc:
+            logger.warning("WorkspaceSession.rehydrate degraded (no worktree): %s", exc)
+            return cls(ws_dir=None, parent=None, repo_dir=repo_dir, base_sha="", ok=False)

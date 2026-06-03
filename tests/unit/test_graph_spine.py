@@ -357,37 +357,64 @@ async def test_dod4_steering_dedup_survives_resume_and_arbitrate_picks_reject():
     assert gs.arbitrate(survived, iid) == "REJECT"  # reject beats approve (deterministic C15)
 
 
-async def test_dod17_workspace_ref_byte_equal_across_crash_resume():
-    """DoD-17: the workspace_ref digest (the FS resume piece) is byte-equal after a
-    crash+resume — the second, independent resume-state proof distinct from DoD-1's
-    conversation counter."""
-    cp = InMemoryCheckpointer()
-    runner = SpineRunner(cp, capability=_stub_capability())
-    tid = "goal-ws"
-    r1 = await runner.start(thread_id=tid, goal="g", durability="sync")
-    so = r1["__interrupt__"][0]
-    digest = "deadbeef" * 8
-    r2 = await runner._app.ainvoke(
-        Command(
-            resume={
-                so.id: {"verb": "APPROVE", "actor": "op", "reason": "y", "interrupt_id": so.id}
-            },
-            update={"workspace_ref": {"kind": "branch", "ref": f"agent/{tid}", "digest": digest}},
-        ),
-        runner._cfg(tid),
-        durability="sync",
-    )
-    pre = runner.get_state(tid).values["workspace_ref"]["digest"]
-    sh = r2["__interrupt__"][0]
-    runner2 = SpineRunner(cp, capability=_stub_capability())  # crash + restart, same saver
-    r3 = await runner2.resume(
-        thread_id=tid,
-        interrupt_id=sh.id,
-        decision={"verb": "APPROVE", "actor": "op", "reason": "y"},
-        durability="sync",
-    )
-    post = r3["workspace_ref"]["digest"]
-    assert pre == digest and post == digest  # byte-equal rehydrate across the crash
+async def test_dod17_real_edit_snapshot_kill_rehydrate_byte_equal():
+    """DoD-17 / SP-R7: a REAL workspace edit survives a kill (worktree teardown) and
+    rehydrates BYTE-EQUAL into a FRESH sandbox — the second (filesystem) resume piece,
+    independent of DoD-1's conversation counter.
+
+    REPLACES the prior test, which injected digest="deadbeef"*8 via Command(update=) and
+    asserted the SAME literal survived the in-memory checkpoint — i.e. it round-tripped a
+    STATE STRING through the checkpointer (re-proving DoD-1), and NEVER touched a filesystem.
+
+    HONESTY: WorkspaceSession.close() is the HERMETIC stand-in for a kill; a live mid-execute
+    SIGKILL (after >=1 edit, before pytest) is integration-tier — the execute node is one-shot
+    with no mid-body interrupt and there is no docker/live container on a macOS dev host."""
+    import hashlib
+    import re
+    import subprocess
+    from pathlib import Path
+
+    from app.core.workspace import WorkspaceSession
+
+    repo = Path(__file__).resolve().parents[2]
+
+    def _g(*a):
+        return subprocess.run(["git", *a], cwd=str(repo), capture_output=True, text=True)
+
+    ws = WorkspaceSession.create(repo_dir=repo, base_ref="HEAD", thread_id="dod17")
+    assert ws.ok
+    # >=1 REAL file edit (a secret-free sentinel under an existing dir).
+    edited = ws.ws_dir / "app" / "__spr7_resume.txt"
+    text = "# sp-r7 resume sentinel\nVALUE = 42\n"
+    edited.write_text(text)
+    pre = edited.read_bytes()
+
+    ref = ws.snapshot(thread_id="dod17", node_id="n0")
+    assert ref and ref["kind"] == "branch"
+    assert ref["ref"].startswith("refs/aa-snapshots/") and len(ref["digest"]) == 64
+    orig = ws.ws_dir
+    ws.close()  # ── THE KILL ──
+    assert not orig.exists()
+
+    rs = WorkspaceSession.rehydrate(repo_dir=repo, ref=ref["ref"], thread_id="dod17")
+    try:
+        assert rs.ok
+        # (i) rehydrated sandbox id (dir) != original
+        assert rs.ws_dir != orig and rs.ws_dir.exists()
+        # (ii) edited file BYTE-EQUAL to pre-kill
+        assert (rs.ws_dir / "app" / "__spr7_resume.txt").read_bytes() == pre
+        # (iii) zero secret material on the rehydrated FS (controlled sentinel)
+        assert not re.search(
+            r"sk-|AKIA|PRIVATE KEY", (rs.ws_dir / "app" / "__spr7_resume.txt").read_text()
+        )
+        # (iv) the digest is a re-derivable CONTENT address, not a synthetic placeholder
+        tree = _g("rev-parse", ref["ref"] + "^{tree}").stdout.strip()
+        manifest = _g("ls-tree", "-r", "--full-tree", tree).stdout
+        assert hashlib.sha256(manifest.encode("utf-8")).hexdigest() == ref["digest"]
+    finally:
+        rs.close()
+        _g("update-ref", "-d", ref["ref"])  # never leak the snapshot ref
+        _g("worktree", "prune")
 
 
 # ── SP-06: eval_gate as SHIP PRECONDITION ───────────────────────────────────

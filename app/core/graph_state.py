@@ -291,6 +291,11 @@ class SpineState(TypedDict, total=False):
     # Present only when a per-graph budget is CONFIGURED (SPINE_BUDGET_USD); absent => budget OFF.
     # _route_after_fan_out reads `.preempt` to park an over-budget graph at __halt__ (fail-safe).
     budget_verdict: Optional[dict]
+    # SP-16 (slice 2): the kanban projection record the decompose node writes when a board is
+    # injected — {"parent": <goal card id>, "nodes": {node_id: card_id}}. Last-write, and the
+    # IDEMPOTENCY signal: decompose projects the plan onto the board ONLY when this is absent, so a
+    # re-run/resume never duplicates cards. Absent when no board is injected (board=None => OFF).
+    board_cards: Optional[dict]
     fix_attempts: int
     # hygiene
     scrubbed: bool

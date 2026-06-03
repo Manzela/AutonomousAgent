@@ -201,17 +201,17 @@ lib.durability.graph_budget:aggregate_spend
 lib.durability.graph_budget:budget_verdict
 lib.durability.graph_budget:GraphBudgetVerdict
 
-# SP-16 (slice 1) AbstractBoard kanban projection seam (C14 gate-derived `done`).
-# app/core/board.py = the AbstractBoard ABC + the Card value object + project_plan (DAG->cards);
-# the C14 invariant (a card cannot be self-marked `done`; `done` is reachable only via
-# mark_done(gate=...)) lives in its CONCRETE methods so no adapter can bypass it.
-# app/adapters/inmemory/board.py = InMemoryBoard, the hermetic CI store. The prod Hermes
-# `kanban_db` adapter + the real `gh pr checks --required` GateReader are the DEFERRED siblings.
-# Genuinely exercised by tests/unit/test_sp16_board.py (9 red-green oracles incl. the C14
-# refusal + the DAG-projection), and SP-17 (inbound bus) + SP-B1 (/goal triage cards) inherit
-# this seam — but the spine (app/core/graph.py) does NOT project to the board yet (the decompose
-# -> cards wiring is the named SP-16 slice-2). Listed as legitimately-present-not-yet-wired
-# (same pattern as app.core.decompose + app.adapters.inmemory.decompose above). Pending operator
-# review at PR. REMOVE each line once the spine's projection node wires it (genuinely reachable then).
+# SP-16 AbstractBoard kanban projection seam (C14 gate-derived `done`).
+# app/core/board.py = the AbstractBoard ABC + Card + project_plan (DAG->cards); the C14 invariant
+# (the public API refuses agent-initiated `done`; done only via mark_done(gate=...)) lives in its
+# CONCRETE methods. app/adapters/inmemory/board.py = InMemoryBoard, the hermetic store. The prod
+# Hermes `kanban_db` adapter + the real `gh pr checks --required` GateReader are DEFERRED siblings.
+# WIRED (slice 2): SpineRunner injects an InMemoryBoard -> build_spine -> the decompose node calls
+# project_plan and fan_out calls board.set_status. These calls live INSIDE the spine-node CLOSURES
+# (decompose/fan_out, nested in the private _build_nodes), which the AST callgraph CANNOT trace into
+# (the identical limitation behind lib.durability.graph_budget + app.adapters.inmemory.decompose
+# above), so project_plan/Card/BoardProjection/the InMemoryBoard methods still read as unreachable
+# even though they are genuinely exercised — by the spine flow AND tests/unit/test_sp16_board.py +
+# test_sp16_board_wiring.py. Operator-reviewed at PR. (NOT not-yet-wired; AST-untraceable.)
 app.core.board
 app.adapters.inmemory.board

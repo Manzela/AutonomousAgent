@@ -43,6 +43,7 @@ from langgraph.types import interrupt
 from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
 from app.core import graph_state as gs
+from app.core.board import AbstractBoard, BoardError, project_plan
 from app.core.decision_record import append_decision
 from app.core.decompose import ready_nodes, task_graph_to_requests
 from app.core.eval_gate import scope_root_verdict
@@ -315,7 +316,12 @@ def _build_nodes(
     cap: Optional[GlobalThreadCap] = None,
     lease: Optional[BranchLease] = None,
     budget_usd: Optional[float] = None,
+    board: Optional[AbstractBoard] = None,
 ):
+    # SP-16 (slice 2): the kanban board the spine projects its DAG onto (decompose -> cards,
+    # fan_out -> card status). board=None (default) => NO projection — byte-identical to pre-SP-16,
+    # so every existing caller is unaffected; SpineRunner injects an InMemoryBoard so the LIVE
+    # entrypoint renders cards. The board is an OUTBOUND projection (C15) — no node READS it.
     # SP-03: the clarification spec-drafter is injected (InMemory deterministic in CI;
     # the DEFERRED VertexSpecDrafter in prod). Default to the hermetic in-memory drafter
     # so the spine stays runnable without live Vertex (CLAUDE.md hybrid-adapter rule).
@@ -526,7 +532,7 @@ def _build_nodes(
         plan = InMemoryDecomposer().decompose(spec)
         # SP-R1 (C9): scrub before persist — the plan node summaries derive from the
         # operator's acceptance_criteria text, which can carry PII.
-        return _scrub_persisted(
+        delta = _scrub_persisted(
             {
                 "plan": plan,
                 "audit": [
@@ -535,6 +541,21 @@ def _build_nodes(
                 ],
             }
         )
+        # SP-16 (slice 2): project the DAG onto the board — ONE parent goal card + one child card
+        # per node. Idempotent: only when no projection exists yet (state['board_cards'] absent), so
+        # a re-run/resume never duplicates cards. Project from the SCRUBBED plan + the already-scrubbed
+        # goal so card titles carry no PII. board=None => skipped (no key, byte-identical to pre-SP-16).
+        # OUTBOUND only; the card create is at-least-once across a crash-before-checkpoint (the
+        # in-memory CI board reconstructs trivially; the DEFERRED Hermes adapter owes an apply_once).
+        if board is not None and not state.get("board_cards"):
+            proj = project_plan(
+                board,
+                delta.get("plan") or plan,
+                thread_id=state["thread_id"],
+                goal_title=(state.get("goal") or "goal")[:80],
+            )
+            delta["board_cards"] = {"parent": proj.parent_id, "nodes": proj.node_cards}
+        return delta
 
     async def fan_out(state: SpineState, config) -> dict:
         """SP-11: dispatch the READY DAG frontier CONCURRENTLY (asyncio.gather), each ready
@@ -637,6 +658,24 @@ def _build_nodes(
                 }
 
         outcomes = await asyncio.gather(*[_one(r) for r in reqs])  # gather IS the super-step join
+
+        # SP-16 (slice 2): reflect this wave's execution on the board (OUTBOUND) — a dispatched
+        # node's card -> running, a FAILED leaf -> blocked. `done` is NEVER set here (C14: done is
+        # gate-derived at the ship gate, DEFERRED); a projection hiccup degrades, never aborts the
+        # join. board=None / no prior projection => no-op (byte-identical to pre-SP-16).
+        if board is not None and state.get("board_cards"):
+            node_cards = (state.get("board_cards") or {}).get("nodes", {})
+            for o in outcomes:
+                cid = node_cards.get(o["node_id"])
+                if not cid:
+                    continue
+                try:
+                    if o["result"].status == TaskStatus.FAILED:
+                        board.set_status(cid, "blocked")
+                    else:
+                        board.set_status(cid, "running")
+                except BoardError:
+                    pass  # card missing/invalid — a board glitch must not abort the super-step
 
         # Merge: per-task entries (the tasks reducer dedups by task_id across kill+resume),
         # PER-TASK cost keys, and the UNION of every leaf's changed_paths/symlinks (eval_gate
@@ -866,6 +905,7 @@ def build_spine(
     cap: Optional[GlobalThreadCap] = None,
     lease: Optional[BranchLease] = None,
     budget_usd: Optional[float] = None,
+    board: Optional[AbstractBoard] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -877,7 +917,7 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd)
+    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)

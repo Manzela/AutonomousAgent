@@ -17,7 +17,9 @@ from typing import Any, Optional
 
 from langgraph.types import Command
 
+from app.adapters.inmemory.board import InMemoryBoard
 from app.core import graph_state as gs
+from app.core.board import AbstractBoard
 from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
 from app.core.sandbox import AbstractSandbox
@@ -78,11 +80,17 @@ class SpineRunner:
         *,
         capability: Optional[AgentCapability] = None,
         sandbox: Optional[AbstractSandbox] = None,
+        board: Optional[AbstractBoard] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
         self._capability = capability
         self._sandbox = sandbox
+        # SP-16 (slice 2): the kanban board the LIVE spine projects its DAG onto. Default to an
+        # InMemoryBoard so the entrypoint always renders cards (a build_spine closure arg like
+        # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the
+        # prod concretion. C15: outbound only — no graph node reads it.
+        self._board = board or InMemoryBoard()
         # SP-11/SP-R6: one fan-out cap + one per-branch lease per runner, constructed ONCE and
         # shared by every fan_out super-step. The lease dir is per-runner ephemeral (single-
         # process spine — a cross-process shared dir is the deferred multi-process tier). Both
@@ -103,6 +111,7 @@ class SpineRunner:
             cap=self._cap,
             lease=self._lease,
             budget_usd=self._budget,
+            board=self._board,
         )
 
     @property

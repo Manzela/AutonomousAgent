@@ -1,0 +1,81 @@
+# Acceptance — SP-16 (slice 2) · the board projection is WIRED into the live spine
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-16 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L271):
+#   "project DAG nodes as cards ... a decomposed plan renders as parent project + child sub-task
+#    cards tracking the graph ... a graph node MUST NOT read board state directly."
+# Builds on SP-16 slice-1 (SP-16.yaml: the AbstractBoard + C14 + project_plan primitives, MERGED
+# #263). Slice-2 makes the board LIVE (removes the "present-not-yet-wired" framing).
+#
+# MECHANISM (hermetic — InMemoryBoard + the InMemory decomposer + a sealed spec in a tmp store):
+#   SpineRunner injects an InMemoryBoard (default) -> build_spine -> _build_nodes(board=). The
+#   `decompose` node, after producing + scrubbing the plan, calls project_plan(board, plan,
+#   thread_id, goal) ONLY when state['board_cards'] is absent (idempotent — a re-run/resume never
+#   duplicates cards) and records {"parent": <goal card>, "nodes": {node_id: card_id}} in
+#   SpineState.board_cards. The `fan_out` super-step reflects execution OUTBOUND: a dispatched
+#   node's card -> running, a FAILED leaf -> blocked; a board glitch degrades, never aborts the
+#   join. `done` is NEVER set by the spine (C14: done is gate-derived at the ship gate, DEFERRED).
+#   board=None (every existing direct caller) => NO projection => byte-identical to pre-SP-16.
+#   OUTBOUND only (C15): a spine node WRITES the projection but never READS board state (inbound is
+#   the deferred SP-17 SteeringEventBus) — asserted by test_graph_nodes_do_not_read_board_state.
+#
+# DEFERRED (named, NOT silently dropped):
+#   - per-node status RICHNESS beyond running/blocked, and the gate-derived `done` transition at the
+#     ship gate (needs the real gh-pr-checks GateReader out of the agent's reach — slice-3 / SP-16
+#     4.1+4.2: per-card cost + milestone comments);
+#   - the Hermes `kanban_db` real adapter (its create is at-least-once across a crash-before-
+#     checkpoint and owes an apply_once ledger; the in-memory CI board reconstructs trivially);
+#   - the Plane CE adapter (SP-21) + the Telegram bridge listener.
+
+task: SP-16b
+title: "wire the board projection into the spine — decompose projects the DAG as cards (idempotent), fan_out reflects execution (running/blocked, never done); SpineRunner injects InMemoryBoard; board=None byte-identical; outbound-only"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp16b-decompose-projects-idempotent-backcompat
+    description: >
+      The decompose node, given an injected board, projects the locked plan onto it — ONE parent
+      goal card (title=goal, node_id None) + one child card per node (parent_id linked, node_id
+      preserved, status todo), recorded in state['board_cards']. IDEMPOTENT: re-running decompose
+      with board_cards already present adds NO card and emits no board_cards delta (RED: a guard-less
+      projection would duplicate every card on resume). BACK-COMPAT: board=None (the default, every
+      existing direct caller) projects NOTHING and adds no board_cards key (byte-identical to pre-SP-16).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp16_board_wiring.py::test_decompose_projects_cards \
+        tests/unit/test_sp16_board_wiring.py::test_decompose_projection_idempotent \
+        tests/unit/test_sp16_board_wiring.py::test_board_none_no_projection -q
+    expect_exit: 0
+
+  - id: sp16b-fanout-transitions-live-outbound
+    description: >
+      fan_out reflects execution on the board: a dispatched node's card -> running, a FAILED leaf ->
+      blocked, and NO card is ever marked `done` (C14 — done is gate-derived at ship, deferred).
+      LIVE end-to-end: a SpineRunner-driven run (start -> sign_off APPROVE -> seal_spec -> decompose)
+      renders the DAG as cards on the injected board (a parent goal card + >=1 child node card); the
+      SpineRunner default board is an InMemoryBoard (the entrypoint always projects). OUTBOUND-ONLY
+      (C15): app/core/graph.py contains NO board READ call (get_card/list_cards/get_comment/
+      list_comment) — a spine node writes the projection but never reads board state.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp16_board_wiring.py::test_fan_out_transitions_card_status \
+        tests/unit/test_sp16_board_wiring.py::test_live_spine_renders_dag_as_cards \
+        tests/unit/test_sp16_board_wiring.py::test_spine_runner_defaults_to_inmemory_board \
+        tests/unit/test_sp16_board.py::test_graph_nodes_do_not_read_board_state -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    6 red-green wiring oracles (tests/unit/test_sp16_board_wiring.py) + the corrected outbound-only
+    invariant (test_sp16_board.py::test_graph_nodes_do_not_read_board_state) over app/core/graph.py
+    (decompose project_plan + fan_out set_status), app/core/graph_state.py (SpineState.board_cards),
+    and app/core/spine_runner.py (InMemoryBoard injection). Proven: decompose projects parent+child
+    cards (idempotent via board_cards; board=None byte-identical), fan_out transitions running/
+    blocked and never done, the live SpineRunner run renders the DAG as cards, and graph.py reads no
+    board state (writes-only, C15). C4: app.core.board + app.adapters.inmemory.board stay in
+    dead_code_entrypoints.txt — now WIRED but AST-untraceable (decompose/fan_out closures, like
+    graph_budget). DEFERRED (named in header): the ship-gate `done` transition + per-card cost/
+    comments (slice-3), the Hermes kanban_db adapter (owes apply_once), Plane (SP-21), Telegram.

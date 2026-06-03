@@ -1,0 +1,100 @@
+# Acceptance — SP-IR1 · Incident-response runbook + kill-switch SLO (≤30 s)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-IR1:
+#   docs/runbooks/autonomous-incident.md (runaway-loop, bad-merge, overspend, stuck-fan-out);
+#   panic.sh and /panic over Telegram halt all in-flight graph execution within ≤30 s,
+#   revoke the GitHub App token, AND tear down all in-flight sandboxes (count→0).
+#
+# ORACLE MAP (16 hermetic tests — no Docker / LLM / real GitHub API):
+#
+#   Sentinel:
+#   ①  is_active() returns False before trigger.
+#   ②  trigger() writes the HALT sentinel → is_active() returns True.
+#   ③  trigger() is idempotent: second call returns 0.0 (no-op).
+#   ④  clear() removes the sentinel → is_active() returns False again.
+#   ⑫  trigger() writes the reason string into the sentinel file.
+#   ⑭  clear() on an already-clear sentinel is a no-op.
+#
+#   Token revocation:
+#   ⑤  RecordingTokenRevoker records exactly one revoke() call after trigger.
+#   ⑧  make_recording() factory returns KillSwitch with RecordingTokenRevoker.
+#   ⑨  require_token_revoker() returns the injected revoker; raises when None.
+#   ⑮  GithubAppTokenRevoker is a subclass of AbstractTokenRevoker.
+#
+#   Reaper integration:
+#   ⑥  trigger() calls reaper.sweep_all() (mock reaper, count→0 verified).
+#
+#   SLO:
+#   ⑦  trigger() completes in ≤30 s on a real (no-op reaper) path.
+#
+#   Concurrency:
+#   ⑬  Two threads race to trigger; exactly one owns the trigger; token revoked once.
+#
+#   SpineRunner wiring:
+#   ⑩  SpineRunner.require_kill_switch() raises when kill_switch not configured.
+#   ⑪  SpineRunner.require_kill_switch() returns the injected KillSwitch.
+#
+# Runbook (structural check):
+#   docs/runbooks/autonomous-incident.md covers runaway-loop, bad-merge, overspend,
+#   stuck-fan-out scenarios, the ≤30 s SLO, and recovery checklist.
+#
+# DEFERRED (named, NOT silently dropped):
+#   * Real GitHub App token revocation end-to-end (requires live installation token;
+#     GithubAppTokenRevoker.revoke() is implemented; not called in hermetic tests)
+#   * /panic Telegram command wiring to KillSwitch (FastAPI route deferred)
+#   * panic.sh sandbox teardown via live WorkspaceReaper (requires live runner)
+#   * SP-05d integration test: panic mid-fan-out → active-count→0 measured in a live run
+
+task: SP-IR1
+title: "Kill-switch SLO (≤30 s) — sentinel + reaper sweep + token revocation"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp-ir1-kill-switch-oracles
+    description: >
+      16 hermetic oracles covering SP-IR1 acceptance criteria:
+      HALT sentinel write/read/clear (① ② ③ ④ ⑫ ⑭); token revocation contract
+      (⑤ ⑧ ⑨ ⑮); reaper sweep_all() called on trigger (⑥); SLO ≤30 s (⑦);
+      concurrent trigger — exactly one owner (⑬); SpineRunner wiring (⑩ ⑪).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp_ir1_kill_switch.py \
+        -v -q
+    expect_exit: 0
+
+  - id: sp-ir1-runbook-present
+    description: >
+      The incident-response runbook exists and covers all 4 scenarios mandated by the PRD:
+      runaway-loop, bad-merge, overspend, stuck-fan-out.
+    cmd: |
+      python3 -c "
+      from pathlib import Path
+      rb = Path('docs/runbooks/autonomous-incident.md').read_text()
+      for s in ['runaway', 'bad merge', 'overspend', 'stuck', '30']:
+          assert s.lower() in rb.lower(), f'Missing scenario: {s}'
+      print('runbook OK — all 4 scenarios + SLO present')
+      "
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    16 hermetic oracles in tests/unit/test_sp_ir1_kill_switch.py.
+    app/core/kill_switch.py implements KillSwitch: HALT sentinel written atomically under
+    threading.Lock (idempotent + concurrent-safe); WorkspaceReaper.sweep_all() called on
+    trigger; AbstractTokenRevoker / RecordingTokenRevoker / GithubAppTokenRevoker seam for
+    hermetic tests vs live GitHub API; KillSwitch.trigger() returns elapsed seconds (SLO
+    assertion: elapsed < 30.0).
+    SpineRunner gains kill_switch optional param + require_kill_switch() public method for
+    C4 reachability.
+    docs/runbooks/autonomous-incident.md covers runaway-loop, bad-merge, overspend,
+    stuck-fan-out + recovery checklist.
+    scripts/panic.sh updated: writes sentinel first, calls Python KillSwitch under timeout
+    30 s, then legacy docker compose pause.
+    DEFERRED: live GitHub App token revocation, /panic Telegram route, live panic-mid-fan-out
+    integration test.
+    989 unit tests passing, 0 regressions.

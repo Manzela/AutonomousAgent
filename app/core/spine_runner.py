@@ -23,6 +23,7 @@ from app.core import graph_state as gs
 from app.core.board import AbstractBoard, GateReader
 from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
+from app.core.kill_switch import KillSwitch
 from app.core.reaper import WorkspaceReaper, reap_orphaned_worktrees
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
@@ -112,6 +113,7 @@ class SpineRunner:
         board: Optional[AbstractBoard] = None,
         gate: Optional[GateReader] = None,
         bus: Optional[SteeringEventBus] = None,
+        kill_switch: Optional[KillSwitch] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
@@ -121,6 +123,10 @@ class SpineRunner:
         # (C15 dedup + arbitration). None => bus-less skeleton (tests that don't need steering).
         # The live bus is constructed by the caller (FastAPI lifespan, nightly integration tests).
         self._bus = bus
+        # SP-IR1: the operator kill-switch — writes a HALT sentinel, sweeps WorkspaceSessions,
+        # and revokes the GitHub App token. None => kill-switch-less skeleton (tests that don't
+        # need the panic path). The live KillSwitch is wired by the FastAPI lifespan.
+        self._kill_switch = kill_switch
         # SP-16 (slice 2): the kanban board the LIVE spine projects its DAG onto. Default to an
         # InMemoryBoard so the entrypoint always renders cards (a build_spine closure arg like
         # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the
@@ -212,6 +218,18 @@ class SpineRunner:
                 "SteeringEventBus not configured; pass bus=SteeringEventBus(...) to SpineRunner"
             )
         return self._bus
+
+    def require_kill_switch(self) -> KillSwitch:
+        """Return the injected KillSwitch or raise RuntimeError if unconfigured.
+
+        Intended callers: the FastAPI /panic endpoint and the Telegram /panic command
+        handler.  Makes KillSwitch C4-reachable from SpineRunner's public API.
+        """
+        if not isinstance(self._kill_switch, KillSwitch):
+            raise RuntimeError(
+                "KillSwitch not configured; pass kill_switch=KillSwitch(...) to SpineRunner"
+            )
+        return self._kill_switch
 
     def get_state(self, thread_id: str):
         return self._app.get_state(self._cfg(thread_id))

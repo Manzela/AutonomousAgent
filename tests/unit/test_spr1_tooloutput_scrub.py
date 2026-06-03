@@ -48,7 +48,7 @@ class _LeakySandbox(AbstractSandbox):
 
 async def _run_execute(sandbox):
     nodes = _build_nodes(_default_capability(), sandbox=sandbox)
-    return await nodes["execute"](
+    return await nodes["fan_out"](
         {"thread_id": "t", "goal": "g"}, {"configurable": {"thread_id": "t"}}
     )
 

@@ -56,15 +56,6 @@ lib.durability.checkpoint:Checkpoint
 # reachable, not dead. Operator-reviewed (2026-06-01).
 lib.durability:register
 
-# SP-R6 (P1) branch-lease + global-thread-cap PRIMITIVES (lib/durability/branch_lease.py:
-# BranchLease + GlobalThreadCap + LeaseBusy). Genuinely-present-not-yet-wired foundation,
-# exercised by 8 red-green oracles in tests/unit/test_spr6_branch_lease.py: the SP-11 parallel
-# fan-out DISPATCHER that consumes them (acquires the per-branch lease + a global-cap slot at
-# ready-node dispatch) does NOT exist yet (no asyncio.gather / Send in app/core/graph.py), so
-# there is no runtime caller. REMOVE this line once SP-11 wires it (it becomes reachable then).
-# Same pattern as the SP-01 spine + SP-02 decompose above.
-lib.durability.branch_lease
-
 # app/core/trust.py is the C16/C17 trust primitive (C-15) imported DIRECTLY by
 # lib/anchors/__init__.py (verified: line 13 `from app.core.trust import ...`).
 # lib/anchors is a Hermes plugin loaded via the same dynamic register(ctx) dispatch

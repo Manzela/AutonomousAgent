@@ -11,6 +11,8 @@ asserts the initial state carries no callables BEFORE it enters the graph/checkp
 
 from __future__ import annotations
 
+import os
+import tempfile
 from typing import Any, Optional
 
 from langgraph.types import Command
@@ -20,7 +22,19 @@ from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
+from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from lib.scrubber import scrub_string
+
+
+def _default_cap() -> GlobalThreadCap:
+    """SP-11/SP-R6 fan-out concurrency cap. SPINE_MAX_ACTIVE bounds simultaneously-active
+    sub-agent worktrees+sandboxes (default 4 — keeps a wide DAG from exhausting disk/FDs;
+    acquired BEFORE WorkspaceSession.create so disk is bounded). Operator-tunable per env."""
+    try:
+        n = int(os.environ.get("SPINE_MAX_ACTIVE", "4"))
+    except ValueError:
+        n = 4
+    return GlobalThreadCap(max(1, n))
 
 
 def _initial_state(thread_id: str, goal: str) -> dict:
@@ -54,12 +68,19 @@ class SpineRunner:
         self._saver = checkpointer.build_saver()
         self._capability = capability
         self._sandbox = sandbox
+        # SP-11/SP-R6: one fan-out cap + one per-branch lease per runner, constructed ONCE and
+        # shared by every fan_out super-step. The lease dir is per-runner ephemeral (single-
+        # process spine — a cross-process shared dir is the deferred multi-process tier). Both
+        # are build_spine closure args (like capability/sandbox) — NEVER in SpineState.
+        self._cap = _default_cap()
+        self._lease = BranchLease(tempfile.mkdtemp(prefix="aa-lease-"))
         # SP-05 (F-1): thread the sandbox to build_spine so the LIVE entrypoint actually runs
-        # execute in a sandbox (production previously ran sandbox=None — the in-process path).
-        # sandbox stays a build_spine closure arg (like capability) — NEVER in SpineState, so
-        # assert_serializable_state's no-callable invariant is preserved. sandbox=None keeps
-        # the legacy in-process skeleton for every existing caller.
-        self._app = build_spine(self._saver, capability=capability, sandbox=sandbox)
+        # in a sandbox (production previously ran sandbox=None — the in-process path).
+        # assert_serializable_state's no-callable invariant is preserved (cap/lease/sandbox are
+        # closure args, never state). sandbox=None keeps the legacy in-process skeleton.
+        self._app = build_spine(
+            self._saver, capability=capability, sandbox=sandbox, cap=self._cap, lease=self._lease
+        )
 
     @property
     def durability(self) -> DurabilityMode:

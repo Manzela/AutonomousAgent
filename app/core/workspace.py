@@ -81,14 +81,22 @@ class WorkspaceSession:
         self.ok = ok
 
     @classmethod
-    def create(cls, *, repo_dir: Path, base_ref: str, thread_id: str) -> "WorkspaceSession":
+    def create(
+        cls, *, repo_dir: Path, base_ref: str, thread_id: str, node_id: Optional[str] = None
+    ) -> "WorkspaceSession":
         """Materialise a detached worktree at ``base_ref`` under $TMPDIR. Graceful-degrades
-        (ok=False, ws_dir=None) on any git error so the spine never crashes."""
+        (ok=False, ws_dir=None) on any git error so the spine never crashes.
+
+        ``node_id`` (SP-11) is woven into the temp prefix for debuggability only — mkdtemp is
+        ALREADY unique per call, so concurrent same-thread fan-out leaves never collide on the
+        worktree PATH (and ``--detach`` means no branch ref to race). The per-node isolation
+        that matters is each leaf passing its OWN node_id to :meth:`snapshot` + the SP-R6 lease."""
         try:
             base_sha = _git(["rev-parse", base_ref], cwd=repo_dir).stdout.strip()
             # mkdtemp creates the parent; point the worktree at a NON-EXISTENT subdir so
             # `git worktree add` (which refuses a pre-existing target) creates it itself.
-            parent = Path(tempfile.mkdtemp(prefix=f"aa-ws-{thread_id}-"))
+            tag = f"{thread_id}-{node_id}-" if node_id else f"{thread_id}-"
+            parent = Path(tempfile.mkdtemp(prefix=f"aa-ws-{tag}"))
             ws_dir = parent / "wt"
             _git(["worktree", "add", "--detach", str(ws_dir), base_sha], cwd=repo_dir)
             return cls(ws_dir=ws_dir, parent=parent, repo_dir=repo_dir, base_sha=base_sha, ok=True)

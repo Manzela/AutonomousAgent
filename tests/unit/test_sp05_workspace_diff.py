@@ -142,7 +142,7 @@ def _state(plan: dict, **extra) -> dict:
 
 async def _run_execute(sandbox, plan: dict):
     nodes = _build_nodes(_default_capability(), sandbox=sandbox)
-    return await nodes["execute"](_state(plan), _CFG)
+    return await nodes["fan_out"](_state(plan), _CFG)
 
 
 async def _run_eval_gate(plan: dict, changed_paths: list, symlink_paths=None):
@@ -313,7 +313,7 @@ async def test_invoke_hermes_cli_not_called_by_execute(monkeypatch):
 # ── back-compat: sandbox=None preserves the legacy in-process empty-artifacts path ──
 async def test_sandbox_none_preserves_legacy_empty_artifacts():
     nodes = _build_nodes(_default_capability(), sandbox=None)
-    delta = await nodes["execute"](_state(_plan(["app/sp05_probe.py"])), _CFG)
+    delta = await nodes["fan_out"](_state(_plan(["app/sp05_probe.py"])), _CFG)
     assert delta["changed_paths"] == []  # no sandbox → no workspace → empty diff (unchanged)
 
 
@@ -424,5 +424,5 @@ async def test_execute_stamps_real_workspace_ref():
 # ── back-compat: sandbox=None (no workspace) emits NO workspace_ref → ship_effect falls back ──
 async def test_sandbox_none_emits_no_workspace_ref():
     nodes = _build_nodes(_default_capability(), sandbox=None)
-    delta = await nodes["execute"](_state(_plan(["app/sp05_probe.py"])), _CFG)
+    delta = await nodes["fan_out"](_state(_plan(["app/sp05_probe.py"])), _CFG)
     assert "workspace_ref" not in delta  # degraded path → ship_effect uses the synthetic fallback

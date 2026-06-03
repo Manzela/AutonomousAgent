@@ -3,9 +3,10 @@
 Topology (interrupt-split — never co-locate interrupt() with an EXTERNAL side-effect):
 
     goal_intake -> clarify ⇄[interrupt, ≤5 Qs/round] -> sign_off[interrupt] -> seal_spec
-                -> decompose -> fan_out -> eval_gate --[pass]--> ship_gate[interrupt]
+                -> decompose -> fan_out -> monitor[SP-27] -> eval_gate --[pass]--> ship_gate[interrupt]
                 -> ship_effect -> END
-       fan_out   --[over-budget (SP-R2)]--> __halt__   (budget pre-empts before eval_gate/ship)
+       fan_out   --[over-budget (SP-R2)]--> __halt__   (budget pre-empts before monitor/eval_gate/ship)
+       monitor   --[INTERRUPT_FOR_HUMAN (SP-27)]--> __halt__  (loop/stall/oracle-unsatisfiable)
        eval_gate --[out-of-scope (SP-06)]-> __halt__
 
 SP-11 fan_out (was `execute`): walks the SP-02 DAG, dispatches the ready frontier concurrently
@@ -906,11 +907,23 @@ def _route_after_sign_off(state: SpineState) -> str:
 
 
 def _route_after_fan_out(state: SpineState) -> str:
-    """SP-R2: after a fan_out super-step, route to __halt__ (fail-safe park — the over-budget
-    run never reaches eval_gate/ship) iff the per-graph budget pre-empted this wave; otherwise
-    continue to the SP-06 eval_gate. Deterministic on the stamped verdict — never an LLM
-    decision; absent verdict (budget OFF) => the normal eval_gate path (zero behaviour change)."""
-    return "__halt__" if (state.get("budget_verdict") or {}).get("preempt") else "eval_gate"
+    """SP-R2/SP-27: after a fan_out super-step, route to __halt__ (fail-safe park) when the
+    per-graph budget pre-empted this wave; otherwise proceed to the SP-27 monitor node (which
+    gates on loop/stall signals before passing to eval_gate). Deterministic on the stamped
+    verdict — never an LLM decision; absent verdict (budget OFF) => monitor path (zero
+    behaviour change for budgetless runs: monitor will not trip on a healthy first wave)."""
+    return "__halt__" if (state.get("budget_verdict") or {}).get("preempt") else "monitor"
+
+
+def _route_after_monitor(state: SpineState) -> str:
+    """SP-27: route to __halt__ (INTERRUPT_FOR_HUMAN) if the monitor emitted any command
+    requiring human intervention; otherwise continue to the SP-06 eval_gate.
+    Fail-closed on INTERRUPT_FOR_HUMAN: if ANY command in the accumulated list has that kind
+    the run parks — a previously-tripped wave is sticky until the operator clears it.
+    All other kinds (INJECT_RAG, SWITCH_TOOL, CHECKPOINT_REPLAN) are advisory and do not
+    block the eval_gate path (deferred actuators will consume them)."""
+    cmds = state.get("steer_commands") or []
+    return "__halt__" if any(c.get("kind") == "INTERRUPT_FOR_HUMAN" for c in cmds) else "eval_gate"
 
 
 def _route_after_eval_gate(state: SpineState) -> str:
@@ -932,11 +945,91 @@ def _route_after_ship_gate(state: SpineState) -> str:
     }.get(verb, "__halt__")
 
 
+# ── SP-27 monitor constants ────────────────────────────────────────────────
+# Max fix_attempts before the monitor declares oracle-unsatisfiability and interrupts for human.
+_MONITOR_MAX_FIX_ATTEMPTS: int = 3
+# Per-key execution_count threshold that triggers loop detection.
+_MONITOR_LOOP_THRESHOLD: int = 5
+
+
+async def monitor(state: SpineState, config) -> dict:
+    """SP-27: mid-flight monitor node — inserted between fan_out and eval_gate.
+
+    Reads state-only trajectory signals (fix_attempts, execution_counts) and
+    emits a SteerCommand record when a loop, stall, or oracle-unsatisfiable
+    pattern is detected. The _route_after_monitor router then decides:
+      INTERRUPT_FOR_HUMAN → __halt__ (C10: only the operator unblocks)
+      all others           → eval_gate (advisory; future actuators consume them)
+
+    C10 INVARIANT: this node NEVER marks done / edits gates / writes code.
+    It only reads state and emits SteerCommand + audit records.
+
+    DEFERRED (named, not silently dropped):
+      - Live LLM sub-agent concurrently assessing semantic off-spec distance
+      - AgentNote streaming per-step via LangGraph stream_mode → Langfuse
+      - INJECT_RAG / SWITCH_TOOL / CHECKPOINT_REPLAN actuators (need live tools)
+      - SP-15 embedder-based similarity score per iteration
+      - Periodic StallDetector watchdog path (timer-driven; SP-14 event path wired)
+    """
+    tid = config["configurable"]["thread_id"]
+    fix_attempts = state.get("fix_attempts") or 0
+    counts = state.get("execution_counts") or {}
+    cmds: list = []
+
+    # Signal 1 — oracle-unsatisfiable: too many fix/execute iterations without ship
+    if fix_attempts >= _MONITOR_MAX_FIX_ATTEMPTS:
+        cmds.append(
+            {
+                "thread_id": tid,
+                "step_id": f"monitor-fix{fix_attempts}",
+                "kind": "INTERRUPT_FOR_HUMAN",
+                "reason": (
+                    f"oracle-unsatisfiable: fix_attempts={fix_attempts} "
+                    f">= threshold={_MONITOR_MAX_FIX_ATTEMPTS}"
+                ),
+                "ts": datetime.now(tz=timezone.utc).isoformat(),
+            }
+        )
+
+    # Signal 2 — loop detection: any single execution_count key crossed the repeat threshold
+    if not cmds:
+        for key, count in counts.items():
+            if count >= _MONITOR_LOOP_THRESHOLD:
+                cmds.append(
+                    {
+                        "thread_id": tid,
+                        "step_id": f"monitor-loop-{key}",
+                        "kind": "INTERRUPT_FOR_HUMAN",
+                        "reason": (
+                            f"loop-detected: key={key!r} count={count} "
+                            f">= threshold={_MONITOR_LOOP_THRESHOLD}"
+                        ),
+                        "ts": datetime.now(tz=timezone.utc).isoformat(),
+                    }
+                )
+                break  # one signal is enough; emit once per wave
+
+    audit_msg = (
+        f"monitor tid={tid} fix_attempts={fix_attempts} "
+        f"loop_keys={[k for k, v in counts.items() if v >= _MONITOR_LOOP_THRESHOLD]} "
+        f"triggers={len(cmds)}"
+    )
+    delta: dict = {"audit": [audit_msg]}
+    if cmds:
+        delta["steer_commands"] = cmds
+    return delta
+
+
 async def halt(state: SpineState, config) -> dict:
-    # SP-R2: distinguish an AUTOMATED budget park from an operator halt — the __halt__ terminal is
-    # shared, so read the stamped verdict rather than mislabel a cap event as an operator action.
+    # SP-R2/SP-27: distinguish the halt source — budget park vs monitor interrupt vs operator.
     if (state.get("budget_verdict") or {}).get("preempt"):
         return {"audit": ["HALTED by SP-R2 per-graph budget (over cap — parked before ship)"]}
+    cmds = state.get("steer_commands") or []
+    if any(c.get("kind") == "INTERRUPT_FOR_HUMAN" for c in cmds):
+        reasons = "; ".join(
+            c.get("reason", "") for c in cmds if c.get("kind") == "INTERRUPT_FOR_HUMAN"
+        )
+        return {"audit": [f"HALTED by SP-27 monitor (INTERRUPT_FOR_HUMAN): {reasons}"]}
     return {"audit": ["HALTED by operator"]}
 
 
@@ -993,6 +1086,8 @@ def build_spine(
         g.add_node(name, fn)
     g.add_node("__halt__", halt)
     g.add_node("__replan__", replan)
+    # SP-27: monitor node — no injected deps (reads state only); defined at module level
+    g.add_node("monitor", monitor)
 
     g.add_edge(START, "goal_intake")
     g.add_edge("goal_intake", "clarify")
@@ -1008,11 +1103,17 @@ def build_spine(
     )
     g.add_edge("seal_spec", "decompose")
     g.add_edge("decompose", "fan_out")
-    # SP-R2: fan_out routes through the per-graph budget gate — __halt__ (parked) when the wave was
-    # pre-empted over-budget, else eval_gate. Replaces the unconditional fan_out -> eval_gate edge.
+    # SP-R2/SP-27: fan_out → monitor (SP-27 trajectory gate) → eval_gate (SP-06 scope gate).
+    # Budget preemption still parks at __halt__ before reaching monitor.
     g.add_conditional_edges(
         "fan_out",
         _route_after_fan_out,
+        {"monitor": "monitor", "__halt__": "__halt__"},
+    )
+    # SP-27: monitor gates on loop/stall signals; INTERRUPT_FOR_HUMAN → __halt__, else → eval_gate.
+    g.add_conditional_edges(
+        "monitor",
+        _route_after_monitor,
         {"eval_gate": "eval_gate", "__halt__": "__halt__"},
     )
     g.add_conditional_edges(

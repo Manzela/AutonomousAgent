@@ -243,3 +243,18 @@ app.adapters.inmemory.file_checkpointer
 # is not a dead symbol — it is the intended test-override entry point for the reaper.
 # Operator-reviewed 2026-06-03.
 app.core.reaper
+
+# SP-R4 checkpoint retention + judge_events TTL rotation.
+# app/core/checkpoint_retention.py: gc_checkpoints() + find_threads_older_than() are
+#   called from maintenance/teardown paths that are not yet wired to a runtime entrypoint
+#   the AST callgraph can trace — same pattern as app.core.reaper above. These are
+#   genuinely new production functions, not test helpers; they will be called by
+#   SpineRunner teardown and operator maintenance scripts. REMOVE once a runtime wiring
+#   exists (a FastAPI lifespan shutdown hook or a scheduled maintenance task).
+# lib/evaluators/judge_events_retention.py: rotate() is called from the same class of
+#   deferred maintenance contexts; judge_events.py itself is wired (lib.evaluators.judge_events
+#   is already a production path) but the rotator is called by an operator/nightly task,
+#   not inline with the hot path. Listed together with the checkpoint retention module
+#   because they share the same deferred-maintenance pattern. Operator-reviewed 2026-06-04.
+app.core.checkpoint_retention
+lib.evaluators.judge_events_retention

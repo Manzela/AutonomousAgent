@@ -7,7 +7,7 @@
 #   panic.sh and /panic over Telegram halt all in-flight graph execution within ≤30 s,
 #   revoke the GitHub App token, AND tear down all in-flight sandboxes (count→0).
 #
-# ORACLE MAP (16 hermetic tests — no Docker / LLM / real GitHub API):
+# ORACLE MAP (18 hermetic tests — no Docker / LLM / real GitHub API):
 #
 #   Sentinel:
 #   ①  is_active() returns False before trigger.
@@ -22,6 +22,8 @@
 #   ⑧  make_recording() factory returns KillSwitch with RecordingTokenRevoker.
 #   ⑨  require_token_revoker() returns the injected revoker; raises when None.
 #   ⑮  GithubAppTokenRevoker is a subclass of AbstractTokenRevoker.
+#   C9-H1: GithubAppTokenRevoker hits DELETE /installation/token (not the create path).
+#   C9-H2: token revocation happens BEFORE the reaper sweep (order verified).
 #
 #   Reaper integration:
 #   ⑥  trigger() calls reaper.sweep_all() (mock reaper, count→0 verified).
@@ -40,6 +42,16 @@
 #   docs/runbooks/autonomous-incident.md covers runaway-loop, bad-merge, overspend,
 #   stuck-fan-out scenarios, the ≤30 s SLO, and recovery checklist.
 #
+# C9 REVIEW (claude-opus-4-7 — different model class from claude-sonnet-4-6, 2026-06-04):
+#   Round 1 found 2 HIGH + 1 MEDIUM blockers — all fixed:
+#     H1 — wrong endpoint: DELETE /app/installations/{id}/access_tokens does not exist;
+#          fix: correct endpoint is DELETE /installation/token; added 204 check.
+#     H2 — revoke() ran after unbounded reaper sweep; a hung ws.close() blocked revocation;
+#          fix: revoke() now runs before sweep_all().
+#     M1 — $REASON interpolated into Python source in panic.sh; single quote caused SyntaxError;
+#          fix: reason passed via AA_PANIC_REASON env var.
+#   2 new oracles added (C9-H1 URL assertion, C9-H2 order assertion); 18 total.
+#
 # DEFERRED (named, NOT silently dropped):
 #   * Real GitHub App token revocation end-to-end (requires live installation token;
 #     GithubAppTokenRevoker.revoke() is implemented; not called in hermetic tests)
@@ -56,10 +68,11 @@ run_from: repo_root
 assertions:
   - id: sp-ir1-kill-switch-oracles
     description: >
-      16 hermetic oracles covering SP-IR1 acceptance criteria:
+      18 hermetic oracles covering SP-IR1 acceptance criteria:
       HALT sentinel write/read/clear (① ② ③ ④ ⑫ ⑭); token revocation contract
-      (⑤ ⑧ ⑨ ⑮); reaper sweep_all() called on trigger (⑥); SLO ≤30 s (⑦);
-      concurrent trigger — exactly one owner (⑬); SpineRunner wiring (⑩ ⑪).
+      (⑤ ⑧ ⑨ ⑮); C9-H1 correct endpoint (DELETE /installation/token verified);
+      C9-H2 revoke-before-sweep order (assertion); reaper sweep_all() called (⑥);
+      SLO ≤30 s (⑦); concurrent trigger — exactly one owner (⑬); SpineRunner wiring (⑩ ⑪).
     cmd: |
       OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
         tests/unit/test_sp_ir1_kill_switch.py \

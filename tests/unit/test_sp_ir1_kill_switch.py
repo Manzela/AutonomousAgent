@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -107,6 +107,55 @@ class TestTokenRevoker:
 
     def test_github_app_revoker_is_abstract_transport_subclass(self) -> None:  # ⑮
         assert issubclass(GithubAppTokenRevoker, AbstractTokenRevoker)
+
+    def test_github_app_revoker_uses_correct_endpoint(self) -> None:
+        """C9-H1: revoke endpoint must be DELETE /installation/token, not the create path."""
+        import urllib.request
+
+        captured_requests: list[urllib.request.Request] = []
+
+        def mock_urlopen(req, timeout=None):
+            captured_requests.append(req)
+            # Simulate 204 No Content response
+
+            class _FakeResp:
+                status = 204
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    pass
+
+            return _FakeResp()
+
+        revoker = GithubAppTokenRevoker(token="tok-abc", installation_id=42)
+        with patch("urllib.request.urlopen", mock_urlopen):
+            revoker.revoke()
+
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert req.full_url == "https://api.github.com/installation/token"
+        assert req.method == "DELETE"
+
+    def test_github_app_revoker_token_revoked_before_reaper_sweep(self, sentinel: Path) -> None:
+        """C9-H2: token revocation must complete before the unbounded reaper sweep."""
+        order: list[str] = []
+
+        class OrderingRevoker(AbstractTokenRevoker):
+            def revoke(self) -> None:
+                order.append("revoke")
+
+        mock_reaper = MagicMock()
+        mock_reaper.sweep_all.side_effect = lambda: order.append("sweep") or 0
+
+        ks = KillSwitch(
+            reaper=mock_reaper,
+            token_revoker=OrderingRevoker(),
+            sentinel_path=sentinel,
+        )
+        ks.trigger("order-test")
+        assert order == ["revoke", "sweep"], f"Expected revoke before sweep, got: {order}"
 
 
 # ── Reaper integration ────────────────────────────────────────────────────────

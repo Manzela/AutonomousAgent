@@ -62,11 +62,13 @@ class RecordingTokenRevoker(AbstractTokenRevoker):
 class GithubAppTokenRevoker(AbstractTokenRevoker):
     """Revoke the GitHub App installation token via the GitHub API.
 
-    DELETE /app/installations/{installation_id}/access_tokens
-    Requires the current installation token in the Authorization header.
+    C9-H1 fix: correct endpoint is DELETE /installation/token (not the POST path
+    /app/installations/{id}/access_tokens which creates tokens — there is no DELETE there).
+    The token to revoke is identified solely by the Authorization header; installation_id
+    is stored only for logging.
 
-    The token is short-lived (≤1 hr) but explicit revocation ensures no
-    pending request can slip through after a panic.
+    The token is short-lived (≤1 hr) but explicit revocation freezes any in-flight
+    GitHub write that would otherwise succeed with the still-valid token.
     """
 
     def __init__(self, *, token: str, installation_id: int) -> None:
@@ -76,7 +78,8 @@ class GithubAppTokenRevoker(AbstractTokenRevoker):
     def revoke(self) -> None:
         import urllib.request
 
-        url = f"https://api.github.com/app/installations/{self._installation_id}/access_tokens"
+        # C9-H1: correct revoke endpoint — DELETE /installation/token, not the create path
+        url = "https://api.github.com/installation/token"
         req = urllib.request.Request(
             url,
             method="DELETE",
@@ -88,11 +91,17 @@ class GithubAppTokenRevoker(AbstractTokenRevoker):
         )
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
-                logger.info(
-                    "kill_switch: GitHub App token revoked (installation=%d status=%d)",
-                    self._installation_id,
-                    resp.status,
-                )
+                if resp.status == 204:
+                    logger.info(
+                        "kill_switch: GitHub App token revoked (installation=%d)",
+                        self._installation_id,
+                    )
+                else:
+                    logger.error(
+                        "kill_switch: unexpected revoke response status=%d installation=%d",
+                        resp.status,
+                        self._installation_id,
+                    )
         except Exception as exc:
             # Fail-open: log loudly but don't block the rest of the teardown.
             # The token expires in ≤1 hr regardless; revocation is defence-in-depth.
@@ -155,11 +164,21 @@ class KillSwitch:
             t0 = time.monotonic()
             logger.warning("kill_switch: PANIC triggered — reason=%r", reason)
 
-            # 1. Write sentinel (atomic: open + write is the single arbiter)
+            # 1. Write sentinel — first so any concurrent graph node sees it immediately
             self._sentinel.parent.mkdir(parents=True, exist_ok=True)
             self._sentinel.write_text(f"HALT: {reason}\n")
 
-            # 2. Tear down all in-flight WorkspaceSessions
+            # 2. Revoke the GitHub App token BEFORE the reaper sweep (C9-H2 fix).
+            #    revoke() is bounded (10 s HTTP timeout); reaper.sweep_all() is unbounded
+            #    (git/filesystem work per workspace).  Running revoke first ensures a hung
+            #    ws.close() can't prevent the security-critical step from completing.
+            if self._token_revoker is not None:
+                try:
+                    self._token_revoker.revoke()
+                except Exception as exc:
+                    logger.error("kill_switch: token revocation failed: %s", exc)
+
+            # 3. Tear down all in-flight WorkspaceSessions (unbounded — after revoke)
             swept = 0
             if self._reaper is not None:
                 try:
@@ -167,13 +186,6 @@ class KillSwitch:
                 except Exception as exc:
                     logger.error("kill_switch: reaper sweep failed: %s", exc)
             logger.warning("kill_switch: swept %d workspace(s)", swept)
-
-            # 3. Revoke the GitHub App token
-            if self._token_revoker is not None:
-                try:
-                    self._token_revoker.revoke()
-                except Exception as exc:
-                    logger.error("kill_switch: token revocation failed: %s", exc)
 
             elapsed = time.monotonic() - t0
             logger.warning(

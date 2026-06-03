@@ -35,21 +35,6 @@ skips:
   - test: tests/integration/test_p1_2_judge_panel.py::test_judge_panel_rejects_destructive_action
     reason: LiteLLM proxy not reachable on http://localhost:4000
     issue: P1-6-REVISED
-  - test: tests/integration/test_p1_6_failure_matrix.py::test_F1_rate_limit_classifies_as_self_heal
-    reason: LiteLLM proxy not running
-    issue: P1-6-REVISED
-  - test: tests/integration/test_p1_6_failure_matrix.py::test_F2_timeout_classifies_as_self_heal
-    reason: LiteLLM proxy not running
-    issue: P1-6-REVISED
-  - test: tests/integration/test_p1_6_failure_matrix.py::test_F22_secret_leak_classifies_as_fail_loud
-    reason: LiteLLM proxy not running
-    issue: P1-6-REVISED
-  - test: tests/integration/test_p1_6_failure_matrix.py::test_F11_gemini_thinking_truncation_classifies_as_self_heal
-    reason: LiteLLM proxy not running
-    issue: P1-6-REVISED
-  - test: tests/integration/test_p1_6_failure_matrix.py::test_F33_unclassified_exception_falls_through_to_fail_loud
-    reason: LiteLLM proxy not running
-    issue: P1-6-REVISED
   - test: tests/integration/test_property_llm_invariants.py::test_invariant_no_env_var_leak
     reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
     issue: P1-6-REVISED

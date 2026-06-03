@@ -19,6 +19,7 @@ import logging
 from collections.abc import Sequence
 from datetime import datetime
 
+from langchain_core.runnables.config import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 logger = logging.getLogger(__name__)
@@ -78,7 +79,7 @@ async def find_threads_older_than(
 
     expired = []
     for tid in candidate_thread_ids:
-        config = {"configurable": {"thread_id": tid}}
+        config: RunnableConfig = {"configurable": {"thread_id": tid}}
         latest_dt: datetime | None = None
         async for ckpt_tuple in saver.alist(config, limit=1):
             latest_dt = _parse_ts(ckpt_tuple.checkpoint.get("ts"))

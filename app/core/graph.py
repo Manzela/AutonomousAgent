@@ -434,6 +434,7 @@ def _build_nodes(
 
         ws: Optional[WorkspaceSession] = None
         symlink_paths: list[str] = []
+        workspace_ref: Optional[dict] = None  # SP-R7: the real durable snapshot ref
         try:
             if sandbox is not None and nodes:  # `and nodes` narrows it non-None for the body
                 node0 = nodes[0]
@@ -476,6 +477,13 @@ def _build_nodes(
                 diff = ws.diff()
                 result = result.model_copy(update={"artifacts": diff})
                 symlink_paths = ws.symlinks([(d["status"], d["path"]) for d in diff])
+                # SP-R7: snapshot the worktree to a DURABLE content-addressed git ref BEFORE
+                # close() tears it down (ordering is load-bearing — the ref must outlive the
+                # worktree so a kill loses nothing). workspace_ref carries a REAL content
+                # digest; resume rehydrates a fresh sandbox via WorkspaceSession.rehydrate.
+                workspace_ref = ws.snapshot(
+                    thread_id=state["thread_id"], node_id=str(node0.get("id") or "n0")
+                )
         finally:
             if ws is not None:
                 ws.close()  # ALWAYS tear the worktree down (success or failure)
@@ -500,7 +508,17 @@ def _build_nodes(
         # the checkpoint (untrusted sandbox tool output AND the audit line) routes through
         # the same lib.scrubber as goal_intake, so no path can leak. Ints/floats (cost,
         # returncode) pass through unchanged.
-        return _scrub_persisted(delta)
+        scrubbed = _scrub_persisted(delta)
+        # SP-R7: stamp the snapshot ref AFTER scrubbing. Its digest is a 64-hex sha256 CONTENT
+        # hash (not a secret) that SP-R1's high-entropy filter would otherwise REDACT, which
+        # would destroy the byte-equal oracle; kind/ref are structural and the thread_id/
+        # node_id woven into the ref are already persisted unscrubbed as the correlation key,
+        # so bypassing the scrub here leaks nothing new. ship_effect prefers this real ref over
+        # the synthetic sha256(goal+spec_sha); absent on the degraded path → ship_effect falls
+        # back, never crashes.
+        if workspace_ref is not None:
+            scrubbed["workspace_ref"] = workspace_ref
+        return scrubbed
 
     async def eval_gate(state: SpineState, config) -> dict:
         """SP-06 (slice 1): PRD-conformance SHIP PRECONDITION — score the agent's changed
@@ -569,6 +587,9 @@ def _build_nodes(
             state, tid=tid, ptid=ptid, kind="ship", node_label="ship_effect", effect=_effect
         )
         if "ledger" in delta:  # effect ran (not skipped) -> stamp the workspace ref
+            # SP-R7: prefer the REAL content-addressed ref the execute node snapshotted; the
+            # synthetic sha256(goal+spec_sha) below is now a DEGRADED-ONLY fallback (no
+            # sandbox / snapshot failed) — kept so the sandbox=None skeleton path still ships.
             delta["workspace_ref"] = state.get("workspace_ref") or {
                 "kind": "branch",
                 "ref": f"agent/{tid}",

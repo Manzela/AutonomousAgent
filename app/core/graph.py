@@ -345,12 +345,23 @@ def _build_nodes(
 
     async def goal_intake(state: SpineState, config) -> dict:
         tid = config["configurable"]["thread_id"]
-        return {
+        delta: dict = {
             "thread_id": tid,
             "fix_attempts": 0,
             "scrubbed": True,  # the runner scrubbed the goal before invoke (SP-R1)
             "audit": [f"goal_intake thread={tid}"],
         }
+        # SP-B1: create a triage card immediately on goal arrival so the operator sees
+        # their goal on the board BEFORE sign_off. The decomposer "picks it up" by
+        # promoting this card (triage → todo) and using it as the parent goal card rather
+        # than creating a new one — so the triage card id == the root card mark_done closes.
+        # Idempotent: skipped on resume when triage_card_id is already in state.
+        # board=None => no card (byte-identical to pre-SP-B1).
+        if board is not None and not state.get("triage_card_id"):
+            goal_title = (state.get("goal") or "goal")[:80]
+            card = board.create_card(title=goal_title, thread_id=tid, status="triage")
+            delta["triage_card_id"] = card.id
+        return delta
 
     async def clarify(state: SpineState, config) -> dict:
         """SP-03: the clarify ⇄ Q-gen loop (PRD §3 primary journey / §5 / SP-03).
@@ -562,12 +573,23 @@ def _build_nodes(
         # goal so card titles carry no PII. board=None => skipped (no key, byte-identical to pre-SP-16).
         # OUTBOUND only; the card create is at-least-once across a crash-before-checkpoint (the
         # in-memory CI board reconstructs trivially; the DEFERRED Hermes adapter owes an apply_once).
+        # SP-B1: if goal_intake already created a triage card, promote it (triage → todo) and reuse
+        # it as the parent goal card — the triage card id == the root card mark_done closes.
         if board is not None and not state.get("board_cards"):
+            triage_cid = state.get("triage_card_id")
+            promoted_parent: Optional[str] = None
+            if triage_cid:
+                try:
+                    board.set_status(triage_cid, "todo")
+                    promoted_parent = triage_cid
+                except Exception:
+                    promoted_parent = None  # fall back to creating a new parent
             proj = project_plan(
                 board,
                 delta.get("plan") or plan,
                 thread_id=state["thread_id"],
                 goal_title=(state.get("goal") or "goal")[:80],
+                parent_card_id=promoted_parent,
             )
             delta["board_cards"] = {"parent": proj.parent_id, "nodes": proj.node_cards}
         return delta

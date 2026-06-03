@@ -204,6 +204,7 @@ def project_plan(
     *,
     thread_id: str,
     goal_title: str = "goal",
+    parent_card_id: Optional[str] = None,
 ) -> BoardProjection:
     """Project a TaskGraph (SP-02 plan) onto the board: ONE parent goal card + one child card per
     TaskNode (child.parent_id = parent, child.node_id = node id). Returns a BoardProjection
@@ -211,7 +212,11 @@ def project_plan(
 
     Validates the node ids UP FRONT (every node has a non-empty `id`; no duplicates) and raises
     BoardError on a malformed plan rather than a bare KeyError or a silently-orphaned card. The
-    SP-02 decomposer already guarantees this, but project_plan accepts an untyped `plan`."""
+    SP-02 decomposer already guarantees this, but project_plan accepts an untyped `plan`.
+
+    SP-B1: if `parent_card_id` is provided, reuse that card as the parent (the caller is
+    responsible for promoting it to `todo` before this call). Otherwise create a new parent card.
+    This is how the triage card created at goal_intake becomes the root goal card."""
     nodes = (plan or {}).get("nodes", [])
     seen: set[str] = set()
     for node in nodes:
@@ -222,7 +227,11 @@ def project_plan(
             raise BoardError(f"project_plan: duplicate node id {nid!r}")
         seen.add(nid)
 
-    parent = board.create_card(title=goal_title, thread_id=thread_id)
+    if parent_card_id is not None:
+        parent_id = parent_card_id
+    else:
+        parent = board.create_card(title=goal_title, thread_id=thread_id)
+        parent_id = parent.id
     node_cards: dict[str, str] = {}
     for node in nodes:
         nid = node["id"]
@@ -230,7 +239,7 @@ def project_plan(
             title=node.get("summary") or nid,
             thread_id=thread_id,
             node_id=nid,
-            parent_id=parent.id,
+            parent_id=parent_id,
         )
         node_cards[nid] = child.id
-    return BoardProjection(parent_id=parent.id, node_cards=node_cards)
+    return BoardProjection(parent_id=parent_id, node_cards=node_cards)

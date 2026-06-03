@@ -291,6 +291,11 @@ class SpineState(TypedDict, total=False):
     # Present only when a per-graph budget is CONFIGURED (SPINE_BUDGET_USD); absent => budget OFF.
     # _route_after_fan_out reads `.preempt` to park an over-budget graph at __halt__ (fail-safe).
     budget_verdict: Optional[dict]
+    # SP-B1: the id of the triage card goal_intake creates when a board is injected. The
+    # decomposer "picks it up" by promoting it (triage → todo) and using it as the parent goal
+    # card rather than creating a new one. Last-write idempotency: absent when board=None (OFF);
+    # goal_intake skips card creation when this key is already present (resume-safe).
+    triage_card_id: Optional[str]
     # SP-16 (slice 2): the kanban projection record the decompose node writes when a board is
     # injected — {"parent": <goal card id>, "nodes": {node_id: card_id}}. Last-write, and the
     # IDEMPOTENCY signal: decompose projects the plan onto the board ONLY when this is absent, so a

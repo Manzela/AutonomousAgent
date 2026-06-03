@@ -23,6 +23,7 @@ from app.core import graph_state as gs
 from app.core.board import AbstractBoard, GateReader
 from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
+from app.core.reaper import WorkspaceReaper, reap_orphaned_worktrees
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
@@ -133,6 +134,16 @@ class SpineRunner:
         # SP-R2: the per-graph USD budget (SPINE_BUDGET_USD) — a build_spine closure arg like
         # cap/lease, NEVER in SpineState. None => budget OFF (zero behaviour change).
         self._budget = _default_budget()
+        # SP-05d: per-runner lifecycle reaper — tracks active WorkspaceSessions + the lease dir
+        # for atexit panic teardown. Also prunes orphaned aa-ws-* worktrees from prior crashed runs.
+        from pathlib import Path as _Path
+
+        self._reaper = WorkspaceReaper()
+        self._reaper.register_lease_dir(_Path(self._lease._dir))
+        try:
+            reap_orphaned_worktrees(_Path(".").resolve())
+        except Exception:  # noqa: BLE001
+            pass  # fail-open: orphan sweep never blocks runner startup
         # SP-05 (F-1): thread the sandbox to build_spine so the LIVE entrypoint actually runs
         # in a sandbox (production previously ran sandbox=None — the in-process path).
         # assert_serializable_state's no-callable invariant is preserved (cap/lease/sandbox are
@@ -146,6 +157,7 @@ class SpineRunner:
             budget_usd=self._budget,
             board=self._board,
             gate=self._gate,
+            reaper=self._reaper,
         )
 
     @property

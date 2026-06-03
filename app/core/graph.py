@@ -58,6 +58,7 @@ from app.core.graph_state import SpineState, TaskGraph
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from lib.durability.graph_budget import aggregate_spend, budget_verdict
 from app.core.workspace import WorkspaceSession
+from app.core.reaper import WorkspaceReaper
 from app.core.orchestrator import execute as orchestrate
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
@@ -240,6 +241,7 @@ async def _run_node(
     repo_dir: Path,
     base_ref: str,
     thread_id: str,
+    reaper: Optional[WorkspaceReaper] = None,
 ) -> dict:
     """Run ONE ready node concurrently. Acquire the SP-R6 global-cap slot FIRST (admission —
     BEFORE creating a worktree, so disk is bounded by the cap), then (only when a real worktree
@@ -264,6 +266,8 @@ async def _run_node(
                 ws = WorkspaceSession.create(
                     repo_dir=repo_dir, base_ref=base_ref, thread_id=thread_id, node_id=node_id
                 )
+                if reaper is not None:
+                    reaper.register_workspace(ws)  # SP-05d: track for atexit panic teardown
                 if ws.ok:
                     rel = _node_output_relpath({"allowed_paths": allowed})
                     manifest = [{"path": rel, "content": "# autonomousagent sp05 node output\n"}]
@@ -314,6 +318,8 @@ async def _run_node(
         finally:
             if ws is not None:
                 ws.close()  # snapshot already taken; close while the lease is still held
+                if reaper is not None:
+                    reaper.deregister_workspace(ws)  # SP-05d: removed normally — skip atexit sweep
 
 
 def _build_nodes(
@@ -325,6 +331,7 @@ def _build_nodes(
     budget_usd: Optional[float] = None,
     board: Optional[AbstractBoard] = None,
     gate: Optional[GateReader] = None,
+    reaper: Optional[WorkspaceReaper] = None,
 ):
     # SP-16 (slice 3): the C14 GateReader the ship_effect node consults to close the root goal card
     # (`done` is gate-derived — the agent never self-marks it). gate=None (default) => the root card
@@ -687,6 +694,7 @@ def _build_nodes(
                     repo_dir=repo_dir,
                     base_ref=base_ref,
                     thread_id=tid,
+                    reaper=reaper,
                 )
             except Exception as exc:  # noqa: BLE001 — degrade a broken leaf, never abort the join
                 return {
@@ -1079,6 +1087,7 @@ def build_spine(
     budget_usd: Optional[float] = None,
     board: Optional[AbstractBoard] = None,
     gate: Optional[GateReader] = None,
+    reaper: Optional[WorkspaceReaper] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -1090,7 +1099,7 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board, gate)
+    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board, gate, reaper)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)

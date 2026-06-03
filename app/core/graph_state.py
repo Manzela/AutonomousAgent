@@ -308,10 +308,12 @@ class SpineState(TypedDict, total=False):
     audit: Annotated[list, _append]
     # steering (DoD-4) — full bus deferred; reducer + arbitration live now
     steering_events: Annotated[list, _merge_steering]
-    # SP-27: mid-flight monitor SteerCommands — one record per detected signal; accumulated
-    # across all waves via _append. _route_after_monitor reads the list to decide whether to
-    # park at __halt__ (INTERRUPT_FOR_HUMAN) or proceed to eval_gate.
-    steer_commands: Annotated[list, _append]
+    # SP-27: mid-flight monitor SteerCommands — LAST-WRITE (no reducer). The monitor node
+    # overwrites this on EVERY run: non-empty on a detected signal, empty list on a healthy wave.
+    # This is intentional: _route_after_monitor must see ONLY the current wave's signals so a
+    # healthy resume after operator intervention clears the prior INTERRUPT_FOR_HUMAN (C9 B1 fix:
+    # _append would make a prior halt sticky even on a subsequently healthy wave).
+    steer_commands: Optional[list]
     # replan (continue-as-new) — reserved now, marked in Task 6
     replan_parent: Optional[str]
     pre_decompose_checkpoint_id: Optional[str]

@@ -1014,9 +1014,19 @@ async def monitor(state: SpineState, config) -> dict:
         f"loop_keys={[k for k, v in counts.items() if v >= _MONITOR_LOOP_THRESHOLD]} "
         f"triggers={len(cmds)}"
     )
-    delta: dict = {"audit": [audit_msg]}
-    if cmds:
-        delta["steer_commands"] = cmds
+    # B1 fix (C9): steer_commands is LAST-WRITE (no reducer). ALWAYS emit — empty list on a
+    # healthy wave so _route_after_monitor sees the CURRENT wave's signals, not stale history.
+    # An accumulated INTERRUPT_FOR_HUMAN from a prior wave would otherwise make every subsequent
+    # resume re-halt even when the monitor runs clean (C9 B1: _append sticky-halt bug).
+    #
+    # B2 fix (C9): fix_attempts is incremented HERE (not in fan_out) so oracle-unsatisfiable
+    # fires in production after _MONITOR_MAX_FIX_ATTEMPTS complete fan_out → monitor cycles.
+    # The check reads the pre-increment value; the increment is written for the NEXT wave.
+    delta: dict = {
+        "audit": [audit_msg],
+        "steer_commands": cmds,  # LAST-WRITE: empty list = clear; non-empty = signal
+        "fix_attempts": fix_attempts + 1,  # B2: live increment (wires oracle-unsatisfiable)
+    }
     return delta
 
 

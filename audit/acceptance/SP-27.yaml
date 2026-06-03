@@ -38,15 +38,19 @@ run_from: repo_root
 assertions:
   - id: sp27-monitor-signals-and-routing
     description: >
-      8 hermetic oracles covering all four signal paths:
+      10 hermetic oracles covering all signal paths + C9 post-audit fixes:
       P1 loop-detection (execution_counts >= threshold) → INTERRUPT_FOR_HUMAN emitted;
       P2 oracle-unsatisfiable (fix_attempts >= threshold) → INTERRUPT_FOR_HUMAN emitted;
-      N1 healthy state (no signals) → no steer_commands;
+      N1 healthy state (no signals) → steer_commands=[];
       N4 threshold boundary exact (fix=MAX-1 silent, fix=MAX fires);
       R1 _route_after_monitor INTERRUPT_FOR_HUMAN → "__halt__";
       R2 _route_after_monitor advisory (INJECT_RAG/SWITCH_TOOL/CHECKPOINT_REPLAN) → "eval_gate";
       R3 _route_after_fan_out routes to "monitor" (SP-27 change from "eval_gate");
-      L1 compiled graph has "monitor" node AND healthy direct call produces no steer_commands.
+      L1 compiled graph has "monitor" node AND healthy direct call routes to eval_gate;
+      M3 last-write semantics: healthy resume after operator reset clears prior INTERRUPT_FOR_HUMAN
+         → eval_gate (C9 B1 fix: _append would have made every subsequent resume re-halt);
+      M4 fix_attempts increment: monitor increments fix_attempts each wave so oracle-unsatisfiable
+         signal is live in production (C9 B2 fix: was inert — never incremented anywhere).
     cmd: |
       OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
         tests/unit/test_sp27_midflght_monitor.py \
@@ -57,15 +61,21 @@ assertions:
 proof:
   ci_workflow: .github/workflows/ci.yml
   artifact: >
-    8 red-green oracles (tests/unit/test_sp27_midflght_monitor.py) over
+    10 red-green oracles (tests/unit/test_sp27_midflght_monitor.py) over
     app/core/graph.py (monitor node + _route_after_monitor + _route_after_fan_out → monitor),
     app/core/graph_state.py (SteerCommandKind, SteerCommand, AgentNote TypedDicts +
-    SpineState.steer_commands channel).
-    Proven: loop detection fires INTERRUPT_FOR_HUMAN (P1), oracle-unsatisfiable fires
-    INTERRUPT_FOR_HUMAN (P2), healthy state silent (N1), threshold boundary exact (N4),
-    routing INTERRUPT_FOR_HUMAN → __halt__ (R1), advisory → eval_gate (R2), fan_out routes
-    to monitor (R3), compiled graph topology includes monitor node (L1).
-    Existing O7 oracle in test_sp_r2_budget_preempt.py updated to reflect SP-27 routing change
-    (non-budget path now "monitor" not "eval_gate"). 900 unit tests passing, 0 regressions.
+    SpineState.steer_commands LAST-WRITE Optional[list]).
+    C9 B1 fix: steer_commands changed from Annotated[list, _append] to Optional[list]
+    (last-write); monitor always emits steer_commands (empty on healthy wave) so a prior
+    INTERRUPT_FOR_HUMAN is cleared on the next healthy wave — no sticky re-halt.
+    C9 B2 fix: monitor increments fix_attempts in its delta; oracle-unsatisfiable signal
+    fires after _MONITOR_MAX_FIX_ATTEMPTS=3 complete fan_out → monitor cycles (was inert).
+    C9 B3 acknowledged: simultaneous oracle-unsatisfiable + loop emits one SteerCommand
+    (both INTERRUPT_FOR_HUMAN — routing outcome identical; audit msg records all hot keys).
+    Proven: loop detection fires (P1), oracle-unsatisfiable fires (P2), healthy silent (N1),
+    threshold boundary exact (N4), routing INTERRUPT_FOR_HUMAN → __halt__ (R1), advisory →
+    eval_gate (R2), fan_out → monitor (R3), topology wired (L1), last-write clears (M3),
+    fix_attempts live (M4). Existing O7 in test_sp_r2_budget_preempt.py updated.
+    902 unit tests passing, 0 regressions.
     DEFERRED (named): live LLM sub-agent, AgentNote streaming → Langfuse, advisory actuators,
     SP-15 embedder, SP-14 timer watchdog.

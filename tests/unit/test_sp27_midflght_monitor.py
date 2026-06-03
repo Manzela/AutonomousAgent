@@ -155,6 +155,59 @@ def test_route_after_fan_out_routes_to_monitor():
     assert _route_after_fan_out({"budget_verdict": {"preempt": True}}) == "__halt__"
 
 
+# ── M3: last-write semantics — healthy resume clears prior INTERRUPT_FOR_HUMAN ──
+async def test_monitor_last_write_clears_prior_interrupt():
+    """M3 RED: with _append semantics the prior INTERRUPT_FOR_HUMAN is sticky after resume.
+    With last-write the healthy wave's empty list overwrites it → eval_gate. C9 B1 fix."""
+    # Step 1: fire on high fix_attempts
+    fired_delta = await monitor(
+        {"thread_id": "t-sp27", "fix_attempts": _MONITOR_MAX_FIX_ATTEMPTS, "execution_counts": {}},
+        _CFG,
+    )
+    prior_cmd = fired_delta.get("steer_commands") or []
+    assert prior_cmd and prior_cmd[0]["kind"] == "INTERRUPT_FOR_HUMAN"
+
+    # Step 2: operator intervened — fix_attempts reset to 0; prior steer_commands still in state
+    # (last-write from the previous wave). With _append the prior cmd would persist forever.
+    resumed_state = {
+        "thread_id": "t-sp27",
+        "fix_attempts": 0,  # operator reset
+        "execution_counts": {},
+        "steer_commands": prior_cmd,  # what _append would have left in state
+    }
+    resumed_delta = await monitor(resumed_state, _CFG)
+    # Last-write: monitor overwrites steer_commands with [] (healthy wave)
+    merged = {**resumed_state, "steer_commands": resumed_delta["steer_commands"]}
+    assert _route_after_monitor(merged) == "eval_gate", (
+        "healthy resume after operator reset must route to eval_gate — "
+        "last-write clears the prior INTERRUPT_FOR_HUMAN"
+    )
+
+
+# ── M4: fix_attempts increment — oracle-unsatisfiable signal is live in production ─
+async def test_monitor_increments_fix_attempts():
+    """M4 RED: if monitor does not increment fix_attempts, the signal is inert in production.
+    C9 B2 fix: monitor increments fix_attempts so the oracle-unsatisfiable signal fires
+    after _MONITOR_MAX_FIX_ATTEMPTS complete fan_out → monitor cycles."""
+    state = {"thread_id": "t-sp27", "fix_attempts": 0, "execution_counts": {}}
+    delta = await monitor(state, _CFG)
+    assert (
+        delta.get("fix_attempts") == 1
+    ), f"monitor must increment fix_attempts from 0 to 1, got {delta.get('fix_attempts')}"
+    # Verify the increment propagates across waves (simulated chain)
+    state2 = {**state, "fix_attempts": delta["fix_attempts"]}
+    delta2 = await monitor(state2, _CFG)
+    assert delta2.get("fix_attempts") == 2
+    # At threshold: increment still happens (check is pre-increment)
+    state_at = {
+        "thread_id": "t-sp27",
+        "fix_attempts": _MONITOR_MAX_FIX_ATTEMPTS,
+        "execution_counts": {},
+    }
+    delta_at = await monitor(state_at, _CFG)
+    assert delta_at.get("fix_attempts") == _MONITOR_MAX_FIX_ATTEMPTS + 1
+
+
 # ── L1: graph topology — "monitor" node present and healthy path through it ─
 async def test_graph_topology_includes_monitor_node():
     """L1: the compiled graph has a 'monitor' node; a direct healthy call produces

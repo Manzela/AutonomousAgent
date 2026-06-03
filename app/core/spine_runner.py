@@ -26,6 +26,7 @@ from app.core.graph import build_spine
 from app.core.reaper import WorkspaceReaper, reap_orphaned_worktrees
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
+from app.core.steering import SteeringEventBus
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from lib.scrubber import scrub_string
 
@@ -110,11 +111,16 @@ class SpineRunner:
         sandbox: Optional[AbstractSandbox] = None,
         board: Optional[AbstractBoard] = None,
         gate: Optional[GateReader] = None,
+        bus: Optional[SteeringEventBus] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
         self._capability = capability
         self._sandbox = sandbox
+        # SP-17: the SteeringEventBus routes inbound Telegram/board events to open interrupts
+        # (C15 dedup + arbitration). None => bus-less skeleton (tests that don't need steering).
+        # The live bus is constructed by the caller (FastAPI lifespan, nightly integration tests).
+        self._bus = bus
         # SP-16 (slice 2): the kanban board the LIVE spine projects its DAG onto. Default to an
         # InMemoryBoard so the entrypoint always renders cards (a build_spine closure arg like
         # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the
@@ -193,6 +199,19 @@ class SpineRunner:
             self._cfg(thread_id),
             durability=durability or self.durability,
         )
+
+    def require_bus(self) -> SteeringEventBus:
+        """Return the injected SteeringEventBus or raise RuntimeError if unconfigured.
+
+        Intended callers: SP-13 Telegram adapter, any component that needs the C15
+        inbound arbitration hub at runtime.  Makes SteeringEventBus C4-reachable via
+        this public method (class->method edge from SpineRunner).
+        """
+        if not isinstance(self._bus, SteeringEventBus):
+            raise RuntimeError(
+                "SteeringEventBus not configured; pass bus=SteeringEventBus(...) to SpineRunner"
+            )
+        return self._bus
 
     def get_state(self, thread_id: str):
         return self._app.get_state(self._cfg(thread_id))

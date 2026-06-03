@@ -119,14 +119,21 @@ def _record_decision(gate: str, decision) -> dict:
     on a re-driven resume is the safe direction — readers dedup by interrupt_id (§9)."""
     if not isinstance(decision, dict):
         decision = {"verb": str(decision)}
+    # SP-R1 (F-4): actor + reason are operator FREE TEXT — they can carry an email,
+    # phone, API key, or PEM block. Scrub them through the SAME lib.scrubber.scrub_string
+    # the rest of the spine uses BEFORE they reach EITHER the durable JSONL (append_decision)
+    # OR the checkpointed state delta, so "no PII verbatim in persisted bytes" holds on the
+    # non-repudiation trail too. verb is a constrained arbitration enum, interrupt_id a UUID,
+    # and ts a timestamp — none is free text, so none is scrubbed (scrubbing verb could
+    # corrupt a valid HitlVerb).
     hitl = {
         "verb": decision.get("verb", "APPROVE"),
-        "actor": decision.get("actor", "<unknown>"),
-        "reason": decision.get("reason", ""),
+        "actor": scrub_string(decision.get("actor", "<unknown>"), source="hitl_decision"),
+        "reason": scrub_string(decision.get("reason", ""), source="hitl_decision"),
         "interrupt_id": decision.get("interrupt_id", "<unknown>"),
         "ts": _now(),
     }
-    append_decision(hitl)  # durable non-repudiation trail (fail-open)
+    append_decision(hitl)  # durable non-repudiation trail (fail-open) — now scrubbed
     return {gate: hitl, "decision_record": [hitl]}
 
 

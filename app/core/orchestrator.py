@@ -24,8 +24,10 @@ import asyncio
 import logging
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from app.core.sandbox import AbstractSandbox
@@ -72,6 +74,42 @@ def _scrubbed_sandbox_env(extra: Optional[dict[str, Any]] = None) -> dict[str, s
             env[k] = str(v)
     # Defensive: drop anything secret-shaped that slipped through the allowlist/extras.
     return {k: v for k, v in env.items() if not _SECRET_KEY_RE.search(k)}
+
+
+# SP-05 (F-1) per-phase egress DECISION (default-deny). The PRD posture is TEST=no egress,
+# BUILD=SP-00g allowlist — but a LIVE allow-listed egress channel needs a netns/gVisor
+# backend (LocalSubprocessSandbox HARD-REFUSES network_allowed=True pre-spawn) and is
+# integration-tier/deferred. So the live allowlist here is EMPTY: every phase → no egress.
+# Keying on the schema phase Literals (research/draft/refine/verify/ship — NOT an invented
+# 'build'/'test') turns the old hardcoded `network_allowed=False` into an auditable,
+# default-deny DATA decision; any future widening of this set trips a red test in review.
+_EGRESS_ALLOWED_PHASES: frozenset[str] = frozenset()
+
+
+def _egress_for_phase(phase: str) -> bool:
+    """Whether a node in ``phase`` may have sandbox egress. Default-deny: unknown/any
+    phase → False until an allow-listed BUILD-egress backend (SP-00g + netns/gVisor) lands."""
+    return phase in _EGRESS_ALLOWED_PHASES
+
+
+def _safe_sandbox_workdir(raw: Any) -> Optional[Path]:
+    """Validate a caller-supplied sandbox workdir (the per-node git worktree, SP-05 F-1).
+
+    HARD GUARD: only forward a workdir that resolves UNDER the system tempdir (where
+    WorkspaceSession materialises the ephemeral worktree). Anything else — most importantly
+    the live repo root — is REFUSED (returns None → run() uses its own tempdir), so a
+    malformed constraint can never make the sandbox child run with the harness checkout as
+    its writable cwd."""
+    if not raw:
+        return None
+    try:
+        wd = Path(str(raw)).resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+    except (OSError, ValueError):
+        return None
+    if wd == tmp_root or tmp_root in wd.parents:
+        return wd if wd.is_dir() else None
+    return None
 
 
 @dataclass
@@ -393,17 +431,22 @@ async def _execute_sandboxed(
     sandbox: AbstractSandbox,
     timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
 ) -> ExecutionResult:
-    """SP-05 (slice 1): run the node's command in a REAL sandbox child — not in-process.
+    """SP-05: run the node's command in a REAL sandbox child — not in-process.
 
-    The command is ``request.constraints["sandbox_cmd"]`` (a ``list[str]``). The child
-    runs with a default-deny scrubbed env (no harness secrets) and ``network_allowed=False``
-    (TEST-phase egress posture; per-phase BUILD egress is a later SP-05 slice). The real
-    subprocess exit code drives the status (anti-drift), never agent-emitted output text.
+    The command is ``request.constraints["sandbox_cmd"]`` (a ``list[str]``); when the
+    execute node provides ``request.constraints["workdir"]`` (the per-node git worktree,
+    F-1) it is forwarded as the child's cwd AFTER a hard guard (must resolve under the
+    system tempdir — never the live repo). The child runs with a default-deny scrubbed env
+    (no harness secrets); egress is a per-phase DECISION (``_egress_for_phase``, default-deny
+    — empty live allowlist, so every phase is denied this slice). The real subprocess exit
+    code drives the status (anti-drift), never agent-emitted output text.
 
-    Deferred to later SP-05 slices: deriving the command from Hermes
-    (``lib/hermes_bridge.py``), per-node git worktree (SP-05b), per-role tool allowlist,
-    per-phase egress allowlist (SP-00g). This slice only proves no-in-process-exec +
-    no-secrets and makes ``AbstractSandbox.run()`` callgraph-reachable (C4).
+    Deferred to later SP-05 slices: deriving the command from the external Hermes binary
+    (``lib/hermes_bridge.py`` is a host-exec that raises + inherits unscrubbed env — NOT
+    wired), per-node cross-isolation for fan-out (SP-05b), per-role tool allowlist, LIVE
+    BUILD egress allowlist enforcement (SP-00g + netns/gVisor, integration-tier), kernel
+    FS-confinement/EROFS (SP-05c). This node's writable-worktree diff is scope-scored by
+    eval_gate (SP-06), NOT kernel-confined.
     """
     t0 = time.monotonic()
     cmd = request.constraints.get("sandbox_cmd")
@@ -418,6 +461,7 @@ async def _execute_sandboxed(
         )
 
     env = _scrubbed_sandbox_env(request.constraints.get("sandbox_env"))
+    workdir = _safe_sandbox_workdir(request.constraints.get("workdir"))
     effective_timeout = (
         min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
     )
@@ -425,9 +469,11 @@ async def _execute_sandboxed(
     try:
         result = await sandbox.run(
             cmd=cmd,
+            workdir=workdir,
             env=env,
             timeout_s=effective_timeout,
-            network_allowed=False,  # SP-05: the sandbox child has NO egress (TEST posture)
+            # SP-05 F-1: per-phase egress (default-deny; empty live allowlist → False here).
+            network_allowed=_egress_for_phase(request.phase),
         )
     except asyncio.CancelledError:
         raise

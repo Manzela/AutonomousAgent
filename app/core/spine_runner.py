@@ -18,6 +18,7 @@ from langgraph.types import Command
 from app.core import graph_state as gs
 from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
+from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
 from lib.scrubber import scrub_string
 
@@ -47,11 +48,18 @@ class SpineRunner:
         checkpointer: AbstractCheckpointer,
         *,
         capability: Optional[AgentCapability] = None,
+        sandbox: Optional[AbstractSandbox] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
         self._capability = capability
-        self._app = build_spine(self._saver, capability=capability)
+        self._sandbox = sandbox
+        # SP-05 (F-1): thread the sandbox to build_spine so the LIVE entrypoint actually runs
+        # execute in a sandbox (production previously ran sandbox=None — the in-process path).
+        # sandbox stays a build_spine closure arg (like capability) — NEVER in SpineState, so
+        # assert_serializable_state's no-callable invariant is preserved. sandbox=None keeps
+        # the legacy in-process skeleton for every existing caller.
+        self._app = build_spine(self._saver, capability=capability, sandbox=sandbox)
 
     @property
     def durability(self) -> DurabilityMode:

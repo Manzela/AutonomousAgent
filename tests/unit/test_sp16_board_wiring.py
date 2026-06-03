@@ -53,9 +53,9 @@ def _node(nid, deps=()):
     }
 
 
-def _selective_capability(fail_ids: set[str]) -> AgentCapability:
+def _status_capability(status_by_id: dict[str, TaskStatus]) -> AgentCapability:
     async def _invoke(req):
-        status = TaskStatus.FAILED if req.task_id in fail_ids else TaskStatus.COMPLETED
+        status = status_by_id.get(req.task_id, TaskStatus.COMPLETED)
         return ExecutionResult(task_id=req.task_id, status=status)
 
     return AgentCapability(
@@ -111,13 +111,15 @@ async def test_board_none_no_projection(tmp_path, monkeypatch):
     assert "board_cards" not in out
 
 
-# ── O4 fan_out reflects execution: dispatched -> running; a FAILED leaf -> blocked; never done ──
+# ── O4 fan_out reflects execution: COMPLETED -> running; every NON-completed leaf -> blocked ──
 async def test_fan_out_transitions_card_status():
     board = InMemoryBoard()
-    plan = {"nodes": [_node("n0"), _node("n1")], "edges": []}
+    plan = {"nodes": [_node("n0"), _node("n1"), _node("n2")], "edges": []}
     proj = project_plan(board, plan, thread_id="t")
     board_cards = {"parent": proj.parent_id, "nodes": proj.node_cards}
-    nodes = _build_nodes(_selective_capability({"n1"}), sandbox=None, board=board)
+    # n0 COMPLETED -> running; n1 FAILED + n2 REFUSED (both non-completed) -> blocked.
+    cap = _status_capability({"n1": TaskStatus.FAILED, "n2": TaskStatus.REFUSED})
+    nodes = _build_nodes(cap, sandbox=None, board=board)
     state = {
         "thread_id": "t",
         "goal": "g",
@@ -128,6 +130,9 @@ async def test_fan_out_transitions_card_status():
     await nodes["fan_out"](state, _CFG)
     assert board.get_card(proj.node_cards["n0"]).status == "running"  # COMPLETED -> running
     assert board.get_card(proj.node_cards["n1"]).status == "blocked"  # FAILED -> blocked
+    assert (
+        board.get_card(proj.node_cards["n2"]).status == "blocked"
+    )  # REFUSED -> blocked (RED: was "running")
     # C14: fan_out NEVER marks a card done (done is gate-derived at ship — deferred)
     assert all(c.status != "done" for c in board.list_cards(thread_id="t"))
 

@@ -511,12 +511,16 @@ def _build_nodes(
 
     async def decompose(state: SpineState, config) -> dict:
         """SP-02: decompose the LOCKED TaskSpec into a TaskGraph DAG, wiring the
-        InMemoryDecomposer into the live spine flow (seal_spec -> decompose -> execute).
+        InMemoryDecomposer into the live spine flow (seal_spec -> decompose -> fan_out).
 
-        A pure, deterministic read of the sha-pinned locked spec into ``state['plan']`` —
-        no LLM, no side effect (so no ledger guard needed; re-running yields the same plan).
-        The parallel fan-out OVER this plan (ready-node dispatch) is the deferred SP-11
-        layer; today ``execute`` still runs the single skeleton leaf."""
+        The plan itself is a pure, deterministic read of the sha-pinned locked spec into
+        ``state['plan']`` (no LLM). SP-16 slice-2 adds ONE outbound side-effect on the
+        ``board is not None`` path: it projects the plan onto the kanban board (creating cards).
+        That projection is idempotent across a CHECKPOINTED resume (guarded by
+        ``state['board_cards']``), but the card create is at-least-once across a crash STRICTLY
+        between create_card and the checkpoint commit — so the durable Hermes adapter owes an
+        ``apply_once`` ledger (the in-memory CI board discards on crash). For ``board is None``
+        (every existing direct caller) there is NO side effect and re-running yields the same plan."""
         spec_id = state.get("spec_id")
         if not spec_id:
             return {"audit": ["decompose: no spec_id in state; skipped"]}
@@ -659,10 +663,12 @@ def _build_nodes(
 
         outcomes = await asyncio.gather(*[_one(r) for r in reqs])  # gather IS the super-step join
 
-        # SP-16 (slice 2): reflect this wave's execution on the board (OUTBOUND) — a dispatched
-        # node's card -> running, a FAILED leaf -> blocked. `done` is NEVER set here (C14: done is
-        # gate-derived at the ship gate, DEFERRED); a projection hiccup degrades, never aborts the
-        # join. board=None / no prior projection => no-op (byte-identical to pre-SP-16).
+        # SP-16 (slice 2): reflect this wave's execution on the board (OUTBOUND) — a COMPLETED
+        # node's card -> running (in progress toward the ship gate), every NON-completed leaf
+        # (FAILED/REFUSED/CANCELED terminal failures + parkable INPUT_REQUIRED) -> blocked (needs
+        # attention). `done` is NEVER set here (C14: done is gate-derived at the ship gate,
+        # DEFERRED); a projection hiccup degrades, never aborts the join. board=None / no prior
+        # projection => no-op (byte-identical to pre-SP-16). Richer per-node statuses are slice-3.
         if board is not None and state.get("board_cards"):
             node_cards = (state.get("board_cards") or {}).get("nodes", {})
             for o in outcomes:
@@ -670,10 +676,10 @@ def _build_nodes(
                 if not cid:
                     continue
                 try:
-                    if o["result"].status == TaskStatus.FAILED:
-                        board.set_status(cid, "blocked")
-                    else:
+                    if o["result"].status == TaskStatus.COMPLETED:
                         board.set_status(cid, "running")
+                    else:
+                        board.set_status(cid, "blocked")
                 except BoardError:
                     pass  # card missing/invalid — a board glitch must not abort the super-step
 

@@ -13,7 +13,8 @@
 #   thread_id, goal) ONLY when state['board_cards'] is absent (idempotent — a re-run/resume never
 #   duplicates cards) and records {"parent": <goal card>, "nodes": {node_id: card_id}} in
 #   SpineState.board_cards. The `fan_out` super-step reflects execution OUTBOUND: a dispatched
-#   node's card -> running, a FAILED leaf -> blocked; a board glitch degrades, never aborts the
+#   node's card -> running, every NON-completed leaf (failed/refused/canceled/input_required) -> blocked;
+#   a board glitch degrades, never aborts the
 #   join. `done` is NEVER set by the spine (C14: done is gate-derived at the ship gate, DEFERRED).
 #   board=None (every existing direct caller) => NO projection => byte-identical to pre-SP-16.
 #   OUTBOUND only (C15): a spine node WRITES the projection but never READS board state (inbound is
@@ -51,8 +52,9 @@ assertions:
 
   - id: sp16b-fanout-transitions-live-outbound
     description: >
-      fan_out reflects execution on the board: a dispatched node's card -> running, a FAILED leaf ->
-      blocked, and NO card is ever marked `done` (C14 — done is gate-derived at ship, deferred).
+      fan_out reflects execution on the board: a COMPLETED node's card -> running, every NON-completed
+      leaf (FAILED/REFUSED/CANCELED + parkable INPUT_REQUIRED) -> blocked, and NO card is ever marked
+      `done` (C14 — done is gate-derived at ship, deferred).
       LIVE end-to-end: a SpineRunner-driven run (start -> sign_off APPROVE -> seal_spec -> decompose)
       renders the DAG as cards on the injected board (a parent goal card + >=1 child node card); the
       SpineRunner default board is an InMemoryBoard (the entrypoint always projects). OUTBOUND-ONLY

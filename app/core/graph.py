@@ -43,7 +43,13 @@ from langgraph.types import interrupt
 from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
 from app.core import graph_state as gs
-from app.core.board import AbstractBoard, BoardError, project_plan
+from app.core.board import (
+    AbstractBoard,
+    BoardError,
+    GateNotPassedError,
+    GateReader,
+    project_plan,
+)
 from app.core.decision_record import append_decision
 from app.core.decompose import ready_nodes, task_graph_to_requests
 from app.core.eval_gate import scope_root_verdict
@@ -317,7 +323,12 @@ def _build_nodes(
     lease: Optional[BranchLease] = None,
     budget_usd: Optional[float] = None,
     board: Optional[AbstractBoard] = None,
+    gate: Optional[GateReader] = None,
 ):
+    # SP-16 (slice 3): the C14 GateReader the ship_effect node consults to close the root goal card
+    # (`done` is gate-derived — the agent never self-marks it). gate=None (default) => the root card
+    # is NOT closed (byte-identical to pre-slice-3); SpineRunner injects an AlwaysReadyGate CI stub
+    # so the live entrypoint closes shipped roots. The real `gh pr checks` GateReader is DEFERRED.
     # SP-16 (slice 2): the kanban board the spine projects its DAG onto (decompose -> cards,
     # fan_out -> card status). board=None (default) => NO projection — byte-identical to pre-SP-16,
     # so every existing caller is unaffected; SpineRunner injects an InMemoryBoard so the LIVE
@@ -797,6 +808,19 @@ def _build_nodes(
                 "ref": f"agent/{tid}",
                 "digest": _digest(state),
             }
+            # SP-16 (slice 3): the goal SHIPPED — close the root card, GATE-DERIVED (C14). The agent
+            # never self-marks `done`: mark_done consults the injected GateReader, so the root closes
+            # ONLY if the required checks are green (a failing/unavailable gate leaves it OPEN —
+            # fail-safe), and only INSIDE the exactly-once `if "ledger"` (effect-ran) branch so a
+            # skipped re-entry never re-consults the gate (mark_done is also idempotent on done).
+            # gate=None / board=None / no root card => no-op (byte-identical to pre-slice-3). C14:
+            # the CI stub closes it; the real `gh pr checks` reader against the shipped PR is deferred.
+            parent_card_id = (state.get("board_cards") or {}).get("parent")
+            if board is not None and gate is not None and parent_card_id:
+                try:
+                    board.mark_done(parent_card_id, gate=gate)
+                except (GateNotPassedError, BoardError):
+                    pass  # checks not green / card missing — the root stays open; never crash the ship
         return delta
 
     return {
@@ -912,6 +936,7 @@ def build_spine(
     lease: Optional[BranchLease] = None,
     budget_usd: Optional[float] = None,
     board: Optional[AbstractBoard] = None,
+    gate: Optional[GateReader] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -923,7 +948,7 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board)
+    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board, gate)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)

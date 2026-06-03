@@ -1,0 +1,113 @@
+# Acceptance — SP-R2 · Per-graph token/cost budget (INLINE fan-out enforcement)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-R2 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L298):
+#   "inline budget pre-empts fan_out when exceeded (independent of the daily poller).
+#    Proof: test output showing pre-emption fires."
+# Named as the deferred budget concern in SP-11.yaml ("BUDGET PRE-EMPTION (SP-R2 per-graph
+# aggregate-SPEND cap pre-empts mid-fan-out)") and SP-R6.yaml ("the SP-R2 aggregate-SPEND cap
+# ... blocked on SP-11"); SP-11 merged (#261), so SP-R2 is now unblocked.
+#
+# MECHANISM (hermetic — pure decision over in-state spend, no DB/docker/LLM/net):
+#   lib/durability/graph_budget.py — aggregate_spend() sums the per-node cost_accumulator
+#   ('<thread_id>|<node_id>' -> cost_usd, the SP-11 accumulator) into this graph's cumulative
+#   spend; budget_verdict() is the pure pre-emption decision (cap None/<=0 => OFF; PRE-EMPT once
+#   spend >= cap, a deliberate fail-safe boundary). app/core/graph.py fan_out() calls it at TWO
+#   points bracketing the dispatch:
+#     (1) PRE-dispatch ADMISSION — if PRIOR waves already reached the cap, dispatch NOTHING this
+#         wave (protects a resumed graph + every wave after the first).
+#     (2) POST-dispatch ENFORCEMENT — if THIS wave pushed cumulative spend to/over the cap, stamp
+#         the verdict so _route_after_fan_out parks the graph at __halt__ BEFORE eval_gate/ship —
+#         an over-budget run never SHIPS, even on the single live wave (the spine has no
+#         eval_gate->fan_out loop yet — SP-11-deferred — so the first wave is the only wave).
+#   SpineRunner injects SPINE_BUDGET_USD; None/non-positive => OFF => byte-identical to pre-SP-R2.
+#   INDEPENDENT of the F21 DAILY watchdog (lib/durability/budget_watchdog.py): that polls the
+#   LiteLLM spend_logs Postgres for the UTC-day aggregate across ALL graphs and touches
+#   /data/HALT_F21; SP-R2 imports none of it (proven behaviourally + over import statements).
+#
+# DEFERRED (named, NOT silently dropped):
+#   - MID-fan-out IN-FLIGHT cancellation: SP-R2 bounds overspend to at most the ONE crossing wave
+#     (its spend is already incurred when POST-dispatch sees it) and then halts before ship;
+#     cancelling already-gather'd leaves the instant a running tally crosses the cap (an
+#     asyncio.gather cancel), or refusing the first wave via a pre-run cost oracle, is separate.
+#     The GRAPH-level eval_gate->fan_out loop that drives the multi-wave admission path end-to-end
+#     is the SP-11-deferred driver; the multi-wave oracle re-drives fan_out directly to prove it.
+#   - The LIVE operator-escalation interrupt (PRD §4 anti-drift clause (d) "on cap-without-pass,
+#     escalate to the operator" / SP-27): SP-R2 parks fail-safe at __halt__; the interactive
+#     "await approve-more-budget" interrupt lands with SP-27.
+#   - TOKEN-denominated budgets: this slice caps USD (the cost_usd the executor reports); a token
+#     cap reusing the same GraphBudgetVerdict shape is additive.
+
+task: SP-R2
+title: "per-graph USD budget enforces fan_out (pre-dispatch admission + post-dispatch park-before-ship over the accumulated cost_accumulator; OFF by default; independent of the F21 daily poller)"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: spr2-pure-budget-primitive
+    description: >
+      The pure decision (lib/durability/graph_budget.py): aggregate_spend sums the per-node
+      cost_accumulator (None/empty -> 0.0; non-numeric values skipped defensively). budget_verdict
+      is OFF for cap None AND cap <= 0 (a misconfig is OFF, NOT "zero spend allowed" — RED would
+      pre-empt); PRE-EMPTS when spend >= cap including the EXACT boundary spend == cap (fail-safe
+      >=; RED: a '>' boundary would let spend==cap dispatch one more wave); does NOT pre-empt
+      strictly under the cap; the reason is a plain PII-free persistable string.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_graph_budget.py -q
+    expect_exit: 0
+
+  - id: spr2-fan-out-enforcement
+    description: >
+      fan_out budget enforcement: a single wave whose OWN cost exceeds the cap RUNS (cost sunk) but
+      is flagged preempt (POST-dispatch — the live single-wave guard; RED pre-dispatch-only would
+      dispatch with preempt False and ship); prior-wave spend over the cap dispatches NOTHING
+      (PRE-dispatch admission); a wave UNDER the cap dispatches and records the under-budget posture
+      (RED control); cap UNSET => OFF => NO budget_verdict key and dispatch despite a huge seeded
+      spend (back-compat, byte-identical to pre-SP-R2); the pre-emption path NEVER reaches the F21
+      daily watchdog (poisoned get_daily_spend_usd is never called + no spend_logs/psycopg/
+      budget_watchdog import); and across waves the under-budget wave advances (n0), the crossing
+      wave dispatches THEN pre-empts (n1 + post-dispatch preempt), and a further over-budget
+      re-drive is admission-skipped (n2 never runs).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp_r2_budget_preempt.py::test_post_dispatch_halts_single_overbudget_wave \
+        tests/unit/test_sp_r2_budget_preempt.py::test_pre_dispatch_skips_when_prior_over_budget \
+        tests/unit/test_sp_r2_budget_preempt.py::test_under_budget_dispatches_and_records_posture \
+        tests/unit/test_sp_r2_budget_preempt.py::test_budget_off_when_unset_dispatches_despite_spend \
+        tests/unit/test_sp_r2_budget_preempt.py::test_preempt_independent_of_daily_watchdog \
+        tests/unit/test_sp_r2_budget_preempt.py::test_advances_then_preempts_across_waves -q
+    expect_exit: 0
+
+  - id: spr2-routing-and-live-halt
+    description: >
+      Fail-safe routing + the LIVE end-to-end proof: _route_after_fan_out returns __halt__ on a
+      pre-empt verdict and eval_gate otherwise (incl. the absent/OFF case); build_spine wires
+      fan_out through the SP-R2 gate (the unconditional fan_out -> eval_gate edge is GONE); and the
+      COMPILED spine (driven through SpineRunner with SPINE_BUDGET_USD set + a costly capability)
+      HALTS an over-budget run — it reaches END at __halt__ with NO ship_gate interrupt and NO ship
+      receipt in the ledger (refutes the dead-wire: the gate bites in the real graph, not just a
+      hand-seeded fan_out).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp_r2_budget_preempt.py::test_route_after_fan_out \
+        tests/unit/test_sp_r2_budget_preempt.py::test_build_spine_wires_fan_out_conditionally \
+        tests/unit/test_sp_r2_budget_preempt.py::test_live_spine_halts_over_budget_run_before_ship -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    18 red-green oracles (tests/unit/test_graph_budget.py x9 + tests/unit/test_sp_r2_budget_preempt.py
+    x9) over lib/durability/graph_budget.py (aggregate_spend + budget_verdict) and app/core/graph.py
+    fan_out + _route_after_fan_out + halt, wired via SpineRunner._default_budget (SPINE_BUDGET_USD).
+    Proven: pure pre-emption decision (OFF for None/<=0, >= boundary incl. spend==cap, defensive
+    sum); POST-dispatch park-before-ship on a single over-budget wave (the live guard) with an
+    under-budget RED control; PRE-dispatch admission skip on prior overspend; OFF-by-default
+    back-compat (no verdict key, byte-identical delta); independence from the F21 daily watchdog
+    (poisoned poller never called + no DB/HALT imports); cross-wave advance->cross->admission-skip
+    (n0 dispatch, n1 dispatch+preempt, n2 protected); fail-safe routing + the conditional fan_out
+    edge; and the LIVE compiled-spine end-to-end halt (reaches __halt__, no ship interrupt, no ship
+    receipt). DEFERRED (named in header): mid-fan-out in-flight cancellation, the live operator-
+    escalation interrupt (SP-27), token-denominated budgets, and the graph-level multi-wave loop edge.

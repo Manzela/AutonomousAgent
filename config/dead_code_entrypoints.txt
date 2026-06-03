@@ -188,3 +188,15 @@ lib.evaluators.deepeval_judges:DeterministicDeepEvalJudge
 lib.evaluators.deepeval_judges:LiteLLMVertexJudge
 # scripts.ci.license_dep_gate  (auto-detected via __main__)
 # scripts.ci.run_acceptance    (auto-detected via __main__)
+
+# SP-R2 per-graph budget primitive (lib/durability/graph_budget.py) — aggregate_spend +
+# budget_verdict are called ONLY from the app/core/graph.py fan_out CLOSURE (nested in the
+# private _build_nodes; the AST callgraph cannot trace into closures — the same limitation that
+# lists run_clarification + the InMemory/Vertex adapters above). GraphBudgetVerdict is constructed
+# only inside budget_verdict. All three are genuinely exercised by the 18 SP-R2 oracles
+# (tests/unit/test_graph_budget.py + test_sp_r2_budget_preempt.py) and live in the fan_out budget
+# admission/enforcement path. Unlike GlobalThreadCap/BranchLease (also closure-used) these have NO
+# module-level reference in _build_nodes' body, so they read as unreachable. Operator-reviewed 2026-06-03.
+lib.durability.graph_budget:aggregate_spend
+lib.durability.graph_budget:budget_verdict
+lib.durability.graph_budget:GraphBudgetVerdict

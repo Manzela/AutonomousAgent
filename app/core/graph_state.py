@@ -286,6 +286,11 @@ class SpineState(TypedDict, total=False):
     workspace_refs: Optional[list[WorkspaceRef]]
     # cost / caps
     cost_accumulator: Annotated[dict, _merge_cost]
+    # SP-R2: the per-graph budget verdict the fan_out super-step stamps (GraphBudgetVerdict as a
+    # dict: {preempt, spend_usd, cap_usd, reason}). Last-write — fan_out overwrites it each wave.
+    # Present only when a per-graph budget is CONFIGURED (SPINE_BUDGET_USD); absent => budget OFF.
+    # _route_after_fan_out reads `.preempt` to park an over-budget graph at __halt__ (fail-safe).
+    budget_verdict: Optional[dict]
     fix_attempts: int
     # hygiene
     scrubbed: bool

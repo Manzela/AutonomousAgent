@@ -49,6 +49,10 @@ ActionKind = Literal["seal_spec", "ship"]  # the skeleton's two irreversible eff
 # PRD §5/§8 (L181) SteeringEvent.kind. `override` is an SP-03 ambiguity-report-item enum
 # (C15 L117), DISTINCT from SteeringEvent.kind, so it is NOT a member here.
 SteeringKind = Literal["approve", "reject", "steer", "abort", "answer"]
+# SP-27: mid-flight monitor command verbs. INTERRUPT_FOR_HUMAN parks the run at __halt__ (C10:
+# the monitor never marks done / edits gates / writes code — only a human operator may unblock).
+# INJECT_RAG / SWITCH_TOOL / CHECKPOINT_REPLAN are advisory; future actuator nodes consume them.
+SteerCommandKind = Literal["INTERRUPT_FOR_HUMAN", "INJECT_RAG", "SWITCH_TOOL", "CHECKPOINT_REPLAN"]
 
 # Deterministic arbitration precedence (C15): higher number wins. REJECT/REPLAN beat
 # APPROVE; TIMEOUT maps to the safe default (treated as REJECT-strength).
@@ -89,6 +93,36 @@ class LedgerReceipt(TypedDict):
     action_kind: ActionKind
     node_label: str  # human-readable only — NOT part of the key
     super_step_label: int  # human-readable only — NOT part of the key
+    ts: str
+
+
+class SteerCommand(TypedDict):
+    """SP-27: signal emitted by the monitor node at each fan_out→eval_gate boundary.
+    `kind` drives the router: INTERRUPT_FOR_HUMAN → __halt__ (C10 invariant: only a human
+    may unblock); INJECT_RAG/SWITCH_TOOL/CHECKPOINT_REPLAN are advisory (future actuators).
+    `step_id` is a human-readable label for the wave/trigger. `thread_id` scopes the record.
+    Accumulated in `steer_commands` via the _append reducer (one list per graph lifetime)."""
+
+    thread_id: str
+    step_id: str  # e.g. "monitor-fix3" or "monitor-loop-key|0|fix"
+    kind: SteerCommandKind
+    reason: str  # human-readable signal description
+    ts: str
+
+
+class AgentNote(TypedDict):
+    """SP-27: per-iteration observation record the monitor (or any observing node) may emit.
+    Provides a structured audit trail of the agent's in-flight state for post-hoc analysis.
+    Deferred: live streaming via LangGraph stream_mode → Langfuse (SP-17 consumer)."""
+
+    step_id: str
+    hypothesis: str  # what the agent believes is blocking progress
+    next_action: str  # what the agent intends to do next
+    confidence: float  # 0.0–1.0 (0 = no idea; 1 = certain)
+    blockers: list  # list[str] — named blockers
+    evidence_needed: list  # list[str] — what evidence would resolve uncertainty
+    tool: str  # last tool invoked (informational)
+    files_touched: list  # list[str] — paths modified this iteration
     ts: str
 
 
@@ -274,6 +308,12 @@ class SpineState(TypedDict, total=False):
     audit: Annotated[list, _append]
     # steering (DoD-4) — full bus deferred; reducer + arbitration live now
     steering_events: Annotated[list, _merge_steering]
+    # SP-27: mid-flight monitor SteerCommands — LAST-WRITE (no reducer). The monitor node
+    # overwrites this on EVERY run: non-empty on a detected signal, empty list on a healthy wave.
+    # This is intentional: _route_after_monitor must see ONLY the current wave's signals so a
+    # healthy resume after operator intervention clears the prior INTERRUPT_FOR_HUMAN (C9 B1 fix:
+    # _append would make a prior halt sticky even on a subsequently healthy wave).
+    steer_commands: Optional[list]
     # replan (continue-as-new) — reserved now, marked in Task 6
     replan_parent: Optional[str]
     pre_decompose_checkpoint_id: Optional[str]

@@ -153,11 +153,12 @@ async def test_advances_then_preempts_across_waves():
     assert "n2" not in done_tasks  # n2 never ran — budget protected it
 
 
-# ── O7 routing: a pre-empt verdict routes fail-safe to __halt__; otherwise eval_gate ──
+# ── O7 routing: a pre-empt verdict routes fail-safe to __halt__; otherwise monitor (SP-27) ──
 def test_route_after_fan_out():
     assert _route_after_fan_out({"budget_verdict": {"preempt": True}}) == "__halt__"
-    assert _route_after_fan_out({"budget_verdict": {"preempt": False}}) == "eval_gate"
-    assert _route_after_fan_out({}) == "eval_gate"  # budget OFF / absent -> normal path
+    # SP-27: non-preempted path now routes to "monitor" (was "eval_gate" pre-SP-27)
+    assert _route_after_fan_out({"budget_verdict": {"preempt": False}}) == "monitor"
+    assert _route_after_fan_out({}) == "monitor"  # budget OFF / absent -> monitor path
 
 
 # ── O8 assembly: build_spine wires fan_out CONDITIONALLY (no unconditional fan_out->eval_gate) ──

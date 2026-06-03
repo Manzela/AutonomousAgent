@@ -2,9 +2,16 @@
 
 Topology (interrupt-split — never co-locate interrupt() with an EXTERNAL side-effect):
 
-    goal_intake -> sign_off[interrupt] -> seal_spec -> decompose -> execute
-                -> eval_gate --[pass]--> ship_gate[interrupt] -> ship_effect -> END
+    goal_intake -> clarify ⇄[interrupt, ≤5 Qs/round] -> sign_off[interrupt] -> seal_spec
+                -> decompose -> execute -> eval_gate --[pass]--> ship_gate[interrupt]
+                -> ship_effect -> END
                             --[out-of-scope]--> __halt__
+
+SP-03 clarify ⇄ Q-gen (PRD §3 journey / §6 SP-03): the clarify node drafts the PRD
+via the injected spec-drafter and loops (ask_next) until the draft locks, then sign_off
+gates on the DRAFTED PRD. PRD reconciliation: §5's diagram sketches decompose before
+sign-off, but SP-04 ("interrupt gate AFTER clarify; nothing builds before resume") + the
+§3 primary journey put approve before decompose — so sign_off stays before seal_spec.
 
 Control flow is ALWAYS code-decided via conditional edges over the deterministic
 HITL verb (and, at eval_gate, the deterministic SP-06 scope verdict). No top-level
@@ -29,6 +36,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.adapters.inmemory.decompose import InMemoryDecomposer
+from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
 from app.core import graph_state as gs
 from app.core.decision_record import append_decision
 from app.core.eval_gate import scope_root_verdict
@@ -36,6 +44,8 @@ from app.core.graph_state import SpineState, TaskGraph
 from app.core.orchestrator import execute as orchestrate
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
+from app.core.spec_drafter import AbstractSpecDrafter
+from lib.anchors.clarification_driver import run_clarification_round
 from lib.anchors.spec_store import SpecStore
 from lib.anchors.task_spec import Scope, TaskSpec
 from lib.scrubber import scrub_string
@@ -157,8 +167,17 @@ def _scrub_persisted(obj):
     return obj
 
 
-# ── nodes (closure over the injected capability + sandbox — no callables in state) ──
-def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox] = None):
+# ── nodes (closure over the injected capability + sandbox + drafter — no callables in state) ──
+def _build_nodes(
+    capability: AgentCapability,
+    sandbox: Optional[AbstractSandbox] = None,
+    drafter: Optional[AbstractSpecDrafter] = None,
+):
+    # SP-03: the clarification spec-drafter is injected (InMemory deterministic in CI;
+    # the DEFERRED VertexSpecDrafter in prod). Default to the hermetic in-memory drafter
+    # so the spine stays runnable without live Vertex (CLAUDE.md hybrid-adapter rule).
+    drafter = drafter or InMemorySpecDrafter()
+
     async def goal_intake(state: SpineState, config) -> dict:
         tid = config["configurable"]["thread_id"]
         return {
@@ -168,11 +187,129 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
             "audit": [f"goal_intake thread={tid}"],
         }
 
+    async def clarify(state: SpineState, config) -> dict:
+        """SP-03: the clarify ⇄ Q-gen loop (PRD §3 primary journey / §5 / SP-03).
+
+        Runs the injected spec-drafter through ``decide_next_action`` each round:
+          - action == ask_next (open ambiguity, confidence below the lock threshold) →
+            ``interrupt()`` surfaces the typed clarifying questions (≤5/round, each
+            referencing its planted token) + the ambiguity report (C18 challenges) +
+            the applied_standards (R5 overridable defaults) + auto-resolved assumptions;
+            the operator's answers (keyed by question token) accumulate in
+            ``clarifications`` and the conditional edge loops back for another round.
+          - action == lock/draft_lock/noop/escalate (or NO questions) → the round
+            FINALISES the draft into ``spec_draft`` and the edge proceeds to sign_off.
+
+        Termination is guaranteed: the drafter's confidence rises only as tracked
+        ambiguities are resolved, and the hybrid circuit-breaker draft_locks once the
+        question budget (MAX_CLARIFICATION_QUESTIONS) is exhausted — so an operator who
+        never resolves still converges to draft_lock rather than looping forever.
+
+        Topology note (PRD reconciliation): §5's diagram sketches decompose BEFORE
+        sign-off, but SP-04 is explicit — "an interrupt() gate AFTER clarify; nothing
+        builds before resume" — and the §3 primary journey is goal→clarify→draft→
+        approve→decompose. So clarify sits between goal_intake and sign_off, and
+        sign_off gates on the DRAFTED PRD (not the raw goal); nothing is sealed/built
+        before the operator approves.
+        """
+        goal = state.get("goal", "")
+        prior = state.get("clarifications") or []
+        # Accumulate answers + the cumulative question budget across prior rounds.
+        answers: dict[str, str] = {}
+        questions_asked = 0
+        for entry in prior:
+            answers.update(entry.get("answers") or {})
+            questions_asked += len(entry.get("questions") or [])
+        round_index = len(prior)
+
+        outcome = run_clarification_round(
+            goal,
+            drafter=drafter,
+            questions_asked=questions_asked,
+            answers=answers,
+            round_index=round_index,
+        )
+
+        if outcome.action.kind == "ask_next" and outcome.questions:
+            resume = interrupt(
+                {
+                    "gate": "clarify",
+                    "round": round_index,
+                    "questions": [q.model_dump() for q in outcome.questions],
+                    "ambiguities": [a.model_dump() for a in outcome.ambiguities],
+                    "applied_standards": [s.model_dump() for s in outcome.applied_standards],
+                    "assumptions": [a.model_dump() for a in outcome.assumptions],
+                }
+            )
+            # The operator resumes with answers keyed by question token. Drop the
+            # interrupt_id the runner stamps onto dict resumes (it matches no token).
+            new_answers = (
+                {k: v for k, v in (resume or {}).items() if k != "interrupt_id"}
+                if isinstance(resume, dict)
+                else {}
+            )
+            return _scrub_persisted(
+                {
+                    "clarifications": [
+                        {
+                            "round": round_index,
+                            "questions": [q.model_dump() for q in outcome.questions],
+                            "answers": new_answers,
+                        }
+                    ],
+                    "audit": [
+                        f"clarify round={round_index} asked={len(outcome.questions)} "
+                        f"action=ask_next conf={outcome.confidence:.2f}"
+                    ],
+                }
+            )
+
+        # Locked / draft_locked / noop / escalate (or ask_next with no questions):
+        # finalise the drafted PRD. spec_draft carries the TaskSpec fields seal_spec
+        # locks PLUS the surfaced report (ambiguities/applied_standards/assumptions)
+        # sign_off shows the operator. (Persisting applied_standards/assumptions INTO
+        # the locked TaskSpec — PRD §6 SP-03 (1.1) override-status — needs a TaskSpec
+        # schema field + a C8 re-pin and is DEFERRED to its own slice.)
+        d = outcome.draft
+        spec_draft = {
+            "title": d.title,
+            "intent": d.intent,
+            "acceptance_criteria": list(d.acceptance_criteria),
+            "in_scope": list(d.in_scope),
+            "out_of_scope": list(d.out_of_scope),
+            "success_metrics": list(d.success_metrics),
+            "constraints": list(d.constraints),
+            "ambiguities": [a.model_dump() for a in outcome.ambiguities],
+            "applied_standards": [s.model_dump() for s in outcome.applied_standards],
+            "assumptions": [a.model_dump() for a in outcome.assumptions],
+            "confidence": outcome.confidence,
+            "lock_action": outcome.action.kind,
+            "lock_reason": outcome.action.reason,
+        }
+        return _scrub_persisted(
+            {
+                "spec_draft": spec_draft,
+                "audit": [
+                    f"clarify locked round={round_index} action={outcome.action.kind} "
+                    f"conf={outcome.confidence:.2f} questions=0"
+                ],
+            }
+        )
+
     async def sign_off(state: SpineState, config) -> dict:
         """PURE interrupt node — pauses only; the decision record append runs once
-        on the completing resume pass (after interrupt())."""
+        on the completing resume pass (after interrupt()).
+
+        SP-03/SP-04: the operator approves the DRAFTED PRD (spec_draft) the clarify
+        loop produced — the ambiguity report + applied_standards (overridable
+        defaults, R5/C18) are surfaced here — NOT the raw goal."""
         decision = interrupt(
-            {"gate": "sign_off", "question": "Approve PRD?", "goal": state.get("goal", "")}
+            {
+                "gate": "sign_off",
+                "question": "Approve the drafted PRD?",
+                "spec_draft": state.get("spec_draft") or {},
+                "goal": state.get("goal", ""),
+            }
         )
         return _record_decision("sign_off", decision)
 
@@ -183,12 +320,23 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
         out: dict = {}
 
         def _effect() -> None:
+            # SP-03: seal the CLARIFIED draft the clarify loop produced (spec_draft),
+            # not the raw goal — each field falls back to the skeleton default when the
+            # drafter left it empty (e.g. the InMemory drafter only fills the TaskSpec
+            # fields for a fully-token-free goal, so a clarified goal uses the defaults).
+            draft = state.get("spec_draft") or {}
+            goal = state.get("goal", "") or "goal"
+            intent = draft.get("intent") or goal
             spec = TaskSpec(
-                title=(state.get("goal", "") or "goal")[:120],
-                intent=state.get("goal", "") or "goal",
-                acceptance_criteria=["operator goal satisfied"],
-                scope=Scope(in_scope=["the requested change"], out_of_scope=["unrelated work"]),
-                success_metrics=["acceptance green on the merged commit"],
+                title=(draft.get("title") or intent or "goal")[:120],
+                intent=intent,
+                acceptance_criteria=draft.get("acceptance_criteria") or ["operator goal satisfied"],
+                scope=Scope(
+                    in_scope=draft.get("in_scope") or ["the requested change"],
+                    out_of_scope=draft.get("out_of_scope") or ["unrelated work"],
+                ),
+                success_metrics=draft.get("success_metrics")
+                or ["acceptance green on the merged commit"],
                 created_by=0,
                 spec_id=_spec_id_for(
                     tid, ptid
@@ -350,6 +498,7 @@ def _build_nodes(capability: AgentCapability, sandbox: Optional[AbstractSandbox]
 
     return {
         "goal_intake": goal_intake,
+        "clarify": clarify,
         "sign_off": sign_off,
         "seal_spec": seal_spec,
         "decompose": decompose,
@@ -372,6 +521,13 @@ def _allowed_globs_from_plan(plan: Optional[TaskGraph]) -> list[str]:
 
 
 # ── conditional routing (code-decided, deterministic on the HITL verb) ──────
+def _route_after_clarify(state: SpineState) -> str:
+    """SP-03 clarify ⇄ loop: keep asking until a round FINALISES the draft (writes
+    ``spec_draft``), then proceed to sign-off ON the drafted PRD. Deterministic on
+    state presence — never an LLM decision."""
+    return "sign_off" if state.get("spec_draft") else "clarify"
+
+
 def _route_after_sign_off(state: SpineState) -> str:
     d = state.get("sign_off")
     verb = d["verb"] if d else "APPROVE"
@@ -436,15 +592,19 @@ def build_spine(
     *,
     capability: Optional[AgentCapability] = None,
     sandbox: Optional[AbstractSandbox] = None,
+    drafter: Optional[AbstractSpecDrafter] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
-    `capability` and `sandbox` are injected here (NOT in state — no callables in
-    state); `capability` defaults to a local stub for the skeleton. When `sandbox`
-    is provided (SP-05), the `execute` node runs its work in that sandbox instead of
-    in-process; default `None` preserves the merged in-process skeleton."""
+    `capability`, `sandbox`, and `drafter` are injected here (NOT in state — no
+    callables in state); `capability` defaults to a local stub for the skeleton. When
+    `sandbox` is provided (SP-05), the `execute` node runs its work in that sandbox
+    instead of in-process. `drafter` (SP-03) defaults to the hermetic InMemory
+    spec-drafter; prod injects the DEFERRED Vertex concretion. The clarify ⇄ Q-gen
+    loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
+    drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox)
+    nodes = _build_nodes(capability, sandbox, drafter)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)
@@ -452,7 +612,12 @@ def build_spine(
     g.add_node("__replan__", replan)
 
     g.add_edge(START, "goal_intake")
-    g.add_edge("goal_intake", "sign_off")
+    g.add_edge("goal_intake", "clarify")
+    g.add_conditional_edges(
+        "clarify",
+        _route_after_clarify,
+        {"clarify": "clarify", "sign_off": "sign_off"},
+    )
     g.add_conditional_edges(
         "sign_off",
         _route_after_sign_off,

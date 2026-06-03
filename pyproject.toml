@@ -61,7 +61,7 @@ dev = [
   "pytest-vcr>=1.0.2",
   "hypothesis>=6.92",
   "inspect-ai>=0.3.0",
-  "deepeval>=1.0.0",
+  "deepeval>=4,<5",  # GEval/Hallucination schema shapes are major-version-coupled (deepeval_judges.py)
   "pyrit>=0.4.0",
   # garak removed by SP-22 — was a dev-only adversarial-probe tool;
   # langgraph is now a DIRECT dep (SP-00) so the garak→langchain→langgraph

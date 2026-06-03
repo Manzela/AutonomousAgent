@@ -19,6 +19,8 @@ from typing import Any, Optional
 from langgraph.types import Command
 
 from app.adapters.inmemory.board import AlwaysReadyGate, InMemoryBoard
+from app.adapters.telegram.adapter import TelegramAdapter
+from app.adapters.telegram.notifier import TelegramNotifier
 from app.core import graph_state as gs
 from app.core.board import AbstractBoard, GateReader
 from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
@@ -114,6 +116,8 @@ class SpineRunner:
         gate: Optional[GateReader] = None,
         bus: Optional[SteeringEventBus] = None,
         kill_switch: Optional[KillSwitch] = None,
+        telegram_adapter: Optional[TelegramAdapter] = None,
+        notifier: Optional[TelegramNotifier] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
@@ -127,6 +131,11 @@ class SpineRunner:
         # and revokes the GitHub App token. None => kill-switch-less skeleton (tests that don't
         # need the panic path). The live KillSwitch is wired by the FastAPI lifespan.
         self._kill_switch = kill_switch
+        # SP-13: the aiogram TelegramAdapter normalises inbound updates to SteeringEvents (C15);
+        # the TelegramNotifier sends exactly-once lifecycle notifications outbound.
+        # None => telegram-less skeleton (tests that don't need the Telegram channel).
+        self._telegram_adapter = telegram_adapter
+        self._notifier = notifier
         # SP-16 (slice 2): the kanban board the LIVE spine projects its DAG onto. Default to an
         # InMemoryBoard so the entrypoint always renders cards (a build_spine closure arg like
         # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the
@@ -230,6 +239,28 @@ class SpineRunner:
                 "KillSwitch not configured; pass kill_switch=KillSwitch(...) to SpineRunner"
             )
         return self._kill_switch
+
+    def require_telegram_adapter(self) -> TelegramAdapter:
+        """Return the injected TelegramAdapter or raise RuntimeError if unconfigured.
+
+        Intended callers: the FastAPI webhook handler that routes inbound Telegram updates
+        to the spine.  Makes TelegramAdapter C4-reachable via this public method.
+        """
+        if not isinstance(self._telegram_adapter, TelegramAdapter):
+            raise RuntimeError(
+                "TelegramAdapter not configured; pass telegram_adapter= to SpineRunner"
+            )
+        return self._telegram_adapter
+
+    def require_notifier(self) -> TelegramNotifier:
+        """Return the injected TelegramNotifier or raise RuntimeError if unconfigured.
+
+        Intended callers: spine nodes that send lifecycle notifications outbound.
+        Makes TelegramNotifier C4-reachable via this public method.
+        """
+        if not isinstance(self._notifier, TelegramNotifier):
+            raise RuntimeError("TelegramNotifier not configured; pass notifier= to SpineRunner")
+        return self._notifier
 
     def get_state(self, thread_id: str):
         return self._app.get_state(self._cfg(thread_id))

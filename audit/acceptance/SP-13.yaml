@@ -1,0 +1,107 @@
+# Acceptance — SP-13 · Conversational Telegram (aiogram 3)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-13 — Telegram is the AUTHORITATIVE lifecycle control channel (C15).
+# app/adapters/telegram/adapter.py normalises inbound Telegram updates (callback_query
+# + text /commands) to SteeringEvents via SteeringEventBus (SP-17 dedup on update_id).
+# app/adapters/telegram/notifier.py sends exactly-once lifecycle notifications outbound
+# (SQLite idempotency ledger, persisted across kill+resume).
+#
+# ORACLE MAP (22 hermetic tests — no real Bot token / no network):
+#
+#   Base oracles:
+#   ①  same update_id twice → count==1 in ledger; second put returns False (dedup).
+#   ②  dedup across kill+resume: new adapter+bus over same db_path → still deduped.
+#   ③  callback_data="approve:iid1" → SteeringEvent(verb=APPROVE, interrupt_id=iid1).
+#   ④  callback_data="reject:iid1"  → SteeringEvent(verb=REJECT).
+#   ⑤  callback_data="abort:iid1"   → SteeringEvent(verb=TIMEOUT).
+#   ⑥  /approve command → APPROVE accepted.
+#   ⑦  /reject  command → REJECT  accepted.
+#   ⑧  /abort   command → TIMEOUT accepted (C15: abort is the halting TIMEOUT verb).
+#   ⑨  unknown callback_data → dropped; ledger untouched.
+#   ⑩  update with no update_id → dropped.
+#
+#   Notifier:
+#   ⑪  notify() sent once; second call same (thread_id, event_key) → False (deduped).
+#   ⑫  notify_gate() sends with inline keyboard; second call → False (deduped).
+#   ⑬  exactly-once across kill+resume: new notifier over same db_path → still deduped.
+#   ⑭  all LIFECYCLE_EVENTS sent exactly once; replay sends count==0 additional calls.
+#   ⑮  different update_ids for the same thread/interrupt are both accepted.
+#
+#   C9 security fix oracles:
+#   ⑯  H1: unauthorized from_id dropped when operator_ids configured.
+#   ⑰  H1: authorized from_id accepted.
+#   ⑱  H1: no operator_ids configured → accepted with WARNING (CI-only posture).
+#   ⑲  H2: callback_data="approve:iid1" encodes iid → effective_iid=iid1 (overrides caller).
+#   ⑳  H2: callback_data="approve" (no iid) → falls back to caller-supplied interrupt_id.
+#   ㉑  M1: concurrent notify() under threading.Barrier(5) → exactly one send (no double-post).
+#   ㉒  M2: non-int update_id (dict/str) → dropped.
+#
+# C9 REVIEW (claude-opus-4-7 — different model class from claude-sonnet-4-6, 2026-06-03):
+#   Round 1 found 2 HIGH blockers:
+#     H1 — no sender authorization: any Telegram user could drive the lifecycle channel.
+#          Fix: operator_ids: frozenset[int] allowlist in TelegramAdapter.__init__.
+#     H2 — interrupt_id caller-supplied with no binding to the keyboard tapped.
+#          Fix: encode interrupt_id in callback_data as "verb:interrupt_id"; adapter
+#          extracts and uses the encoded iid, not the caller-supplied one.
+#   Round 1 also found 3 MEDIUM fixes applied:
+#     M1 — TOCTOU between already_sent() and mark_sent() allows double-post.
+#          Fix: atomic INSERT OR IGNORE + rowcount check in try_claim(); DB is single arbiter.
+#     M2 — non-int update_id (dict/list/str) passes isinstance and becomes dedup key.
+#          Fix: isinstance(update_id, int) guard; reject non-int silently.
+#     M3 — unbounded payload["text"] from forged webhook.
+#          Fix: text[:4096] (Telegram's own limit).
+#   All fixes applied; 7 new oracles added (⑯–㉒); 22 tests total, all passing.
+#
+# DEFERRED (named, NOT silently dropped):
+#   * aiogram Dispatcher + webhook registration (end-to-end bot wiring)
+#   * FSM clarify dialog (free-text question/answer forwarding)
+#   * /pending cross-thread legibility (SP-17 criterion 6 / U-3)
+#   * real Bot API transport (HttpxTransport replacing RecordingTransport in prod)
+
+task: SP-13
+title: "Telegram adapter (aiogram 3) — inbound normaliser + exactly-once notifier (C15)"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp-13-telegram-adapter
+    description: >
+      22 hermetic oracles covering SP-13 acceptance criteria:
+      inbound dedup on update_id (① ②); callback+command verb mapping (③–⑧);
+      unknown/missing update dropped (⑨ ⑩); notifier exactly-once (⑪–⑭);
+      different update_ids accepted independently (⑮);
+      C9 security fixes — H1 sender auth (⑯–⑱), H2 interrupt binding (⑲–⑳),
+      M1 concurrent exactly-once (㉑), M2 non-int update_id guard (㉒).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp13_telegram_adapter.py \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    22 hermetic oracles in tests/unit/test_sp13_telegram_adapter.py.
+    app/adapters/telegram/adapter.py implements TelegramAdapter: normalises Telegram webhook
+    payloads (callback_query inline-button presses + /command text messages) to SteeringEvents;
+    deduplicates on update_id via SteeringEventBus (SP-17 ledger — persisted across kill+resume);
+    origin="human" enforced at ingest (agent-authored events structurally impossible here).
+    C9-H1: operator_ids allowlist enforced; unauthorized senders silently dropped.
+    C9-H2: interrupt_id encoded in callback_data ("verb:iid"); adapter uses encoded iid,
+    binding approval to the exact gate that issued the keyboard.
+    C9-M1: try_claim() uses INSERT OR IGNORE + rowcount==1; DB is single atomic arbiter,
+    no TOCTOU between check and send; send happens outside lock.
+    C9-M2: non-int update_id rejected before processing.
+    C9-M3: payload["text"] truncated at 4096 chars (Telegram's own limit).
+    app/adapters/telegram/notifier.py implements TelegramNotifier: SQLite outbox ledger
+    deduplicates on (thread_id, event_key); AbstractTransport seam allows RecordingTransport
+    in tests / real Bot API in prod; notify_gate(interrupt_id=...) generates bound keyboard.
+    TelegramAdapter + TelegramNotifier wired into SpineRunner as optional injection params
+    (require_telegram_adapter() + require_notifier() public methods for C4 reachability).
+    C9 review: claude-opus-4-7 (different model class from claude-sonnet-4-6).
+    DEFERRED: Dispatcher/webhook registration, FSM clarify dialog, /pending legibility,
+    real HttpxTransport.
+    22 new oracles passing, 0 regressions.

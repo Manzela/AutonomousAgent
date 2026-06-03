@@ -82,13 +82,20 @@ async def test_ship_effect_marks_root_done_on_passing_gate():
     assert gate.calls and gate.calls[0].id == parent_id  # the gate was consulted on the root card
 
 
-# ── O2 a FAILING gate leaves the root card OPEN (fail-safe; RED control) ──
+# ── O2 a FAILING gate leaves the root card OPEN — CONSULTED-and-REFUSED, not a no-op (RED control) ──
 async def test_ship_effect_failing_gate_leaves_root_open():
     board = InMemoryBoard()
     state, parent_id = _ship_state(board)
-    nodes = _build_nodes(_default_capability(), board=board, gate=_Gate(False))
+    gate = _Gate(False)
+    nodes = _build_nodes(_default_capability(), board=board, gate=gate)
     await nodes["ship_effect"](state, _CFG)
-    assert board.get_card(parent_id).status != "done"  # checks not green -> the root stays open
+    # Strong oracle: prove mark_done was REACHED + the gate REFUSED (not that nothing tried to write
+    # done). The gate was consulted on the root card, and the root is EXACTLY where it started (todo),
+    # not merely != done. RED: a missing/short-circuited mark_done would leave gate.calls empty.
+    assert gate.calls and gate.calls[0].id == parent_id  # the gate WAS consulted on the root card
+    assert (
+        board.get_card(parent_id).status == "todo"
+    )  # refused -> root unchanged (exact, not != done)
 
 
 # ── O3 back-compat: gate=None => NO done transition (the legacy path is byte-identical) ──

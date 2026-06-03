@@ -114,11 +114,19 @@ async def test_board_none_no_projection(tmp_path, monkeypatch):
 # ── O4 fan_out reflects execution: COMPLETED -> running; every NON-completed leaf -> blocked ──
 async def test_fan_out_transitions_card_status():
     board = InMemoryBoard()
-    plan = {"nodes": [_node("n0"), _node("n1"), _node("n2")], "edges": []}
+    # n0 COMPLETED -> running; ALL FOUR non-completed statuses (FAILED/REFUSED/CANCELED/
+    # INPUT_REQUIRED) -> blocked (the shared else-branch; post-audit coverage of CANCELED+INPUT_REQUIRED).
+    plan = {"nodes": [_node(n) for n in ("n0", "n1", "n2", "n3", "n4")], "edges": []}
     proj = project_plan(board, plan, thread_id="t")
     board_cards = {"parent": proj.parent_id, "nodes": proj.node_cards}
-    # n0 COMPLETED -> running; n1 FAILED + n2 REFUSED (both non-completed) -> blocked.
-    cap = _status_capability({"n1": TaskStatus.FAILED, "n2": TaskStatus.REFUSED})
+    cap = _status_capability(
+        {
+            "n1": TaskStatus.FAILED,
+            "n2": TaskStatus.REFUSED,
+            "n3": TaskStatus.CANCELED,
+            "n4": TaskStatus.INPUT_REQUIRED,
+        }
+    )
     nodes = _build_nodes(cap, sandbox=None, board=board)
     state = {
         "thread_id": "t",
@@ -129,10 +137,13 @@ async def test_fan_out_transitions_card_status():
     }
     await nodes["fan_out"](state, _CFG)
     assert board.get_card(proj.node_cards["n0"]).status == "running"  # COMPLETED -> running
-    assert board.get_card(proj.node_cards["n1"]).status == "blocked"  # FAILED -> blocked
-    assert (
-        board.get_card(proj.node_cards["n2"]).status == "blocked"
-    )  # REFUSED -> blocked (RED: was "running")
+    for nid in (
+        "n1",
+        "n2",
+        "n3",
+        "n4",
+    ):  # every non-completed status -> blocked (RED: was "running")
+        assert board.get_card(proj.node_cards[nid]).status == "blocked", nid
     # C14: fan_out NEVER marks a card done (done is gate-derived at ship — deferred)
     assert all(c.status != "done" for c in board.list_cards(thread_id="t"))
 
@@ -150,11 +161,15 @@ async def test_live_spine_renders_dag_as_cards(tmp_path, monkeypatch):
         interrupt_id=signoff.id,
         decision={"verb": "APPROVE", "actor": "op", "reason": "ok"},
     )
-    # past seal_spec -> decompose: the board now holds the projected cards for this thread.
+    # past seal_spec -> decompose -> fan_out: the board holds the projected cards AND their status.
     cards = board.list_cards(thread_id=tid)
     assert cards, "the live spine must project the DAG onto the injected board"
     assert any(c.node_id is None for c in cards)  # the parent goal card
-    assert any(c.node_id is not None for c in cards)  # at least one child node card
+    children = [c for c in cards if c.node_id is not None]
+    assert children  # at least one child node card
+    # the live decompose+fan_out wires card STATUS, not just existence: the default capability
+    # COMPLETEs each leaf -> fan_out transitions its card to `running` (post-audit: assert status).
+    assert any(c.status == "running" for c in children), [c.status for c in children]
 
 
 # ── O6 the SpineRunner default board is an InMemoryBoard (the live entrypoint always projects) ──

@@ -22,6 +22,15 @@ Both bound spend, at different scopes; neither subsumes the other (PRD §6 SP-R6
 effect-free decision is what lets ``fan_out`` call it on every super-step without a
 network/disk dependency, and what lets the unit oracles run hermetically.
 
+LIVE-INERTNESS (post-audit I-1, read before relying on this in prod): this primitive sums
+``cost_accumulator``, which fan_out builds from ``ExecutionResult.cost_usd``. The default/stub
+capability AND every app.core.orchestrator path currently return ``cost_usd=0.0``, so in the live
+spine the aggregate is always 0.0 and ``budget_verdict`` NEVER pre-empts — the cap is a NO-OP until a
+capability reports REAL cost. The MECHANISM here is wired + unit-tested (with a cost-reporting
+capability); making it bite in production requires threading real LLM/sandbox cost into cost_usd
+(reuse ``lib/observability._llm_request_cost_usd``) — DEFERRED. Until then ship is gated only by the
+SP-06 eval_gate + the operator's HITL approval, NOT by spend.
+
 DEFERRED (named, not silently dropped):
   * MID-fan-out IN-FLIGHT cancellation — SP-R2 bounds blast radius to at most the ONE
     crossing wave (its spend is already incurred when POST-dispatch sees it) and then

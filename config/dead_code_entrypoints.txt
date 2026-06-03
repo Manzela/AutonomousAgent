@@ -213,5 +213,16 @@ lib.durability.graph_budget:GraphBudgetVerdict
 # above), so project_plan/Card/BoardProjection/the InMemoryBoard methods still read as unreachable
 # even though they are genuinely exercised — by the spine flow AND tests/unit/test_sp16_board.py +
 # test_sp16_board_wiring.py. Operator-reviewed at PR. (NOT not-yet-wired; AST-untraceable.)
-app.core.board
-app.adapters.inmemory.board
+# Post-audit: SYMBOL-level (not whole-module) so C4 still bites any FUTURE dead symbol added to
+# these two safety-relevant modules (a bare-module entry auto-roots every top-level public symbol).
+# The listed symbols' public METHODS (set_status/mark_done/create_card, etc.) are wired via the
+# gate's class->method edge during BFS, so this is no weaker for the genuinely-used surface.
+app.core.board:AbstractBoard
+app.core.board:Card
+app.core.board:BoardProjection
+app.core.board:BoardError
+app.core.board:GateNotPassedError
+app.core.board:GateReader
+app.core.board:project_plan
+app.adapters.inmemory.board:InMemoryBoard
+app.adapters.inmemory.board:AlwaysReadyGate

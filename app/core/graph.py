@@ -641,15 +641,16 @@ def _build_nodes(
         # Merge: per-task entries (the tasks reducer dedups by task_id across kill+resume),
         # PER-TASK cost keys, and the UNION of every leaf's changed_paths/symlinks (eval_gate
         # scope-scores the whole batch against the union of the plan's allowed globs).
-        delta = {
+        audit: list[str] = [
+            f"fan_out nodes={len(reqs)} sandboxed={sandbox is not None} "
+            f"changed={sum(len(o['changed_paths']) for o in outcomes)}"
+        ]
+        delta: dict[str, Any] = {
             "tasks": [o["result"].model_dump(mode="json") for o in outcomes],
             "cost_accumulator": {f"{tid}|{o['node_id']}": o["result"].cost_usd for o in outcomes},
             "changed_paths": [cp for o in outcomes for cp in o["changed_paths"]],
             "symlink_paths": [sp for o in outcomes for sp in o["symlink_paths"]],
-            "audit": [
-                f"fan_out nodes={len(reqs)} sandboxed={sandbox is not None} "
-                f"changed={sum(len(o['changed_paths']) for o in outcomes)}"
-            ],
+            "audit": audit,
         }
         # SP-R2 POST-dispatch enforcement: did THIS wave push cumulative spend (prior + this wave)
         # to/over the cap? Stamp the verdict (observable budget posture on every super-step) and,
@@ -660,7 +661,7 @@ def _build_nodes(
             post = budget_verdict(prior_spend + wave_spend, budget_usd)
             delta["budget_verdict"] = asdict(post)
             if post.preempt:
-                delta["audit"].append(
+                audit.append(
                     f"fan_out OVER-BUDGET after wave — parking before ship (SP-R2): {post.reason}"
                 )
         # SP-R1: scrub the whole delta (untrusted leaf stdout + audit) via the same lib.scrubber.

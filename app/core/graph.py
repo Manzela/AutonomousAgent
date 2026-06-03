@@ -43,7 +43,7 @@ from langgraph.types import interrupt
 from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
 from app.core import graph_state as gs
-from app.core.board import AbstractBoard, BoardError, project_plan
+from app.core.board import AbstractBoard, BoardError, GateReader, project_plan
 from app.core.decision_record import append_decision
 from app.core.decompose import ready_nodes, task_graph_to_requests
 from app.core.eval_gate import scope_root_verdict
@@ -317,7 +317,12 @@ def _build_nodes(
     lease: Optional[BranchLease] = None,
     budget_usd: Optional[float] = None,
     board: Optional[AbstractBoard] = None,
+    gate: Optional[GateReader] = None,
 ):
+    # SP-16 (slice 3): the C14 GateReader the ship_effect node consults to close the root goal card
+    # (`done` is gate-derived — the agent never self-marks it). gate=None (default) => the root card
+    # is NOT closed (byte-identical to pre-slice-3); SpineRunner injects an AlwaysReadyGate CI stub
+    # so the live entrypoint closes shipped roots. The real `gh pr checks` GateReader is DEFERRED.
     # SP-16 (slice 2): the kanban board the spine projects its DAG onto (decompose -> cards,
     # fan_out -> card status). board=None (default) => NO projection — byte-identical to pre-SP-16,
     # so every existing caller is unaffected; SpineRunner injects an InMemoryBoard so the LIVE
@@ -797,6 +802,26 @@ def _build_nodes(
                 "ref": f"agent/{tid}",
                 "digest": _digest(state),
             }
+            # SP-16 (slice 3): wire the C14 mark_done CONSULT-SITE into the live ship path — the agent
+            # never self-marks `done`; mark_done consults the injected GateReader, and a refusing gate
+            # raises GateNotPassedError leaving the root OPEN (the withhold path is real code, proven
+            # by test_ship_effect_failing_gate_leaves_root_open). HONEST LIMITS: (1) the live DEFAULT
+            # gate is AlwaysReadyGate (always green), so under it the root closes UNCONDITIONALLY at
+            # ship — a binding/withholding gate needs the deferred real reader, injected out of the
+            # agent's reach. (2) This call site is at SHIP time, BEFORE the shipped PR + its external
+            # CI exist (ship_effect only records SHIPPED); the precise PRD semantics — close when the
+            # shipped PR's `gh pr checks --required` pass — needs the call to MOVE to a post-PR webhook
+            # AND the parent card's gate_ref populated with the real PR (both SP-12, DEFERRED). Closing
+            # at ship is the slice-3 proxy. Ledger-guarded (effect-ran branch) + mark_done-idempotent
+            # => a skipped re-entry never re-consults the gate. gate/board/root None => no-op.
+            parent_card_id = (state.get("board_cards") or {}).get("parent")
+            if board is not None and gate is not None and parent_card_id:
+                try:
+                    board.mark_done(parent_card_id, gate=gate)
+                except (
+                    BoardError
+                ):  # GateNotPassedError (refused) IS a BoardError; card missing too —
+                    pass  # the root stays open; a board glitch must never crash the irreversible ship
         return delta
 
     return {
@@ -912,6 +937,7 @@ def build_spine(
     lease: Optional[BranchLease] = None,
     budget_usd: Optional[float] = None,
     board: Optional[AbstractBoard] = None,
+    gate: Optional[GateReader] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -923,7 +949,7 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board)
+    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board, gate)
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)

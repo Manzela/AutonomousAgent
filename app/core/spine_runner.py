@@ -17,9 +17,9 @@ from typing import Any, Optional
 
 from langgraph.types import Command
 
-from app.adapters.inmemory.board import InMemoryBoard
+from app.adapters.inmemory.board import AlwaysReadyGate, InMemoryBoard
 from app.core import graph_state as gs
-from app.core.board import AbstractBoard
+from app.core.board import AbstractBoard, GateReader
 from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
 from app.core.sandbox import AbstractSandbox
@@ -81,6 +81,7 @@ class SpineRunner:
         capability: Optional[AgentCapability] = None,
         sandbox: Optional[AbstractSandbox] = None,
         board: Optional[AbstractBoard] = None,
+        gate: Optional[GateReader] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
@@ -91,6 +92,11 @@ class SpineRunner:
         # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the
         # prod concretion. C15: outbound only — no graph node reads it.
         self._board = board or InMemoryBoard()
+        # SP-16 (slice 3): the C14 GateReader ship_effect consults to close the root goal card.
+        # Default to the AlwaysReadyGate CI stub so the live entrypoint closes shipped roots (the
+        # spine reaches ship_effect only after eval_gate + the operator's ship approval — gate-
+        # derived). The real `gh pr checks --required` reader is the DEFERRED prod sibling.
+        self._gate = gate or AlwaysReadyGate()
         # SP-11/SP-R6: one fan-out cap + one per-branch lease per runner, constructed ONCE and
         # shared by every fan_out super-step. The lease dir is per-runner ephemeral (single-
         # process spine — a cross-process shared dir is the deferred multi-process tier). Both
@@ -112,6 +118,7 @@ class SpineRunner:
             lease=self._lease,
             budget_usd=self._budget,
             board=self._board,
+            gate=self._gate,
         )
 
     @property

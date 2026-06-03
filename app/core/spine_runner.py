@@ -78,6 +78,10 @@ def _default_budget() -> Optional[float]:
 
 
 def _initial_state(thread_id: str, goal: str) -> dict:
+    # Optional fields absent at start (populated by the first node that writes them):
+    #   triage_card_id (SP-B1): goal_intake creates the board entry card when a board is injected.
+    #   board_cards (SP-16): decompose writes {parent, nodes} after the plan is locked.
+    #   budget_verdict (SP-R2): fan_out writes the GraphBudgetVerdict after each wave.
     state = {
         "thread_id": thread_id,
         "goal": scrub_string(goal, source="goal_intake"),  # scrub-before-persist (SP-R1)

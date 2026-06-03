@@ -25,12 +25,14 @@ distinct post-resume nodes and are ledger-guarded via apply_once().
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import time
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Callable, Optional
+from pathlib import Path
+from typing import Any, Callable, Mapping, Optional
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
@@ -41,6 +43,7 @@ from app.core import graph_state as gs
 from app.core.decision_record import append_decision
 from app.core.eval_gate import scope_root_verdict
 from app.core.graph_state import SpineState, TaskGraph
+from app.core.workspace import WorkspaceSession
 from app.core.orchestrator import execute as orchestrate
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskRequest, TaskStatus
@@ -147,10 +150,35 @@ def _record_decision(gate: str, decision) -> dict:
     return {gate: hitl, "decision_record": [hitl]}
 
 
-# SP-05: the skeleton's execute node runs a real subprocess probe inside the sandbox
-# (different PID, scrubbed env, no egress) — the honest minimal "work" until the Hermes
-# drive lands (next SP-05 slice). It emits the child PID so the isolation is observable.
+# SP-05: the no-plan / no-sandbox fallback probe (different PID, scrubbed env, no egress) —
+# the honest minimal "work" when there is no plan to derive a per-node command from.
 _SKELETON_SANDBOX_CMD = [sys.executable, "-c", "import os; print(os.getpid())"]
+
+# SP-05 (F-1): the per-node applier — a deterministic, stdlib-only, trifecta-free stand-in
+# for the external Hermes drive. Run by ABSOLUTE PATH (NOT `python -m ...`): the worktree is
+# checked out at base_ref and its CWD does not contain this module, so `-m` would not resolve
+# it; the applier needs no package import (stdlib only) and writes relative to its CWD.
+_APPLIER = str(Path(__file__).resolve().parent / "_workspace_apply.py")
+
+# Catch-all globs are banned upstream by SP-02 (is_catch_all_glob), but guard defensively.
+_CATCH_ALL_GLOBS = frozenset({"**", "*", ".", "/", ""})
+
+
+def _node_output_relpath(node: Mapping[str, Any]) -> str:
+    """Derive a repo-relative path the per-node applier writes, IN SCOPE of the node's first
+    allowed glob per eval_gate's matcher (exact / fnmatch / dir-prefix). A concrete file glob
+    (has an extension, no wildcard) is written directly (exact match); a directory prefix gets
+    a deterministic file under it (dir-prefix match). This is the deterministic 'agent work'
+    stand-in; the real Hermes-authored diff is the deferred SP-05 drive."""
+    globs = [g for g in (node.get("allowed_paths") or []) if g and g not in _CATCH_ALL_GLOBS]
+    if not globs:
+        return "app/.sp05_node_output.txt"
+    g = globs[0].rstrip("/")
+    base = g.rsplit("/", 1)[-1]
+    if "*" not in g and "?" not in g and "." in base:
+        return g  # concrete file → exact-match in scope
+    prefix = g.split("*")[0].split("?")[0].rstrip("/")  # static dir prefix of a glob
+    return f"{prefix}/sp05_node_output.txt" if prefix else "app/sp05_node_output.txt"
 
 
 def _scrub_persisted(obj):
@@ -389,27 +417,72 @@ def _build_nodes(
         )
 
     async def execute(state: SpineState, config) -> dict:
-        """Black-box call-through leaf to orchestrator.execute (no new class).
+        """SP-05: the code→test→fix leaf — runs the per-node command in a REAL sandbox.
 
-        SP-05: when a ``sandbox`` is injected, the node runs its work in a REAL
-        sandbox child (different PID, scrubbed env, no egress) instead of in-process;
-        the command is carried on ``TaskRequest.constraints["sandbox_cmd"]``. With no
-        sandbox the merged SP-01/SP-04 in-process skeleton path is unchanged.
+        When a ``sandbox`` is injected AND there is a sealed plan, F-1 materialises a REAL
+        per-node git worktree (``WorkspaceSession``), runs the deterministic applier INSIDE
+        it via ``sandbox.run(workdir=...)`` (scrubbed env, returncode-drives-status, egress
+        per-phase default-deny), then extracts the REAL ``git diff`` into the agent diff that
+        eval_gate (SP-06) scope-scores — so an out-of-scope write BLOCKS ship. With no
+        sandbox (or no plan, or a degraded worktree) the in-process skeleton path is
+        unchanged. The worktree is git-diff SCOPE-SCORED, NOT kernel-confined (EROFS is
+        SP-05c, integration-tier); the external Hermes binary is NOT wired (it host-execs +
+        raises). See app/core/workspace.py + app/core/_workspace_apply.py.
         """
-        constraints = {"sandbox_cmd": _SKELETON_SANDBOX_CMD} if sandbox is not None else {}
-        req = TaskRequest(
-            task_id=state["thread_id"],
-            phase="draft",
-            summary=state.get("goal", ""),
-            constraints=constraints,
-            deadline_s=60.0,
-        )
-        result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
+        plan = state.get("plan")
+        nodes = (plan or {}).get("nodes") if isinstance(plan, dict) else None
+
+        ws: Optional[WorkspaceSession] = None
+        symlink_paths: list[str] = []
+        try:
+            if sandbox is not None and nodes:  # `and nodes` narrows it non-None for the body
+                node0 = nodes[0]
+                repo_dir = Path(__file__).resolve().parents[2]
+                ws = WorkspaceSession.create(
+                    repo_dir=repo_dir,
+                    base_ref=state.get("base_ref") or "HEAD",
+                    thread_id=state["thread_id"],
+                )
+                if ws.ok:
+                    rel = _node_output_relpath(node0)
+                    manifest = [{"path": rel, "content": "# autonomousagent sp05 node output\n"}]
+                    constraints = {
+                        "sandbox_cmd": [sys.executable, _APPLIER, json.dumps(manifest)],
+                        "workdir": str(ws.ws_dir),
+                    }
+                else:  # degraded (no git / not a repo): fall back to the probe, empty diff
+                    constraints = {"sandbox_cmd": _SKELETON_SANDBOX_CMD}
+                phase = node0.get("phase", "draft")
+            elif sandbox is not None:
+                constraints = {"sandbox_cmd": _SKELETON_SANDBOX_CMD}
+                phase = "draft"
+            else:
+                constraints = {}
+                phase = "draft"
+
+            req = TaskRequest(
+                task_id=state["thread_id"],
+                phase=phase,
+                summary=state.get("goal", ""),
+                constraints=constraints,
+                deadline_s=60.0,
+            )
+            result: ExecutionResult = await orchestrate(req, capability, sandbox=sandbox)
+
+            # F-1: extract the REAL diff from the worktree ONLY on a clean (COMPLETED) run;
+            # a FAILED applier leaves artifacts empty (no diff scored). The git diff — never
+            # the child's stdout — is the authoritative change set (anti-fabrication).
+            if ws is not None and ws.ok and result.status == TaskStatus.COMPLETED:
+                diff = ws.diff()
+                result = result.model_copy(update={"artifacts": diff})
+                symlink_paths = ws.symlinks([(d["status"], d["path"]) for d in diff])
+        finally:
+            if ws is not None:
+                ws.close()  # ALWAYS tear the worktree down (success or failure)
+
         # SP-06: execute is the AUTHORITATIVE producer of the agent diff the eval_gate scores.
-        # Derive it from the result's artifacts (each {"path","status"} entry) on EVERY run and
-        # write it unconditionally, so eval_gate can never read a STALE changed_paths from a
-        # prior super-step / re-driven resume (C9 fail-safe). Empty in the pure skeleton — the
-        # orchestrator surfaces no diff yet; the real git diff arrives with the SP-05 drive.
+        # Written unconditionally so eval_gate can never read a STALE changed_paths from a
+        # prior super-step / re-driven resume (C9 fail-safe).
         changed_paths = [
             [a.get("status", "M"), a["path"]] for a in (result.artifacts or ()) if a.get("path")
         ]
@@ -417,7 +490,11 @@ def _build_nodes(
             "tasks": [result.model_dump(mode="json")],
             "cost_accumulator": {f"{state['thread_id']}|execute": result.cost_usd},
             "changed_paths": changed_paths,
-            "audit": [f"execute status={result.status.value} sandboxed={sandbox is not None}"],
+            "symlink_paths": symlink_paths,
+            "audit": [
+                f"execute status={result.status.value} sandboxed={sandbox is not None} "
+                f"workspace={ws.ok if ws is not None else False} changed={len(changed_paths)}"
+            ],
         }
         # SP-R1 (C9 hardening): scrub the ENTIRE delta — every new string value entering
         # the checkpoint (untrusted sandbox tool output AND the audit line) routes through
@@ -441,12 +518,15 @@ def _build_nodes(
         # changed×allowed, not the refs). base defaults to "main" and head to the state
         # content-digest in the skeleton; both become the real workspace refs when the SP-05
         # drive attaches a workspace_ref. base is overridable via state['base_ref'] (C9 minor).
+        # F-1: any changed path that is a symlink in the worktree ALWAYS violates (a symlink
+        # inside an allowed dir can point out-of-scope) — surface them to the verdict.
         verdict = scope_root_verdict(
             changed,
             allowed,
             base=state.get("base_ref") or "main",
             head=_digest(state),
             spec_sha=state.get("spec_sha") or "",
+            symlink_paths=tuple(state.get("symlink_paths") or ()),
         )
         delta = {
             "eval_verdict": asdict(verdict),

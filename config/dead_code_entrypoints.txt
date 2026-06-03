@@ -130,6 +130,19 @@ app.core.decompose
 app.adapters.inmemory.decompose
 app.adapters.gcp.decompose
 
+# SP-05 (F-1) per-node workspace. app/core/workspace.py:WorkspaceSession is GENUINELY WIRED
+# and exercised — the execute spine node (app/core/graph.py) calls WorkspaceSession.create()
+# to materialise a real git worktree, runs the applier inside it, and extracts the git diff
+# (16 red-green oracles in tests/unit/test_sp05_workspace_diff.py drive it end-to-end). It is
+# listed here ONLY because the AST callgraph cannot trace reachability INTO the spine's node
+# closures: build_spine() calls the PRIVATE _build_nodes(), whose returned closures (execute,
+# clarify, decompose, ...) are not in the gate's public-symbol reference index, so every
+# symbol a closure references appears unreachable — the IDENTICAL limitation that keeps
+# app.adapters.inmemory.decompose (used in the decompose closure) and app.core.spine_runner
+# above on this list. NOT not-yet-wired; AST-untraceable. (app/core/_workspace_apply.py is
+# reachable via its own __main__ block, so it is NOT listed.)
+app.core.workspace
+
 # SP-03 clarification driver + spec-drafter (PRD §6 EPIC-1 SP-03). NET-NEW hybrid
 # adapter triple + driver:
 #   app/core/spec_drafter.py            — AbstractSpecDrafter ABC + DraftResult /

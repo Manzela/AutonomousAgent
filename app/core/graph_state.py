@@ -256,6 +256,10 @@ class SpineState(TypedDict, total=False):
     # the optional base branch for the verdict metadata (defaults to "main").
     changed_paths: Optional[list]
     base_ref: Optional[str]
+    # SP-05 (F-1): the subset of changed_paths that are symlinks in the per-node worktree.
+    # Last-write (execute writes it every run); eval_gate passes it to scope_root_verdict —
+    # a symlink inside an allowed dir can point out-of-scope, so it ALWAYS violates.
+    symlink_paths: Optional[list]
     eval_verdict: Optional[dict]
     # HITL decisions
     sign_off: Optional[HitlDecision]

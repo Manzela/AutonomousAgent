@@ -209,6 +209,9 @@ async def test_live_spine_triage_card_lifecycle(tmp_path, monkeypatch):
             interrupt_id=ship.id,
             decision={"verb": "APPROVE", "actor": "op", "reason": "ship it"},
         )
-    # root card (= triage card) must be done at the end
+    # root card (= triage card) must be done at the end.
+    # NOTE (C9 obs-2): the `done` assertion is AlwaysReadyGate-dependent — the live default stub
+    # auto-closes unconditionally. The identity assertion (triage_id == parent) is gate-independent
+    # and is the load-bearing SP-B1 claim; the withholding/real-gh-pr-checks path is DEFERRED (SP-12).
     root = board.get_card(triage_id)
     assert root.status == "done", f"root card must be `done` after ship_effect; got {root.status!r}"

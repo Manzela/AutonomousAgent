@@ -583,7 +583,13 @@ def _build_nodes(
                     board.set_status(triage_cid, "todo")
                     promoted_parent = triage_cid
                 except Exception:
-                    promoted_parent = None  # fall back to creating a new parent
+                    # Fall back to creating a new parent. The original triage card stays
+                    # at status="triage" with no children — a visible orphan on the board
+                    # (C9 obs-1). The only realistic trigger is a missing card (the InMemory
+                    # adapter raises BoardError on an unknown id). Not a safety violation; the
+                    # board is OUTBOUND-only (C15) and board_cards carries the authoritative
+                    # parent id regardless of this card's status.
+                    promoted_parent = None
             proj = project_plan(
                 board,
                 delta.get("plan") or plan,

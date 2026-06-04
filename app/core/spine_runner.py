@@ -103,7 +103,9 @@ def _initial_state(thread_id: str, goal: str) -> dict:
         "scrubbed": True,
     }
     gs.assert_serializable_state(state)  # no callables enter the checkpoint
-    return state
+    # SP-R1: full state scrub (defence-in-depth — the goal is already scrubbed above,
+    # but scrub_state sweeps ALL string values through lib/scrubber.py PII patterns).
+    return gs.scrub_state(state)
 
 
 class SpineRunner:
@@ -196,11 +198,14 @@ class SpineRunner:
     async def start(
         self, *, thread_id: str, goal: str, durability: Optional[DurabilityMode] = None
     ) -> dict:
-        return await self._app.ainvoke(
+        result = await self._app.ainvoke(
             _initial_state(thread_id, goal),
             self._cfg(thread_id),
             durability=durability or self.durability,
         )
+        # SP-R1: scrub the final checkpoint snapshot (defence-in-depth — any PII that
+        # leaked through node outputs gets caught here before the caller sees it).
+        return gs.scrub_state(result) if isinstance(result, dict) else result
 
     async def resume(
         self,
@@ -214,11 +219,13 @@ class SpineRunner:
         # is keyed by the id the operator resumed with (not __pregel_task_id).
         if isinstance(decision, dict):
             decision = {**decision, "interrupt_id": interrupt_id}
-        return await self._app.ainvoke(
+        result = await self._app.ainvoke(
             Command(resume={interrupt_id: decision}),
             self._cfg(thread_id),
             durability=durability or self.durability,
         )
+        # SP-R1: scrub the final checkpoint snapshot (defence-in-depth).
+        return gs.scrub_state(result) if isinstance(result, dict) else result
 
     def require_bus(self) -> SteeringEventBus:
         """Return the injected SteeringEventBus or raise RuntimeError if unconfigured.

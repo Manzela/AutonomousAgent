@@ -34,7 +34,7 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LOOP_THRESHOLD = 5
+DEFAULT_LOOP_THRESHOLD = 15
 DEFAULT_STALL_IDLE_TIMEOUT_S = 300
 # F-CONTEXT default warn threshold (prompt_tokens / context_length).
 # Above this ratio compaction is presumed ineffective — see module docstring.

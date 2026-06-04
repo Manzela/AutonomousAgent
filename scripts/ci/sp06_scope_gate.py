@@ -66,6 +66,11 @@ def main(argv: list[str] | None = None) -> int:
 
     for v in verdict.violations:
         print(f"::error::[FAIL] SP-06 scope-root: out-of-scope path {v['path']}")
+
+    print(
+        f"Mutation score: {verdict.mutation_score:.1f}% (passed: {verdict.mutation_score_passed})"
+    )
+
     if verdict.passed:
         print(
             f"[PASS] SP-06 scope-root: all {len(changed)} changed path(s) in scope "

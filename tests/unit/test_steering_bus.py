@@ -349,3 +349,21 @@ async def test_sp17_a4_route_filters_by_thread_id():
     # Route the same interrupt_id but for thread tB — tA's REJECT must NOT apply.
     verb = await bus.route_to_interrupt(runner, thread_id="tB", interrupt_id=iid)
     assert verb == "APPROVE", "tA's REJECT must not bleed into tB's routing"
+
+
+def test_sp17_self_approval_rejection(monkeypatch):
+    """Secure Steering Event Bus: Reject any board steering events where the
+    comment author ID matches the agent's account ID.
+    """
+    monkeypatch.setenv("PLANE_BOT_ACCOUNT_ID", "bot-agent-id")
+    bus = SteeringEventBus()
+
+    bot_event = _ev(channel="board", origin_id="m1")
+    bot_event["payload"] = {"author_id": "bot-agent-id", "text": "APPROVE"}
+
+    assert bus.put(bot_event, origin="human") is False
+
+    human_event = _ev(channel="board", origin_id="m2")
+    human_event["payload"] = {"author_id": "human-operator-id", "text": "APPROVE"}
+
+    assert bus.put(human_event, origin="human") is True

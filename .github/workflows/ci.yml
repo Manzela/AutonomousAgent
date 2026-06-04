@@ -267,6 +267,55 @@ jobs:
           retention-days: 14
 
   # ------------------------------------------------------------------
+  # Safety differential tests (SP-00c)
+  # ------------------------------------------------------------------
+  safety-differential-tests:
+    name: Safety Differential Tests (SP-00c)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.5.x"
+
+      - name: Set up Python
+        run: uv venv .venv --python 3.11
+
+      - name: Install dev dependencies
+        run: |
+          source .venv/bin/activate
+          uv sync --frozen --extra dev --extra gcp --extra a2a
+
+      - name: Run safety differential tests
+        run: |
+          source .venv/bin/activate
+          pytest tests/integration/test_budget_cap_differential.py \
+                 tests/integration/test_escalation_emit_differential.py \
+                 tests/integration/test_persistence_trap_differential.py \
+                 tests/integration/test_sandbox_isolation_differential.py \
+                 tests/integration/test_secret_leak_differential.py \
+                 -v --tb=short --junitxml=differential-junit.xml
+
+      - name: Assert zero skips in differential tests
+        run: |
+          source .venv/bin/activate
+          python scripts/ci/assert_no_skips.py differential-junit.xml
+
+      - name: Upload differential test results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: safety-differential-junit
+          path: differential-junit.xml
+          retention-days: 14
+
+  # ------------------------------------------------------------------
   # W1.E-new: Import smoke gate — catch import-time crashes in critical
   # module trees before any tests run. Cheap (5s), prevents NameError
   # or ImportError from lurking until integration time.

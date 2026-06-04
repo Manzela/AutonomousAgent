@@ -159,6 +159,27 @@ class TestRequestInstallationToken:
         github_auth._request_installation_token("1", "jwt", _http_post=fake_post)
         assert captured["accept"] == "application/vnd.github+json"
 
+    def test_real_http_post_raises_runtime_error_on_http_error(self, monkeypatch):
+        """An HTTPError (e.g. 401/403 on revoked credentials) must raise RuntimeError."""
+        import urllib.error
+        import urllib.request
+        from io import BytesIO
+
+        def mock_urlopen(*args, **kwargs):
+            fp = BytesIO(b"Bad credentials (revoked token)")
+            raise urllib.error.HTTPError(
+                url="https://api.github.com",
+                code=401,
+                msg="Unauthorized",
+                hdrs={},
+                fp=fp,
+            )
+
+        monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
+
+        with pytest.raises(RuntimeError, match="HTTP 401"):
+            github_auth._real_http_post("https://api.github.com", {})
+
 
 # ---------------------------------------------------------------------------
 # (c) Returned token + expiry are surfaced

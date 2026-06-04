@@ -87,6 +87,8 @@ resource "github_branch_protection" "main" {
       "no-sentinel-termination (anti-drift)",
       # no-sa-key-gate.yml — no paths filter; enforces SP-00b WIF-only auth
       "no-sa-key-gate (SP-00b)",
+      # ci.yml — no paths filter; safety differential tests
+      "Safety Differential Tests (SP-00c)",
       # license-dep-gate.yml — no paths filter; enforces SP-00h license + dep hygiene
       "license + dep allowlist (SP-00h)",
       # ci.yml (job: enforce-sha-pinning) — no paths filter; supply-chain SHA pinning

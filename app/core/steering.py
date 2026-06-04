@@ -148,6 +148,21 @@ class SteeringEventBus:
             )
             return False
 
+        # Reject self-approval attempts where comment author ID matches the bot account ID
+        import os
+
+        channel = event.get("channel")
+        payload = event.get("payload")
+        if channel == "board" and isinstance(payload, dict):
+            author_id = payload.get("author_id")
+            bot_account_id = os.environ.get("PLANE_BOT_ACCOUNT_ID", "bot-agent-id")
+            if author_id and author_id == bot_account_id:
+                logger.warning(
+                    "steering_bus.put: rejected self-approval attempt by bot account ID=%s",
+                    author_id,
+                )
+                return False
+
         verb = event.get("verb", "")
         if verb not in _VALID_VERBS:
             logger.warning(

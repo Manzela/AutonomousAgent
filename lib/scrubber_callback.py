@@ -231,6 +231,69 @@ class ScrubberCallback(CustomLogger):
     def logging_hook(self, kwargs: dict, result: Any, call_type: str) -> Tuple[dict, Any]:
         return self._do_scrub(kwargs, result, call_type)
 
+    async def async_pre_call_hook(
+        self, user_api_key_dict: dict, cache: Any, model: str, messages: List[Any], kwargs: dict
+    ) -> Tuple[List[Any], dict]:
+        import asyncio
+
+        return await asyncio.to_thread(self._pre_call_scrub, messages, kwargs)
+
+    def pre_call_hook(
+        self, user_api_key_dict: dict, cache: Any, model: str, messages: List[Any], kwargs: dict
+    ) -> Tuple[List[Any], dict]:
+        return self._pre_call_scrub(messages, kwargs)
+
+    def _pre_call_scrub(self, messages: List[Any], kwargs: dict) -> Tuple[List[Any], dict]:
+        if _SCRUBBER is None:
+            return messages, kwargs
+        try:
+            new_messages, prompt_hits = _scrub_messages(
+                messages, _SCRUBBER, source="pre_call_prompt"
+            )
+
+            # Scrub system instructions
+            system = kwargs.get("system")
+            if isinstance(system, str):
+                cleaned, system_hits = _SCRUBBER.scrub(system, source="pre_call_system")
+                kwargs["system"] = cleaned
+                prompt_hits.extend(system_hits)
+            elif isinstance(system, list):
+                new_system = []
+                for item in system:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str):
+                        cleaned, system_hits = _SCRUBBER.scrub(
+                            item["text"], source="pre_call_system"
+                        )
+                        new_item = dict(item)
+                        new_item["text"] = cleaned
+                        new_system.append(new_item)
+                        prompt_hits.extend(system_hits)
+                    else:
+                        new_system.append(item)
+                kwargs["system"] = new_system
+
+            # Scrub headers
+            headers = kwargs.get("headers")
+            if isinstance(headers, dict):
+                new_headers = {}
+                for k, v in headers.items():
+                    if isinstance(v, str):
+                        cleaned, header_hits = _SCRUBBER.scrub(v, source="pre_call_header")
+                        new_headers[k] = cleaned
+                        prompt_hits.extend(header_hits)
+                    else:
+                        new_headers[k] = v
+                kwargs["headers"] = new_headers
+
+            if prompt_hits:
+                _record_hits(prompt_hits, call_type="pre_call")
+                if new_messages is not None:
+                    messages = new_messages
+            return messages, kwargs
+        except Exception as exc:  # pragma: no cover - defensive
+            _LOG.exception("scrubber_callback: _pre_call_scrub failed: %s", exc)
+            return messages, kwargs
+
     # --- Shared impl ---------------------------------------------------------
 
     def _do_scrub(self, kwargs: dict, result: Any, call_type: str) -> Tuple[dict, Any]:

@@ -95,6 +95,11 @@ no-sentinel-termination (anti-drift)
 # Enforces SP-00b: no long-lived SA JSON keys in workflow auth (WIF-only).
 no-sa-key-gate (SP-00b)
 
+# workflow: ci.yml, job: safety-differential-tests — on: pull_request, no paths filter,
+# no continue-on-error.
+# Enforces SP-00c: zero skipped safety differential tests.
+Safety Differential Tests (SP-00c)
+
 # workflow: license-dep-gate.yml — on: pull_request, branches: [main, "remediation/**"],
 # no paths filter, no continue-on-error.
 # Enforces SP-00h: no GPL/AGPL/proprietary licenses, no unpinned or typosquatted deps.

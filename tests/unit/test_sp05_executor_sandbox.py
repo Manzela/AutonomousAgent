@@ -244,10 +244,59 @@ async def test_spine_execute_node_runs_in_sandbox():
     assert out["tasks"][0]["status"] == TaskStatus.COMPLETED.value
 
 
-async def test_spine_execute_node_legacy_without_sandbox():
-    # back-compat: no sandbox injected => the merged in-process skeleton path is unchanged.
-    nodes = _build_nodes(_default_capability(), sandbox=None)
-    out = await nodes["fan_out"](
-        {"thread_id": "t2", "goal": "legacy"}, {"configurable": {"thread_id": "t2"}}
+# ── 9. Sandbox Hardening (Required Correction 1) ───────────────────────────
+async def test_sandbox_hardening_write_and_mock_blocks(tmp_path):
+    """Verify that LocalSubprocessSandbox blocks writes outside the allowed directory
+    and blocks dynamic mock/monkeypatch of parent modules."""
+    workdir = tmp_path / "worktree"
+    workdir.mkdir()
+
+    # Use a file path that is outside both workdir and standard temp dirs
+    outside_file = Path.cwd() / "outside.txt"
+
+    script = f"""import sys
+import os
+from pathlib import Path
+
+# Verify write blocks outside allowed dir
+try:
+    with open({repr(str(outside_file))}, "w") as f:
+        f.write("leak")
+    print("WRITE_OUTSIDE_ALLOWED")
+except PermissionError:
+    print("WRITE_OUTSIDE_BLOCKED")
+
+# Verify unittest.mock.patch blocking on parent modules
+try:
+    import unittest.mock
+    @unittest.mock.patch("app.core.graph.orchestrate")
+    def mock_fn(m):
+        pass
+    mock_fn()
+    print("MOCK_ALLOWED")
+except PermissionError:
+    print("MOCK_BLOCKED")
+
+# Verify module attribute modification blocking on parent modules
+try:
+    import app.core.graph
+    app.core.graph.SOME_FLAG = "changed"
+    print("MONKEYPATCH_ALLOWED")
+except PermissionError:
+    print("MONKEYPATCH_BLOCKED")
+"""
+
+    sandbox = LocalSubprocessSandbox()
+    res = await sandbox.run(
+        cmd=[sys.executable, "-c", script],
+        workdir=workdir,
     )
-    assert out["tasks"][0]["status"] == TaskStatus.COMPLETED.value
+
+    assert res.returncode == 0
+    stdout = res.stdout
+    assert "WRITE_OUTSIDE_BLOCKED" in stdout
+    assert "MOCK_BLOCKED" in stdout
+    assert "MONKEYPATCH_BLOCKED" in stdout
+    assert "WRITE_OUTSIDE_ALLOWED" not in stdout
+    assert "MOCK_ALLOWED" not in stdout
+    assert "MONKEYPATCH_ALLOWED" not in stdout

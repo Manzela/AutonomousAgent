@@ -209,3 +209,26 @@ async def test_main_wires_cloud_sql_pgvector_store(monkeypatch):
         from app.adapters.gcp.memory import CloudSqlPgvectorStore
 
         assert isinstance(_state.memory_store, CloudSqlPgvectorStore)
+
+
+async def test_main_checkpointer_postgres_fallback(monkeypatch, tmp_path):
+    """SP-R3: checkpointer fallback at runtime from Postgres to SQLite on failure."""
+    monkeypatch.setenv("SPINE_CHECKPOINTER", "postgres")
+    monkeypatch.setenv("SPINE_CHECKPOINT_DB", str(tmp_path / "sqlite_fallback.db"))
+
+    from app.adapters.gcp.checkpointer import PostgresCheckpointer
+
+    async def mock_setup(self):
+        raise RuntimeError("Postgres connection failed!")
+
+    monkeypatch.setattr(PostgresCheckpointer, "setup", mock_setup)
+
+    _state.runner = None
+    _state.kill_switch = None
+    _state.memory_store = None
+
+    async with lifespan(app):
+        assert _state.runner is not None
+        from app.adapters.inmemory.file_checkpointer import SqliteFileCheckpointer
+
+        assert isinstance(_state.runner._provider, SqliteFileCheckpointer)

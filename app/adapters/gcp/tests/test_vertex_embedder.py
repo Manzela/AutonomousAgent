@@ -54,3 +54,34 @@ def test_vertex_embedder_retry_semantics(mock_client_cls):
 
     assert vectors.shape == (256,)
     assert mock_client.predict.call_count == 2
+
+
+@patch("app.adapters.gcp.embedder.aiplatform.gapic.PredictionServiceClient")
+def test_vertex_embedder_embed_many_scrubs_secrets(mock_client_cls, monkeypatch):
+    mock_client = MagicMock()
+    mock_client_cls.return_value = mock_client
+
+    mock_response = MagicMock()
+    mock_prediction = MagicMock()
+    mock_prediction.get.return_value = [0.1] * 256
+    mock_response.predictions = [mock_prediction]
+    mock_client.predict.return_value = mock_response
+
+    # Force scrubber load
+    from pathlib import Path
+
+    monkeypatch.setenv(
+        "SCRUBBER_PATTERNS_PATH", str(Path.cwd() / "config" / "scrubber-patterns.yaml")
+    )
+    from lib.scrubber import _reset_singleton_for_tests
+
+    _reset_singleton_for_tests()
+
+    embedder = VertexEmbeddingsEmbedder()
+    embedder.embed_many(["my secret token is AKIA1234567890123456"])  # pragma: allowlist secret
+
+    mock_client.predict.assert_called_once()
+    kwargs = mock_client.predict.call_args.kwargs
+    content = kwargs["instances"][0]["content"]
+    assert "AKIA1234567890123456" not in content  # pragma: allowlist secret
+    assert "[REDACTED:aws_access_key_id]" in content

@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 
 from app.adapters.inmemory.board import InMemoryBoard
 from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
+from app.core.checkpointer import AbstractCheckpointer
 from app.core.kill_switch import KillSwitch
 from app.core.reaper import WorkspaceReaper
 from app.core.spine_runner import SpineRunner
@@ -79,18 +80,26 @@ class RollbackRequest(BaseModel):
 # ── Adapter factories ────────────────────────────────────────────────────────
 
 
-def _build_checkpointer() -> InMemoryCheckpointer:
+def _build_checkpointer() -> AbstractCheckpointer:
     """Select checkpointer based on SPINE_CHECKPOINTER env var.
 
-    Currently only InMemory is wired; the SqliteFileCheckpointer (SP-R3)
-    and the Cloud SQL checkpointer (SP-23) are deferred production tiers
-    that will be added here as elif branches.
+    Wires sqlite and postgres checkpointers, falling back to inmemory.
     """
     kind = os.environ.get("SPINE_CHECKPOINTER", "inmemory").lower()
     if kind == "inmemory":
         return InMemoryCheckpointer()
-    # DEFERRED: elif kind == "sqlite": ...
-    # DEFERRED: elif kind == "postgres": ...
+    elif kind == "sqlite":
+        sqlite_db = os.environ.get("SPINE_CHECKPOINT_DB", "/tmp/spine.db")
+        from app.adapters.inmemory.file_checkpointer import SqliteFileCheckpointer
+
+        return SqliteFileCheckpointer(sqlite_db)
+    elif kind == "postgres":
+        dsn = os.environ.get("CLOUD_SQL_DSN") or os.environ.get(
+            "DATABASE_URL", "postgresql://localhost:5432/postgres"
+        )
+        from app.adapters.gcp.checkpointer import PostgresCheckpointer
+
+        return PostgresCheckpointer(dsn)
     logger.warning("Unknown SPINE_CHECKPOINTER=%r — falling back to inmemory", kind)
     return InMemoryCheckpointer()
 
@@ -146,7 +155,23 @@ async def lifespan(app: FastAPI):
     logger.info("spine: lifespan startup — assembling SpineRunner")
 
     checkpointer = _build_checkpointer()
-    await checkpointer.setup()
+    try:
+        await checkpointer.setup()
+    except Exception as exc:
+        kind = os.environ.get("SPINE_CHECKPOINTER", "inmemory").lower()
+        if kind == "postgres":
+            logger.error(
+                "CRITICAL: Postgres checkpointer setup failed: %s. "
+                "ALERT: Falling back to SqliteFileCheckpointer at runtime (SP-R3).",
+                exc,
+            )
+            sqlite_db = os.environ.get("SPINE_CHECKPOINT_DB", "/tmp/spine.db")
+            from app.adapters.inmemory.file_checkpointer import SqliteFileCheckpointer
+
+            checkpointer = SqliteFileCheckpointer(sqlite_db)
+            await checkpointer.setup()
+        else:
+            raise
 
     memory_store = _build_memory_store()
 

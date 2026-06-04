@@ -144,61 +144,61 @@ def _exec(cmd: list[str], *, timeout: int = 15, **kw) -> subprocess.CompletedPro
 def test_shell_sandbox_fork_bomb_limited():
     """A fork bomb must be killed by pids_limit before consuming the host.
 
-    We use a bounded variant (`:() { :|: & }; :` with an iteration cap)
-    so the test terminates in finite time.  The sandbox must either cap the
-    PID count (EPERM / fork failed) or the entire shell exits non-zero.
-
-    Acceptance: the exec command exits within 10 s with a non-zero return
-    code or produces output indicating 'fork' failed.  A zero exit code
-    with unbounded output is a failure.
+    We use a bounded Python fork loop to trigger the cgroup pids_limit (200).
+    Python's os.fork() fails immediately with OSError on limit without retrying,
+    allowing the test to complete instantly.
     """
     out = _exec(
         [
-            "bash",
+            "python3",
             "-c",
-            # Attempt 64 rapid forks; pids_limit should choke this before 64.
-            "for i in $(seq 1 64); do (true) & done; wait; echo done",
+            (
+                "import os, sys, time; "
+                "pids = []; "
+                "try: "
+                "    for i in range(250): "
+                "        pid = os.fork(); "
+                "        if pid == 0: time.sleep(1); sys.exit(0); "
+                "        else: pids.append(pid) "
+                "except OSError: "
+                "    for p in pids: "
+                "        try: os.kill(p, 9) "
+                "        except OSError: pass; "
+                "    sys.exit(1); "
+                "for pid in pids: os.waitpid(pid, 0); "
+                "print('done')"
+            ),
         ],
         timeout=10,
     )
-    # If pids_limit is effective, some forks will fail with EPERM / "fork:
-    # retry: Resource temporarily unavailable".  Accept both outcomes:
-    #   (a) returncode != 0 — bash itself hit the limit
-    #   (b) returncode == 0 but stderr/stdout contains a fork-failure indicator
-    fork_failed = (
-        "Resource temporarily unavailable" in (out.stderr or "")
-        or "Cannot fork" in (out.stderr or "")
-        or "fork" in (out.stderr or "").lower()
-    )
-    sandbox_exited_clean = out.returncode == 0 and "done" in out.stdout
-    assert out.returncode != 0 or fork_failed or not sandbox_exited_clean, (
-        "Fork bomb completed 64 forks without any resource limit hit — "
-        f"pids_limit may not be enforced. returncode={out.returncode}, "
-        f"stdout={out.stdout!r}, stderr={out.stderr!r}"
+    # The container limit (200) should cause python to exit non-zero (1) due to OSError.
+    assert out.returncode != 0, (
+        "Fork bomb completed 250 forks without any resource limit hit. "
+        f"returncode={out.returncode}, stdout={out.stdout!r}, stderr={out.stderr!r}"
     )
 
 
 def test_shell_sandbox_mem_bomb_limited():
-    """Allocating >memory limit via /dev/zero dd must be killed or fail.
+    """Allocating >memory limit via python3 must be killed or fail.
 
     Assumes the sandbox has a memory limit lower than the amount we try to
-    allocate.  We attempt to allocate 2 GiB; any sandbox with mem_limit <=
-    512 MiB should OOM-kill or reject the allocation.
+    allocate.  We attempt to allocate 2 GiB; the sandbox has a mem_limit of 1g
+    so it should OOM-kill or reject the allocation.
     """
     out = _exec(
         [
             "bash",
             "-c",
-            "dd if=/dev/zero bs=1M count=2048 | tail -c 1; echo exit=$?",
+            "python3 -c \"x = b'a' * (2 * 1024 * 1024 * 1024)\"; echo exit=$?",
         ],
         timeout=20,
     )
     oom_or_killed = out.returncode not in (0,) or "Killed" in (out.stdout + out.stderr)
-    # Accept either a non-zero exit (OOM kill) or stdout containing "Killed"
+    # Accept either a non-zero exit (OOM kill) or stdout/stderr containing "Killed"
     assert oom_or_killed, (
         "Memory allocation of 2 GiB completed without OOM kill — "
         f"mem_limit may not be enforced. returncode={out.returncode}, "
-        f"stderr={out.stderr!r}"
+        f"stdout={out.stdout!r}, stderr={out.stderr!r}"
     )
 
 
@@ -279,22 +279,30 @@ def test_shell_sandbox_rlimit_nproc_enforced():
     """
     out = _exec(
         [
-            "bash",
+            "python3",
             "-c",
-            # Try to spawn 512 background subshells; pids_limit < 512 should choke.
             (
-                "fail=0; "
-                "for i in $(seq 1 512); do "
-                "  (true) 2>/dev/null || { fail=1; break; }; "
-                "done; "
-                "echo fail=$fail"
+                "import os, sys, time; "
+                "pids = []; "
+                "try: "
+                "    for i in range(250): "
+                "        pid = os.fork(); "
+                "        if pid == 0: time.sleep(1); sys.exit(0); "
+                "        else: pids.append(pid) "
+                "except OSError: "
+                "    for p in pids: "
+                "        try: os.kill(p, 9) "
+                "        except OSError: pass; "
+                "    print('fail=1'); sys.exit(0); "
+                "for pid in pids: os.waitpid(pid, 0); "
+                "print('fail=0')"
             ),
         ],
         timeout=15,
     )
     hit_limit = "fail=1" in out.stdout or out.returncode != 0
     assert hit_limit, (
-        "Spawned 512 processes without hitting any resource limit — "
+        "Spawned 250 processes without hitting any resource limit — "
         "pids_limit may not be configured or enforced. "
         f"stdout={out.stdout!r}, returncode={out.returncode}"
     )

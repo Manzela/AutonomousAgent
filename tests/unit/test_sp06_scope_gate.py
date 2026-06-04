@@ -214,9 +214,34 @@ def test_verdict_json_schema(tmp_path):
         "allowed_globs",
         "net_new_tests_excluded",
         "tests_added",
+        "mutation_score",
+        "mutation_score_passed",
     }
     assert doc["base"] == "bbb" and doc["head"] == "hhh"
     assert json.dumps(doc, sort_keys=True)  # round-trips, sorted-key stable
+
+
+def test_mutation_gate_floor_enforcement(tmp_path, monkeypatch):
+    store = SpecStore(tmp_path)
+    sealed = _locked_spec(store)
+    allowed = _allowed_globs(store, sealed)
+    changed = [("M", "app/core/widget.py")]
+
+    # 1. Enforced below floor: 75% score must FAIL
+    monkeypatch.setenv("MOCK_MUTMUT_SCORE", "75.0")
+    v = scope_root_verdict(changed, allowed, base="b", head="h", spec_sha=sealed.spec_sha)
+    assert v.passed is False
+    assert v.mutation_score == 75.0
+    assert v.mutation_score_passed is False
+    assert any(viol["path"] == "mutation-gate" for viol in v.violations)
+
+    # 2. Enforced above floor: 85% score must PASS
+    monkeypatch.setenv("MOCK_MUTMUT_SCORE", "85.0")
+    v = scope_root_verdict(changed, allowed, base="b", head="h", spec_sha=sealed.spec_sha)
+    assert v.passed is True
+    assert v.mutation_score == 85.0
+    assert v.mutation_score_passed is True
+    assert not any(viol["path"] == "mutation-gate" for viol in v.violations)
 
 
 # ── hermeticity (no LLM import → no OpenAI default trap) ─────────────────────

@@ -137,3 +137,42 @@ def test_missing_patterns_file_disables_scrubber_gracefully(monkeypatch, tmp_pat
     assert "AKIA1234567890123456" in new_kwargs["messages"][0]["content"]
     if "lib.scrubber_callback" in sys.modules:
         del sys.modules["lib.scrubber_callback"]
+
+
+def test_pre_call_hook_scrubs_secrets(callback_module):
+    """pre_call_hook must redact secrets from messages, system prompt, and headers."""
+    module, leak_log = callback_module
+    messages = [{"role": "user", "content": "My token is AKIA1234567890123456"}]
+    kwargs = {
+        "system": "System instructions with sk-ant-api03-abcdefghijklmnopqrstuvwxyz key",
+        "headers": {"Authorization": "Bearer AKIA1234567890123456"},
+    }
+
+    new_messages, new_kwargs = module.proxy_handler_instance.pre_call_hook(
+        {}, None, "model", messages, kwargs
+    )
+
+    assert "[REDACTED:aws_access_key_id]" in new_messages[0]["content"]
+    assert "[REDACTED:anthropic_key]" in new_kwargs["system"]
+    assert "[REDACTED:aws_access_key_id]" in new_kwargs["headers"]["Authorization"]
+    assert leak_log.exists()
+
+
+@pytest.mark.asyncio
+async def test_async_pre_call_hook_scrubs_secrets(callback_module):
+    """async_pre_call_hook must perform the same pre-call scrubbing asynchronously."""
+    module, leak_log = callback_module
+    messages = [{"role": "user", "content": "My token is AKIA1234567890123456"}]
+    kwargs = {
+        "system": "System instructions with sk-ant-api03-abcdefghijklmnopqrstuvwxyz key",
+        "headers": {"Authorization": "Bearer AKIA1234567890123456"},
+    }
+
+    new_messages, new_kwargs = await module.proxy_handler_instance.async_pre_call_hook(
+        {}, None, "model", messages, kwargs
+    )
+
+    assert "[REDACTED:aws_access_key_id]" in new_messages[0]["content"]
+    assert "[REDACTED:anthropic_key]" in new_kwargs["system"]
+    assert "[REDACTED:aws_access_key_id]" in new_kwargs["headers"]["Authorization"]
+    assert leak_log.exists()

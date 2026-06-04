@@ -75,7 +75,9 @@ class VertexEmbeddingsEmbedder(AbstractEmbedder):
     @_retry_decorator
     def embed_many(self, texts: Iterable[str]) -> np.ndarray:
         """Embed multiple strings in one batch."""
-        texts_list = list(texts)
+        from lib.scrubber import scrub_string
+
+        texts_list = [scrub_string(text, source="vertex_embeddings_input") for text in texts]
         if not texts_list:
             return np.zeros((0, _DIM), dtype=np.float32)
 

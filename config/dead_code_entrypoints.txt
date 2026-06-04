@@ -289,3 +289,14 @@ app.adapters.inmemory.rollback:RecordingRevisionRollback
 #   because they share the same deferred-maintenance pattern. Operator-reviewed 2026-06-04.
 app.core.checkpoint_retention
 lib.evaluators.judge_events_retention
+# SP-J1 judge-calibration library — called by the deferred nightly calibration cron
+#   (SP-J1-INT-1) and the SP-06 quarantine-check integration (SP-J1-INT-3). Not yet
+#   wired to a runtime entrypoint the AST callgraph can trace. Module-level entry covers
+#   top-level symbols; method-level entries added for nested methods/properties.
+#   Operator-reviewed 2026-06-04.
+lib.evaluators.judge_calibration
+lib.evaluators.judge_calibration:CalibrationResult.passes
+lib.evaluators.judge_calibration:JudgeCalibrationMonitor.score
+lib.evaluators.judge_calibration:JudgeQuarantineRegistry.quarantine
+lib.evaluators.judge_calibration:JudgeQuarantineRegistry.is_quarantined
+lib.evaluators.judge_calibration:JudgeQuarantineRegistry.quarantined_ids

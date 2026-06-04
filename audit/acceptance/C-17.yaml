@@ -1,0 +1,93 @@
+# Acceptance — C-17 · Canary-token access emits a real escalation
+#
+# Audit finding (issue #199): lib/a2a/server.py ~L624-625 returned a response
+# claiming "logged as a critical security escalation" but called NO emitter.
+# lib.durability.escalation.emit_escalation (L49) is the real escalation channel.
+#
+# Fix: emit_escalation(card_id=-1, title="A2A canary-token access attempt",
+#      age_h=0.0) is now called in the canary-token branch, wrapped in
+#      try/except (fail-open — emitter errors never break the response path).
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+
+task: C-17
+title: "Canary-token access emits a real escalation via emit_escalation"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+
+  - id: emit-escalation-imported
+    description: >
+      lib/a2a/server.py MUST import emit_escalation from lib.durability.escalation
+      at module level (not inside a function body) so the symbol is patchable and
+      the import is auditable.
+    cmd: |
+      grep -n "from lib.durability.escalation import emit_escalation" lib/a2a/server.py || {
+        echo "FAIL: emit_escalation not imported at module level in lib/a2a/server.py"; exit 1
+      }
+      echo "OK: emit_escalation imported at module level"
+    expect_exit: 0
+
+  - id: emit-escalation-called-in-canary-branch
+    description: >
+      lib/a2a/server.py canary-token branch MUST call emit_escalation with the
+      sentinel args card_id=-1, title="A2A canary-token access attempt", age_h=0.0.
+    cmd: |
+      grep -A 6 '"canary-token.txt" in msg_lower' lib/a2a/server.py | \
+        grep -q "emit_escalation" || {
+        echo "FAIL: emit_escalation not called in the canary-token branch"; exit 1
+      }
+      echo "OK: emit_escalation called in canary-token branch"
+    expect_exit: 0
+
+  - id: unit-tests-green
+    description: >
+      tests/unit/test_canary_token_escalation.py (3 tests) must pass:
+        test_canary_token_access_calls_emit_escalation — emitter called >= 1 time;
+        test_canary_token_escalation_emitter_args — card_id=-1, title has 'canary', age_h=0.0;
+        test_canary_token_escalation_fail_open — emitter exception never breaks the 200 response.
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" \
+        -m pytest tests/unit/test_canary_token_escalation.py -q --tb=short
+    expect_exit: 0
+
+  - id: differential-regression-guard-green
+    description: >
+      tests/integration/test_escalation_emit_differential.py must pass in full:
+        DECEPTIVE variant now returns probe=False (gap closed — emitter IS called).
+        Regression guard: if emit_escalation call is removed, probe flips to True
+        and the DECEPTIVE assertion fails.
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" \
+        -m pytest tests/integration/test_escalation_emit_differential.py -q --tb=short
+    expect_exit: 0
+
+  - id: fail-open-no-5xx
+    description: >
+      When emit_escalation raises, the /v1/turn endpoint MUST return HTTP 200.
+      Confirmed by test_canary_token_escalation_fail_open.
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" \
+        -m pytest tests/unit/test_canary_token_escalation.py::test_canary_token_escalation_fail_open \
+        -v --tb=short
+    expect_exit: 0
+
+proof:
+  fix: |
+    lib/a2a/server.py:
+      - Added: from lib.durability.escalation import emit_escalation  (module-level)
+      - Added: try/except wrapped call in canary-token branch before return:
+          emit_escalation(card_id=-1, title="A2A canary-token access attempt", age_h=0.0)
+  tests_added: |
+    tests/unit/test_canary_token_escalation.py (3 tests):
+      test_canary_token_access_calls_emit_escalation
+      test_canary_token_escalation_emitter_args
+      test_canary_token_escalation_fail_open
+  differential_updated: |
+    tests/integration/test_escalation_emit_differential.py:
+      - DECEPTIVE arm converted to regression guard (probe now returns False).
+      - test_deceptive_emits_refusal_and_binding_confirms_escalation_fires asserts
+        call_count >= 1 (was == 0 to document the gap; now >= 1 to enforce the fix).
+  issue: "#199"

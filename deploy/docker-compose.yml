@@ -24,6 +24,8 @@ volumes:
   litellm-db-data:   # Phase 1.1 — spend-tracking DB for LiteLLM proxy (issue #55)
   workspace:
   phoenix-data:
+  langfuse-clickhouse-data:
+  langfuse-minio-data:
 
 services:
 
@@ -94,8 +96,13 @@ services:
   # ---- Langfuse (Phase 1.8) ----
   langfuse:
     image: ghcr.io/langfuse/langfuse:3
+    <<: [*restart_policy, *json_logging]
+    # SP-O5: capability hardening (mirrors Phoenix, LiteLLM).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # loopback-only (same pattern as Phoenix)
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://litellm:postgres@litellm-db:5432/litellm_db
@@ -103,10 +110,102 @@ services:
       - SALT=local_langfuse_salt_do_not_use_in_prod
       - NEXTAUTH_URL=http://localhost:3000
       - TELEMETRY_ENABLED=false
+      # ClickHouse integration
+      - CLICKHOUSE_URL=http://langfuse-clickhouse:8123
+      - CLICKHOUSE_MIGRATION_URL=clickhouse://langfuse-clickhouse:9000
+      - CLICKHOUSE_USER=clickhouse
+      - CLICKHOUSE_PASSWORD=clickhouse_pass
+      - CLICKHOUSE_DB=default
+      # Redis integration (caching & queues)
+      - REDIS_HOST=langfuse-redis
+      - REDIS_PORT=6379
+      # MinIO / S3 integration (events blob storage)
+      - LANGFUSE_S3_EVENT_UPLOAD_BUCKET=langfuse-events
+      - LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT=http://langfuse-minio:9000
+      - LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID=minio_user
+      - LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY=minio_password
+      - LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE=true
     depends_on:
       litellm-db: {condition: service_healthy}
+      langfuse-clickhouse: {condition: service_healthy}
+      langfuse-redis: {condition: service_healthy}
+      langfuse-minio: {condition: service_healthy}
     networks:
       - internal
+    # Resource limits.
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 200
+    # SP-O5: healthcheck via the Langfuse /api/public/health endpoint.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:24.3-alpine
+    <<: [*restart_policy, *json_logging]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - CLICKHOUSE_USER=clickhouse
+      - CLICKHOUSE_PASSWORD=clickhouse_pass
+      - CLICKHOUSE_DB=default
+    volumes:
+      - langfuse-clickhouse-data:/var/lib/clickhouse
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://localhost:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 200
+
+  langfuse-redis:
+    image: redis:7-alpine
+    <<: [*restart_policy, *json_logging]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 100
+
+  langfuse-minio:
+    image: minio/minio:RELEASE.2024-05-10T01-39-38Z
+    command: server /data --console-address ":9001"
+    <<: [*restart_policy, *json_logging]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - MINIO_ROOT_USER=minio_user
+      - MINIO_ROOT_PASSWORD=minio_password
+    volumes:
+      - langfuse-minio-data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 100
 
   # ---- LiteLLM proxy ----
 
@@ -296,27 +395,61 @@ services:
   #
   # Official server image from github/github-mcp-server. Hermes connects
   # via HTTP MCP protocol (matches Context7 pattern, simpler than stdio).
-  # Toolset = `all`: actions, code_security, copilot, dependabot, discussions,
-  # gists, git, issues, labels, notifications, orgs, projects, pull_requests,
-  # repos, secret_protection, security_advisories, stargazers, users.
-  # Required PAT scopes: repo, workflow, read:org, security_events.
+  # Toolsets reduced (SP-00f.1) from the full set to a COARSE first cut:
+  #   repos, issues, pull_requests, actions.
+  # This drops the clearly out-of-scope surfaces: code_security, secret_protection,
+  #   orgs, users, copilot, dependabot, discussions, gists, notifications, projects,
+  #   security_advisories, stargazers.
+  # ⚠ PARTIAL — this is NOT the full C17 boundary. `--toolsets` is group-granular, so the
+  #   KEPT groups still expose some GATED/write tools: repos -> create_repository /
+  #   fork_repository / delete_file; pull_requests -> merge_pull_request; actions ->
+  #   run_workflow / rerun_workflow. The AUTHORITATIVE C17 boundary is the least-priv App
+  #   TOKEN (SP-00f.2) + the per-role TOOL allowlist (SP-05) — both still pending.
+  # ⚠ The credential is STILL the broad classic PAT (repo, workflow, read:org,
+  #   security_events), so those leaked tools would currently SUCCEED (201, not 403).
+  #   DO NOT run autonomously until SP-00f.2 closes.
 
   github-mcp:
     # Pinned by digest. Resolved 2026-05-19.
     image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
     <<: [*restart_policy, *json_logging]
-    command: ["http", "--port", "8003", "--toolsets", "all"]
+    command: ["http", "--port", "8003", "--toolsets", "repos,issues,pull_requests,actions"]
     # HIGH-7: capability hardening for GitHub MCP (holds a live GitHub PAT).
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
     environment:
-      # PAT injected via env_file (decrypted at bootstrap from sops). The
-      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN at startup
-      # and uses it to authenticate every API call to api.github.com.
-      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_pat
-    secrets:
-      - github_pat
+      # SP-00f.2 DRAFT — App-credential wiring (replaces static PAT).
+      # GATED: the broad PAT secret (github_pat) is NOT revoked yet;
+      # PAT revocation + App secret provisioning are operator steps listed
+      # in gated_operator_steps of the SP-00f.2 PR.  Do NOT set these
+      # env vars live until the App private key is SOPS-encrypted and the
+      # PAT has been revoked — otherwise the service will fail to start.
+      #
+      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN (or _FILE)
+      # once at startup.  It has NO built-in App auth and NO hot-reload.
+      # Because installation tokens expire ≤1 h, a token-refresh sidecar
+      # (SP-00f.3, NOT built here) or a cron-restart strategy is required:
+      #   Option A (interim): restart: always + mint token at container start
+      #     via an entrypoint wrapper that calls lib/github_auth.py and writes
+      #     the result to /run/secrets/github_token before exec-ing the server.
+      #   Option B (target, SP-00f.3): token-refresh sidecar that re-mints
+      #     ~5 min before expiry and SIGHUPs / docker-restarts github-mcp.
+      # See lib/github_auth.py docstring for full rationale.
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      # Path inside the container to the SOPS-decrypted PEM key (bind-mounted
+      # from secrets/ at runtime by the operator bootstrap script).
+      GITHUB_APP_PRIVATE_KEY_PATH: /run/secrets/github_app_key
+      # The server still reads GITHUB_PERSONAL_ACCESS_TOKEN_FILE at startup;
+      # once the operator mints + injects the installation token this env var
+      # should point at the tmpfs file written by the entrypoint wrapper.
+      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_token
+    # github_pat disabled post-revocation; `github_app_key` + `github_token` are added to this
+    # array once the GitHub App key is provisioned (GATED operator step). An explicit EMPTY ARRAY
+    # keeps `docker compose config` valid during the transition — a comment-only `secrets:` parses
+    # as YAML null, which Compose rejects ("services.github-mcp.secrets must be a array").
+    secrets: []
     networks: [internal, egress]   # needs api.github.com egress
     # The official ghcr.io/github/github-mcp-server image is distroless —
     # no wget, curl, sh, python. Nothing to exec for a healthcheck. The
@@ -743,5 +876,12 @@ secrets:
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
   litellm_master_key:
     file: ${SECRETS_DIR:-../secrets}/litellm-master-key
-  github_pat:
-    file: ${SECRETS_DIR:-../secrets}/github-pat
+  # github_pat: REMOVED by SP-00f.2 — PAT revocation is a GATED operator step.
+  #   The secret definition was removed (not just commented) so `docker compose config`
+  #   no longer requires secrets/github-pat to exist.  The github-mcp service's
+  #   `secrets: []` array (line ~353) is already empty, so no consumer references remain.
+  #   Once the GitHub App key is provisioned, uncomment github_app_key below.
+  # github_app_key:
+  #   file: ${SECRETS_DIR:-../secrets}/github-app-key.pem
+  # github_token is a tmpfs file written at runtime by the entrypoint wrapper;
+  # it is NOT a Docker secret (no file: source) — referenced by env var path.

@@ -213,7 +213,13 @@ class Checkpoint:
         files = self._list_step_files()
         if not files:
             return
-        indices = sorted((int(_STEP_FILENAME_RE.match(p.name).group(1)), p) for p in files)
+
+        def _step_index(p: Path) -> tuple[int, Path]:
+            m = _STEP_FILENAME_RE.match(p.name)
+            assert m is not None  # _list_step_files only returns matched files
+            return (int(m.group(1)), p)
+
+        indices = sorted(_step_index(p) for p in files)
         all_indices = [i for i, _ in indices]
         highest = all_indices[-1]
         recent_cutoff = highest - self.retention_count + 1

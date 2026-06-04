@@ -1,0 +1,72 @@
+# Acceptance — SP-B1 · GoalManager ↔ decomposer entry bridge
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-B1 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L272):
+#   "`goal_intake` bridges the two parallel autonomy surfaces: a `/goal` creates a triage card
+#   the decomposer picks up; the GoalManager `done` verdict closes the root card."
+#
+# MECHANISM (hermetic — InMemoryBoard + InMemory fixtures, no DB/docker/LLM/net/gh):
+#   goal_intake: if board is injected AND triage_card_id not yet in state, creates a Card with
+#   status="triage" and stores its id as triage_card_id (idempotent on resume). board=None =>
+#   no card, byte-identical to pre-SP-B1.
+#
+#   decompose: if triage_card_id is in state, promotes the triage card (set_status → "todo")
+#   and passes it as parent_card_id to project_plan() — so decompose REUSES the triage card as
+#   the parent goal card rather than creating a new one. If promotion fails (crash recovery), it
+#   falls back to creating a new parent. board=None / no triage_card_id => existing behavior.
+#
+#   ship_effect: already reads board_cards["parent"] for mark_done (SP-16 slice 3). Because
+#   board_cards["parent"] == triage_card_id (set by decompose), the SAME card spans the full
+#   lifecycle: triage → todo (at decompose) → ... → done (at ship_effect).
+#
+# HONEST LIMIT: the live default gate is AlwaysReadyGate (always green), so the root closes
+# unconditionally at ship — the withholding mechanism and the real gh-pr-checks GateReader
+# remain deferred to SP-12. The triage lifecycle itself is gate-independent.
+
+task: SP-B1
+title: "GoalManager ↔ decomposer entry bridge — goal_intake creates a triage card the decomposer promotes to the parent goal card; ship_effect closes the same card (triage_card_id == board_cards[parent] == root mark_done target)"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: spb1-triage-lifecycle
+    description: >
+      8 oracles covering the triage-to-done lifecycle:
+      (B1) board injected → goal_intake creates a card with status=triage, stores triage_card_id;
+      (B2) board=None → no triage_card_id (byte-identical to pre-SP-B1);
+      (B3) resume with triage_card_id already in state → NO duplicate card (idempotent; RED: guard-
+      less path creates a second triage card);
+      (B4) decompose with triage_card_id → parent_id == triage_card_id AND card promoted to todo AND
+      children have parent_id == triage_card_id (RED: without SP-B1, decompose creates a NEW parent,
+      breaking the identity);
+      (B5) decompose without triage_card_id → creates new parent (backward-compat preserved);
+      (B6) identity invariant: triage_card_id == board_cards["parent"] == the card mark_done closes;
+      (B7) project_plan API unchanged (parent_card_id=None default creates a new parent);
+      (B8) live end-to-end SpineRunner: triage card created before sign_off → promoted at decompose →
+      root card == done after ship_effect.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_spb1_goal_triage.py::test_goal_intake_creates_triage_card \
+        tests/unit/test_spb1_goal_triage.py::test_goal_intake_no_board_no_triage_card \
+        tests/unit/test_spb1_goal_triage.py::test_goal_intake_idempotent_on_resume \
+        tests/unit/test_spb1_goal_triage.py::test_decompose_promotes_triage_card \
+        tests/unit/test_spb1_goal_triage.py::test_decompose_creates_new_parent_without_triage \
+        tests/unit/test_spb1_goal_triage.py::test_triage_card_identity_across_lifecycle \
+        tests/unit/test_spb1_goal_triage.py::test_project_plan_parent_card_id_none_creates_new_parent \
+        tests/unit/test_spb1_goal_triage.py::test_live_spine_triage_card_lifecycle -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    8 red-green oracles (tests/unit/test_spb1_goal_triage.py) over app/core/graph.py
+    (goal_intake triage card creation + decompose triage promotion), app/core/board.py
+    (project_plan parent_card_id param), and app/core/graph_state.py (triage_card_id field).
+    Proven: goal_intake creates a triage card (B1); board=None byte-identical (B2); idempotent on
+    resume (B3 — RED: guard-less path duplicates); decompose promotes and reuses triage card as
+    parent (B4 — RED: without promotion, new parent is created); backward-compat without triage (B5);
+    identity invariant triage_card_id == board_cards["parent"] == mark_done target (B6);
+    project_plan API unchanged (B7); live SpineRunner end-to-end (B8).
+    DEFERRED (named): real gh-pr-checks GateReader (SP-12); Telegram /goal command handler
+    (SP-13); per-node card lifecycle at done (SP-16 4.1/4.2).

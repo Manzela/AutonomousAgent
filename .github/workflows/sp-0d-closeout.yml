@@ -1,0 +1,39 @@
+# SP-0d — close meta-audit P0-4 (false positive) + record the TamperEvidentLedger/FailureDetectors gap.
+#
+# P0-4 named lib/observability/{ledger,failure_detectors}.py as "dead code"; those files never existed
+# on any ref (fabricated finding). This job re-runs the SP-0d acceptance: the git-log-empty FP proof +
+# the closeout doc (which carries the ready-to-file real-gap issue, since `gh issue create` is
+# classifier-blocked in autonomous sessions). CODEOWNERS guards audit/; acceptance-frozen pins SP-0d.yaml.
+name: sp-0d-closeout
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  p0-4-closeout:
+    name: P0-4 false-positive closeout (SP-0d)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code (full history for git log --all)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Re-run SP-0d acceptance (P0-4 FP proof + closeout doc)
+        run: |
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-0d.yaml

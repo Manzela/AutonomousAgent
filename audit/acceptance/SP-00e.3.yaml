@@ -1,0 +1,95 @@
+# Acceptance — SP-00e.3 · import-hygiene (C5, the import half)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Scope (honest): this delivers the import-hygiene half of C5 — a clean-container
+# `uv sync --frozen` then import EVERY first-party module under app/ + lib/; any
+# ModuleNotFoundError fails. The OTHER C5 halves — `import-declared-deps` (a new pyproject
+# dep must be imported from a reachable path) and the "no `uv pip install`" rule (ci.yml
+# has 3 pre-existing uses to migrate first) — are DEFERRED to a tracked C5 follow-up issue.
+# Assertions are stdlib + the script only (run_acceptance.py re-runs them; the full
+# import-all over app/+lib/ runs in the clean-container workflow).
+#
+# Source: PRD §6 EPIC 0 SP-00e (C5) — "imports every first-party module; any
+# ModuleNotFoundError fails the PR."
+
+task: SP-00e.3
+title: "import-hygiene (C5) — import every first-party module; ModuleNotFoundError fails"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: discovers-first-party-modules
+    description: >
+      The gate discovers the first-party modules under app/ + lib/ (stdlib-only --list mode,
+      no import needed). Non-empty discovery proves it is wired to the real tree.
+    cmd: |
+      out="$(python3 scripts/ci/import_hygiene.py --list --roots app,lib)"
+      echo "$out" | tail -1
+      echo "$out" | grep -qE 'discovered [1-9][0-9]* module'
+    expect_exit: 0
+
+  - id: detects-missing-module
+    description: >
+      Self-contained red-green (C2/C12): a module that imports a NONEXISTENT module must make
+      the gate FAIL (ModuleNotFoundError). Exits 0 only if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"; mkdir "$tmp/pkg"
+      printf 'import __nonexistent_module_xyz__\n' > "$tmp/pkg/bad.py"
+      if python3 scripts/ci/import_hygiene.py --base "$tmp" --roots pkg >/dev/null 2>&1; then
+        echo "FAIL: ModuleNotFoundError not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: missing module caught (gate failed as required)"
+    expect_exit: 0
+
+  - id: detects-syntax-error
+    description: >
+      A runtime module with a SyntaxError is a definitive breakage (never env-dependent) and
+      MUST fail the gate (C9 hardening). Exits 0 only if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"; mkdir "$tmp/pkg"
+      printf 'def broken(:\n    pass\n' > "$tmp/pkg/syntax.py"
+      if python3 scripts/ci/import_hygiene.py --base "$tmp" --roots pkg >/dev/null 2>&1; then
+        echo "FAIL: SyntaxError not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: SyntaxError caught (gate failed as required)"
+    expect_exit: 0
+
+  - id: detects-broken-import-name
+    description: >
+      A non-MNFE ImportError (importing a name that does not exist) is a definitive code
+      breakage and MUST fail the gate (C9 hardening). Exits 0 only if the gate failed.
+    cmd: |
+      tmp="$(mktemp -d)"; mkdir "$tmp/pkg"
+      printf 'from os import __nonexistent_name_xyz__  # noqa\n' > "$tmp/pkg/badname.py"
+      if python3 scripts/ci/import_hygiene.py --base "$tmp" --roots pkg >/dev/null 2>&1; then
+        echo "FAIL: broken import name (ImportError) not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: broken import name caught (gate failed as required)"
+    expect_exit: 0
+
+  - id: passes-clean-module
+    description: >
+      Green control: a module that imports a stdlib module passes (gate exit 0) — proves the
+      gate is not trivially always-fail.
+    cmd: |
+      tmp="$(mktemp -d)"; mkdir "$tmp/pkg"
+      printf 'import os\nimport sys\n' > "$tmp/pkg/good.py"
+      python3 scripts/ci/import_hygiene.py --base "$tmp" --roots pkg
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: warns-not-fails-on-env-dependent-import
+    description: >
+      A module that raises a non-ModuleNotFoundError at import (e.g., RuntimeError needing a
+      live service) is a WARN, NOT a fail — faithful to "any ModuleNotFoundError fails" only.
+    cmd: |
+      tmp="$(mktemp -d)"; mkdir "$tmp/pkg"
+      printf 'raise RuntimeError("needs a live service at import time")\n' > "$tmp/pkg/envdep.py"
+      python3 scripts/ci/import_hygiene.py --base "$tmp" --roots pkg
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/import-hygiene.yml
+  artifact: import-hygiene (clean-container import-all over app/+lib/ + acceptance re-run)

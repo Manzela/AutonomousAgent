@@ -1,0 +1,203 @@
+# Nightly live-stack integration gate — SP-00c.
+#
+# Spins up the CI compose overlay (deploy/docker-compose.ci.yml on top of
+# deploy/docker-compose.yml), runs the full integration suite, then verifies:
+#   1. Zero skipped tests (assert_no_skips.py --skipped==0 gate)
+#   2. Previously-failing manifest tests individually passed
+#   3. SP-00c acceptance assertions (scripts/ci/run_acceptance.py)
+#
+# Cron at 04:13 UTC — off-peak to dodge GitHub Actions :00-minute congestion.
+#
+# All actions MUST be SHA-pinned (the Enforce-Action-SHA-pinning gate blocks tags).
+# SHA values copied from existing pinned workflows in this repository (ci.yml,
+# nightly-eval.yml) as of 2026-06-01.
+
+name: Nightly Integration (SP-00c live-stack)
+
+on:
+  schedule:
+    - cron: "13 4 * * *"  # 04:13 UTC nightly (off-peak)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write  # to open a regression issue on failure
+
+concurrency:
+  group: nightly-integration
+  cancel-in-progress: false  # serial runs — never overlap two nightlies
+
+jobs:
+  live-stack-integration:
+    name: Live-stack integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------------
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          # The hermes image build COPYs hermes-agent/uv.lock from the submodule,
+          # so the live-stack nightly must check it out (recursive). Without it the
+          # "Build hermes image" step fails: '"/hermes-agent/uv.lock": not found'.
+          submodules: recursive
+
+      # ------------------------------------------------------------------
+      # 2. Python + uv
+      # ------------------------------------------------------------------
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv (fast Python installer)
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: "0.5.x"
+
+      - name: Install Python dependencies
+        run: uv sync --all-extras
+
+      # ------------------------------------------------------------------
+      # 3. Build hermes image (required by docker-compose.ci.yml)
+      # ------------------------------------------------------------------
+      - name: Build hermes image
+        run: |
+          docker build \
+            -f deploy/Dockerfile.hermes \
+            -t autonomousagent/hermes:0.1.0 \
+            .
+
+      # ------------------------------------------------------------------
+      # 4. Start CI compose overlay and wait for hermes-api to be healthy
+      # ------------------------------------------------------------------
+      - name: Start CI compose stack
+        # Fix NEW-227-B: `2>&1 | tail -20` under plain `bash -e` uses the pipe's
+        # last exit code (tail's, always 0) — a container exit(1) went undetected.
+        # `set -o pipefail` propagates the first non-zero exit through the pipe.
+        run: |
+          set -euo pipefail
+          docker compose \
+            -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.ci.yml \
+            up --wait --timeout 60 \
+            2>&1 | tail -20
+
+      # Fix NEW-227-B: dump service logs on any failure so triage is one click.
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.ci.yml \
+            logs --no-color hermes-api shell-sandbox volume-init \
+            2>&1 | tail -200 || true
+
+      # ------------------------------------------------------------------
+      # 5. Install cosign (required by test_cosign_verify_negative.py — N-03)
+      #    SHA-pinned ref reused from .github/workflows/phase-0a-deploy.yml.
+      # ------------------------------------------------------------------
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      # ------------------------------------------------------------------
+      # 6. Run integration suite
+      # ------------------------------------------------------------------
+      - name: Run integration tests
+        env:
+          INTEGRATION_LIVE_STACK: "1"
+          HERMES_AGENT_URL: "http://localhost:7878"
+        run: |
+          uv run pytest tests/integration/ \
+            --junitxml=junit.xml \
+            -v --tb=short \
+            2>&1 | tee pytest-output.txt
+
+      # ------------------------------------------------------------------
+      # 7. Assert zero skips + require the previously-failing manifest
+      #    (tests that SKIPS.yaml listed as "Requires INTEGRATION_LIVE_STACK=1")
+      # ------------------------------------------------------------------
+      - name: Assert zero skips + required nodeids passed
+        run: |
+          uv run python scripts/ci/assert_no_skips.py junit.xml \
+            --require-nodeid "tests/integration/test_full_turn.py::test_health_endpoint_responds" \
+            --require-nodeid "tests/integration/test_full_turn.py::test_full_turn_via_admin_api" \
+            --require-nodeid "tests/integration/test_budget_cap.py::test_budget_cap_enforced"
+
+      # ------------------------------------------------------------------
+      # 8. SP-00c acceptance assertions
+      # ------------------------------------------------------------------
+      - name: Run SP-00c acceptance
+        run: |
+          uv run python scripts/ci/run_acceptance.py audit/acceptance/SP-00c.yaml
+
+      # ------------------------------------------------------------------
+      # 9. Upload artifacts
+      # ------------------------------------------------------------------
+      - name: Upload junit + pytest output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: nightly-integration-junit
+          path: |
+            junit.xml
+            pytest-output.txt
+          retention-days: 30
+
+      # ------------------------------------------------------------------
+      # 10. Tear down compose stack
+      # ------------------------------------------------------------------
+      - name: Tear down CI compose stack
+        if: always()
+        run: |
+          docker compose \
+            -f deploy/docker-compose.yml \
+            -f deploy/docker-compose.ci.yml \
+            down -v --remove-orphans
+
+  alert-on-failure:
+    name: Open agent-regression issue on nightly failure
+    needs: live-stack-integration
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open GitHub issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          today="$(date -u +%Y-%m-%d)"
+          body_file="$(mktemp)"
+          cat >"${body_file}" <<BODY
+          The nightly live-stack integration suite (SP-00c) failed.
+
+          - Workflow run: ${RUN_URL}
+          - Triggered: schedule (cron 04:13 UTC)
+          - Suite: tests/integration/ with INTEGRATION_LIVE_STACK=1
+
+          ## Triage steps
+
+          1. Open the run URL and check the pytest output artifact.
+          2. Look for new skips (assert_no_skips.py output).
+          3. Check docker compose logs for hermes-api startup failures.
+          4. Re-run locally:
+             docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml up --wait
+             INTEGRATION_LIVE_STACK=1 pytest tests/integration/ -v
+
+          Closes via re-run once green.
+          BODY
+          sed -i 's/^          //' "${body_file}"
+          gh issue create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Nightly live-stack integration failed (${today})" \
+            --label "agent-regression" \
+            --assignee "Manzela" \
+            --body-file "${body_file}"

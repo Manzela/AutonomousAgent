@@ -64,7 +64,7 @@ async def jsonrpc_dispatch(request: Request) -> JSONResponse:
         return JSONResponse(content=_result(req_id, {"id": task_id, "status": "SUBMITTED"}))
 
     if method == "tasks/get":
-        task_id = params.get("id")
+        task_id = params.get("id")  # type: ignore[assignment]
         if not task_id:
             return JSONResponse(content=_error(req_id, -32001, "Task not found"))
         return JSONResponse(content=_result(req_id, {"id": task_id, "status": "COMPLETED"}))

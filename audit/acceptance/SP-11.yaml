@@ -1,0 +1,123 @@
+# Acceptance — SP-11 · Parallel fan-out (isolated per sub-agent)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-11 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L266):
+#   "Walk the DAG, translate ready nodes to TaskRequests, dispatch concurrently (asyncio.gather),
+#    join at the super-step ... Each ready node gets its OWN isolated sandbox (SP-05) + OWN git
+#    worktree (SP-05b) — no shared /workspace; SP-R6 leases serialize same-path writers.
+#    Acceptance: concurrency observable (wall < 2T-ε AND max active-count ≥2); CROSS-ACCESS
+#    DENIAL (B cannot read A's marker; distinct branches/keys); SEQUENTIAL CONTROL (a pure-chain
+#    DAG runs with max active-count ==1); RED control (shared-volume cross-read SUCCEEDS → FAIL)."
+#
+# MECHANISM (hermetic — real git worktrees + threads + the SP-R6 primitives, no docker/LLM/net):
+#   app/core/decompose.py:ready_nodes() computes the ready frontier over the SP-02 depends_on DAG;
+#   app/core/graph.py fan_out() translates the ready frontier to TaskRequests and dispatches them
+#   CONCURRENTLY via asyncio.gather (gather IS the super-step join barrier — ONE checkpoint per
+#   fan_out). Each leaf (_run_node) acquires a GlobalThreadCap slot THEN a per-branch BranchLease
+#   (key agent/<thread_id>/<node_id>, SP-R6) — both SYNC context managers bridged to async via
+#   asyncio.to_thread so a blocking acquire never freezes the event loop — then runs in its OWN
+#   detached WorkspaceSession worktree (SP-05b, unique mkdtemp path) under its OWN sandbox (SP-05),
+#   diffs + snapshots to its OWN ref refs/aa-snapshots/<thread_id>/<node_id> on COMPLETED.
+#
+# HONEST BOUNDARY / DEFERRED (named, NOT silently dropped):
+#   - PER-NODE BRANCH IDENTITY is realized as (a) the SP-R6 lease key agent/<tid>/<node_id>,
+#     (b) the per-node snapshot ref refs/aa-snapshots/<tid>/<node_id>, and (c) a DISTINCT
+#     detached-HEAD worktree path — NOT a checked-out named branch, so the PRD's literal
+#     `git branch --show-current == node-B` is NOT asserted; the equivalent isolation it proves
+#     (distinct worktree + distinct snapshot key + cross-read denied) IS asserted here.
+#   - KERNEL FS-CONFINEMENT (B's open(A) → EROFS/perm-denied by a read-only mount) is SP-05c
+#     (docker/gVisor); a git worktree is PATH-isolation, not a kernel boundary. Cross-read denial
+#     here is proven at the worktree level (a sibling's marker is never visible in a leaf's tree).
+#   - BUDGET PRE-EMPTION (SP-R2 per-graph aggregate-SPEND cap pre-empts mid-fan-out) — SP-R2 is
+#     not built; the GlobalThreadCap bounds CONCURRENCY (active count), not spend.
+#   - MULTI-WAVE re-fan-out at the GRAPH level: fan_out's ready frontier is computed against the
+#     ACCUMULATED completed tasks (done_ids from state["tasks"], NOT a hardcoded empty set), and
+#     test_fanout_advances_frontier_across_waves PROVES it advances one node per wave when re-driven
+#     — but the GRAPH has no eval_gate->fan_out loop edge and no cross-wave worktree MERGE-BACK, so
+#     this slice dispatches the single ready frontier (roots) once end-to-end; the loop edge + merge
+#     are the deferred multi-wave driver. PER-LEAF Pregel checkpointing (gather hides leaves behind
+#     ONE __pregel_task_id; a mid-fan-out crash re-runs all leaves idempotently into FRESH worktrees,
+#     the tasks reducer dedups by task_id) — named in fan_out's docstring.
+#   - The §12(e) end-to-end two-REAL-graphs thread-isolation oracle is integration-tier (SP-R6 +
+#     SP-11 together); this slice is the unit-level fan-out + isolation proof.
+
+task: SP-11
+title: "parallel fan-out — ready DAG frontier dispatched concurrently (asyncio.gather), each node in its OWN worktree+sandbox under the SP-R6 cap+lease; cross-read denied; pure-chain stays serial"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp11-ready-frontier
+    description: >
+      ready_nodes() advances the frontier wave-by-wave over the depends_on DAG: a diamond yields
+      roots → the parallel middle → the join; a pure chain yields exactly ONE node per wave; a done
+      node is never re-dispatched; structural validation (cycle/self-loop) still bites.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_ready_nodes.py -q
+    expect_exit: 0
+
+  - id: sp11-concurrency-and-sequential-control
+    description: >
+      Concurrency OBSERVABLE: 3 independent roots overlap (max active-count == 3) AND concurrency
+      reclaims more than one node's sleep of wall-clock vs the cap=1 serial control (git-worktree
+      overhead cancels in the difference). SEQUENTIAL CONTROL: a pure-chain DAG dispatches exactly
+      ONE ready node per wave (max active-count == 1 — no spurious parallelism). GLOBAL CAP: cap=2
+      over 4 ready nodes bounds active to 2 AND all 4 complete (queued, never dropped). FRONTIER
+      ADVANCES: feeding each wave's COMPLETED task back re-drives fan_out to dispatch the NEXT node
+      (n0→n1→n2) — the ready frontier is from accumulated completions, not a hardcoded empty set
+      (RED: a hardcoded set() would re-dispatch n0 every wave).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp11_fanout.py::test_concurrency_peak_and_faster_than_serial \
+        tests/unit/test_sp11_fanout.py::test_chain_dispatches_single_ready_node \
+        tests/unit/test_sp11_fanout.py::test_global_cap_queues_and_completes \
+        tests/unit/test_sp11_fanout.py::test_fanout_advances_frontier_across_waves -q
+    expect_exit: 0
+
+  - id: sp11-cross-access-denial
+    description: >
+      CROSS-ACCESS DENIAL (load-bearing isolation): two leaves writing the SAME relpath land in
+      DISTINCT worktrees (TWO non-clobbering 'A' diff entries, not one); neither concurrent leaf
+      can SEE the other's planted marker (cross-READ denied — distinct worktree paths); and every
+      leaf records its OWN snapshot ref in workspace_refs, pairwise DISTINCT (PRD "A/B snapshot to
+      DISTINCT keys", none dropped). RED control (shared /workspace) would yield one clobbered entry
+      / a visible sibling marker / colliding keys → FAIL. Per-task cost: N leaves → N distinct keys.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp11_fanout.py::test_cross_access_denial_distinct_worktrees \
+        tests/unit/test_sp11_fanout.py::test_cross_read_denied_marker_invisible_across_worktrees \
+        tests/unit/test_sp11_fanout.py::test_distinct_snapshot_keys_per_leaf \
+        tests/unit/test_sp11_fanout.py::test_per_task_cost_keys -q
+    expect_exit: 0
+
+  - id: sp11-loop-safety-and-backcompat
+    description: >
+      Event loop NOT blocked: a heartbeat keeps ticking while leaves BLOCK on the cap (the sync
+      cap/lease are entered off-loop via asyncio.to_thread; a direct __enter__ would stall). fan_out
+      is INTERRUPT-FREE (a gather'd leaf cannot cleanly suspend — irreversible effects stay in
+      ship_effect). Back-compat: sandbox=None → a single in-process leaf, no worktree/workspace_ref.
+      Exactly-once: the tasks reducer dedups duplicate task_ids on a re-driven resume (LWW, not append).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp11_fanout.py::test_event_loop_not_blocked_under_cap_contention \
+        tests/unit/test_sp11_fanout.py::test_fan_out_is_interrupt_free \
+        tests/unit/test_sp11_fanout.py::test_sandbox_none_single_leaf \
+        tests/unit/test_sp11_fanout.py::test_tasks_reducer_dedups_by_task_id -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    17 red-green oracles (tests/unit/test_sp11_fanout.py ×12 + tests/unit/test_ready_nodes.py ×5)
+    over app/core/decompose.py:ready_nodes + app/core/graph.py:fan_out, wiring SP-05 (per-node
+    sandbox) + SP-05b (per-node detached worktree + snapshot ref) + SP-R6 (GlobalThreadCap +
+    BranchLease, bridged to async via asyncio.to_thread). Proven: concurrency observable (peak==3,
+    wall-reclaim > one sleep), sequential control (pure chain peak==1), global cap (peak==2, all
+    complete), frontier-advances-per-wave (done_ids from accumulated completions, n0→n1→n2),
+    cross-access denial (distinct worktrees + cross-read denied + distinct snapshot keys, with RED
+    controls), per-task cost keys, event-loop-not-blocked, fan_out interrupt-free, sandbox=None
+    back-compat, tasks-reducer exactly-once. DEFERRED (named in header): SP-R2 budget pre-emption,
+    SP-05c kernel FS-confinement, literal named-branch show-current, GRAPH-level multi-wave loop
+    edge + cross-wave worktree merge-back, §12(e) two-real-graphs.

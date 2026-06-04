@@ -133,7 +133,7 @@ def _gcs_client() -> Any:
     ``budget_watchdog._connect``).
     """
 
-    from google.cloud import storage  # type: ignore[import-not-found]
+    from google.cloud import storage  # type: ignore[import-not-found,attr-defined]
 
     return storage.Client()
 

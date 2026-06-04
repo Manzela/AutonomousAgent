@@ -1,5 +1,5 @@
 name: durability
-version: 0.1.0
-description: "P1-6 failure-matrix retry, P1-3 checkpoint resume, P1-4 REJECTED-inject (ordered on_session_start)"
+version: 0.2.0
+description: "P1-6 failure-matrix retry, P1-3 checkpoint resume, P1-4 REJECTED-inject (ordered on_session_start), SP-14 F34/F35 detector wiring + trajectory shipper"
 kind: standalone
-provides_hooks: [pre_tool_call, post_tool_call, on_session_start]
+provides_hooks: [pre_tool_call, post_tool_call, on_session_start, on_session_end]

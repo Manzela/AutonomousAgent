@@ -60,7 +60,7 @@ def _default_gcs_client() -> Any:
     """Lazy import of the Google Cloud Storage client. Same pattern as
     ``_default_sanitize_client``."""
 
-    from google.cloud import storage  # type: ignore[import-not-found]
+    from google.cloud import storage  # type: ignore[import-not-found,attr-defined]
 
     return storage.Client()
 

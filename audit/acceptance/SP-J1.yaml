@@ -1,0 +1,101 @@
+# Acceptance — SP-J1 · Judge-calibration drift monitor ("eval of the eval")
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-J1: "A small human-labeled gold set scores the SP-06 judges on a
+# schedule; Cohen's κ vs human labels is tracked; Telegram+Kanban alerts fire
+# on drift; a calibration-failing judge is quarantined from the blocking gate."
+#
+# PRD acceptance: "a deliberately mis-graded item drops κ below threshold and
+# fires the alert; an aligned judge stays above."
+#
+# ORACLE MAP (16 hermetic tests — no LLM, no network, no credentials):
+#
+#   cohens_kappa (pure function):
+#   ①  perfect agreement → κ = 1.0.
+#   ②  balanced total disagreement → κ = -1.0.
+#   ③  chance agreement → κ ≈ 0.
+#   ④  length mismatch raises ValueError.
+#   ⑤  empty lists raise ValueError.
+#
+#   JudgeCalibrationMonitor:
+#   ⑥  aligned judge → κ ≥ threshold, no alert.
+#   ⑦  misaligned judge (all wrong, balanced) → κ < 0, alert fires.
+#   ⑧  partially misaligned → alert at κ = 0.5 < threshold 0.6.
+#   ⑨  quarantine fires when κ < quarantine threshold (0.4).
+#   ⑩  alert_callback receives (judge_id, kappa, quarantined).
+#   ⑪  missing rating raises ValueError.
+#
+#   kappa_tier:
+#   ⑫  maps κ to named tiers (almost-perfect/substantial/moderate/fair/slight/poor).
+#
+#   JudgeQuarantineRegistry:
+#   ⑬  quarantine + is_quarantined round-trip.
+#   ⑭  double-quarantine is idempotent (one JSONL entry).
+#   ⑮  release clears the quarantine flag.
+#   ⑯  persists across registry re-load.
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-7
+#   Review verdict: APPROVED — no security findings.
+#   Review notes:
+#     - cohens_kappa() is a pure math function; no I/O, no injection surface.
+#     - JudgeCalibrationMonitor holds no credentials; alert_callback is caller-supplied.
+#     - JudgeQuarantineRegistry writes a JSONL file to a path under config/;
+#       path is operator-controlled at construction. No shell interpolation.
+#     - The registry reads the JSONL with json.loads() — malformed lines are
+#       silently skipped (fail-open for reads, which is safe since a corrupt
+#       quarantine file only risks allowing a quarantined judge to run, not
+#       executing code).
+#     - evals/calibration/gold_set.yaml is CODEOWNERS-guarded (same tier as
+#       evals/golden/) so label tampering requires 4-eyes.
+#
+# DEFERRED (tagged SP-J1-INT):
+#   SP-J1-INT-1: Scheduled nightly calibration run (cron workflow calling
+#     JudgeCalibrationMonitor against the live SP-06 judges on gold_set.yaml).
+#   SP-J1-INT-2: Telegram + Kanban alert integration (calls TelegramNotifier /
+#     InMemoryBoard.create_card from the alert_callback).
+#   SP-J1-INT-3: SP-06 eval gate checks JudgeQuarantineRegistry before routing
+#     (gated on the SP-J1-INT-1 nightly schedule landing).
+
+id: SP-J1
+title: Judge-calibration drift monitor — Cohen's κ + quarantine registry
+prd_section: "§6 SP-J1"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-7
+
+oracle_count: 16
+test_file: tests/unit/test_sp_j1_judge_calibration.py
+implementation:
+  - lib/evaluators/judge_calibration.py
+  - evals/calibration/gold_set.yaml
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp_j1_judge_calibration.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    16 hermetic oracles in tests/unit/test_sp_j1_judge_calibration.py.
+    lib/evaluators/judge_calibration.py: cohens_kappa() pure function (Cohen's
+    inter-rater agreement κ for binary verdicts); kappa_tier() maps κ to
+    Landis & Koch named tiers; JudgeCalibrationMonitor.score() applies a judge
+    to a gold set, computes κ, fires alert_callback on drift (κ < 0.6), marks
+    quarantined=True when κ < 0.4; JudgeQuarantineRegistry persists quarantined
+    judge IDs to a JSONL file (config/quarantined_judges.jsonl by default) and
+    exposes is_quarantined(judge_id) for SP-06 to consult before routing.
+    evals/calibration/gold_set.yaml: 8 human-labeled gold items spanning all 4
+    judge axes (code-correctness, safety, scope-fit, completeness),
+    CODEOWNERS-guarded.
+    Oracle ⑦ (PRD positive path): misaligned judge gets all 4 items wrong →
+    κ = -1.0 → alert fires.
+    Oracle ⑥ (PRD negative path): aligned judge matches all gold labels →
+    κ = 1.0 → no alert, judge passes calibration.
+    C9 review: claude-opus-4-7 (different model class) — APPROVED.
+    DEFERRED: nightly cron schedule (SP-J1-INT-1), Telegram/Kanban alert
+    wiring (SP-J1-INT-2), SP-06 quarantine-check integration (SP-J1-INT-3).
+    16 new oracles passing, 0 regressions.

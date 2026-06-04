@@ -47,8 +47,3 @@ class HashingEmbedder(AbstractEmbedder):
         if norm > 0.0:
             vec /= norm
         return vec
-
-
-# SentenceTransformerEmbedder was moved to app.adapters.local_model.embedder (P3-3).
-# Re-exported here for backward compatibility with existing imports.
-from app.adapters.local_model.embedder import SentenceTransformerEmbedder  # noqa: E402, F401

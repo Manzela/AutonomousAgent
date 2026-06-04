@@ -1,0 +1,76 @@
+# Acceptance — SP-R6 · Repo/branch concurrency + global goal cap (primitives)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-R6 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L302):
+#   "concurrent goals/fan-out nodes that could touch the same files/branch acquire an advisory
+#    lock/lease (per-path/per-branch); a global cap bounds simultaneous active threads.
+#    Acceptance: two graphs targeting one branch -> second serializes (no lost-update);
+#    exceeding the global cap queues rather than fans out. Proof: lock-contention test + cap test."
+#
+# MECHANISM (hermetic): lib/durability/branch_lease.py — BranchLease (per-branch advisory lease
+# via fcntl.flock, the SAME cross-process mechanism lib/durability/checkpoint.py uses; in-process
+# threading.Lock fallback where fcntl is absent) + GlobalThreadCap (process-global cap via a
+# threading.BoundedSemaphore; .slot() BLOCKS/queues when full). Proven directly against the
+# primitives with threading.Barrier-forced contention (a no-op lease/cap would exceed the bound).
+#
+# DEFERRED (named, NOT silently dropped):
+#   - The SP-11 parallel fan-out DISPATCHER that acquires the lease + a cap slot at ready-node
+#     dispatch (no asyncio.gather/Send exists in app/core/graph.py — no caller yet). The §12(e)
+#     end-to-end thread-isolation oracle (two REAL fan-out graphs serialize) lands with SP-11.
+#   - A CROSS-PROCESS global cap (the BoundedSemaphore is process-local — correct for the
+#     single-process spine; a file-slot scheme is the multi-process tier).
+#   - The SP-R2 aggregate-SPEND cap (a separate budget concern, blocked on SP-11).
+#   - Async (asyncio.Semaphore / run_in_executor) integration for the async fan-out — the sync
+#     primitives here are what the deferred dispatcher wraps.
+
+task: SP-R6
+title: "branch-lease + global-thread-cap primitives (lock-contention + cap, hermetic flock/semaphore)"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: spr6-branch-lease-serializes-same-branch
+    description: >
+      Lock-contention: N threads holding the SAME branch lease never overlap (max-concurrent
+      == 1, no lost-update window); distinct branches do NOT serialize (max-concurrent >= 2,
+      no false contention); a non-blocking acquire on a held branch raises LeaseBusy. Threads
+      released via a barrier to force genuine contention (a no-op lease would FAIL).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_spr6_branch_lease.py::test_same_branch_serializes \
+        tests/unit/test_spr6_branch_lease.py::test_different_branches_run_concurrently \
+        tests/unit/test_spr6_branch_lease.py::test_try_hold_raises_when_branch_held -q
+    expect_exit: 0
+
+  - id: spr6-global-cap-queues
+    description: >
+      Cap: with cap N, M>N acquirers run at most N at a time (max-concurrent == N) and ALL M
+      eventually complete (queued, not dropped); a non-blocking slot when full raises LeaseBusy;
+      cap < 1 is rejected.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_spr6_branch_lease.py::test_global_cap_queues_over_cap \
+        tests/unit/test_spr6_branch_lease.py::test_cap_nonblocking_raises_when_full \
+        tests/unit/test_spr6_branch_lease.py::test_cap_rejects_invalid_size -q
+    expect_exit: 0
+
+  - id: spr6-fallback-and-slug
+    description: >
+      The in-process fallback (no fcntl) still serializes the same branch (max-concurrent == 1);
+      a '/'-bearing branch ('agent/<thread>/<node>') maps to ONE filesystem-safe lock segment.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_spr6_branch_lease.py::test_inprocess_fallback_serializes \
+        tests/unit/test_spr6_branch_lease.py::test_branch_slug_is_filesystem_safe -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    8 red-green oracles in tests/unit/test_spr6_branch_lease.py over lib/durability/branch_lease.py:
+    same-branch serialization (barrier-forced, max-concurrent==1), distinct-branch concurrency,
+    non-blocking contention detection, global-cap queueing (cap N, M>N -> max N, all complete),
+    non-blocking cap-full, cap validation, no-fcntl in-process fallback serialization, and the
+    '/'-safe branch slug. Hermetic (threads + fcntl.flock + BoundedSemaphore). The SP-11 fan-out
+    dispatcher that wires these and the §12(e) end-to-end thread-isolation oracle are DEFERRED.

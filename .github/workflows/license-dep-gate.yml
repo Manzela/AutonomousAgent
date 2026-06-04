@@ -1,0 +1,137 @@
+# SP-00h — license + new-dep allowlist gate (blocking).
+#
+# Three checks (PRD §6 EPIC 0 SP-00h):
+#   1. LICENSE — any Python source file ADDED in the PR must not carry a
+#      disallowed SPDX identifier (GPL/AGPL/LGPL/‘all rights reserved’/Proprietary).
+#   2. PINNED   — any dep ADDED to pyproject.toml must carry a version specifier.
+#   3. TYPOSQUAT — any added dep name that is within edit-distance 1-2 of a
+#      popular package AND not in the pre-approved allowlist is flagged.
+#
+# NOT in scope here (already covered):
+#   - Vuln/CVE scanning: OSV-Scanner workflow + Dependabot handle this.
+#   - Full transitive license scan: pip-licenses output is advisory in this gate;
+#     full resolved-env scan is tracked under SP-G1.
+#
+# OPERATOR-GATED step (not automated here):
+#   After this workflow merges and has its first successful run establishing
+#   the check name "license-dep-gate / license-dep-gate", the repo operator
+#   must add it to required_status_checks via:
+#
+#     gh api repos/Manzela/AutonomousAgent/branches/main/protection \
+#       -X PATCH \
+#       --field 'required_status_checks[contexts][]=license-dep-gate / license-dep-gate'
+#
+#   (or via Settings → Branches → main protection → Status checks).
+#   This requires admin scope; it CANNOT be automated from a per-PR GITHUB_TOKEN.
+#
+# CODEOWNERS guards .github/, so this workflow config is reviewed by the operator +
+# the cross-vendor (Gemini) reviewer (C9) before it can land.
+name: license-dep-gate
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  license-dep-gate:
+    name: license + dep allowlist (SP-00h)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_license_dep_gate.py -q
+
+      - name: Compute pyproject.toml diff (ADDED dep lines only)
+        # Produces a unified diff of pyproject.toml between the PR base and HEAD.
+        # Falls back to a diff from HEAD~1 on workflow_dispatch (no base ref).
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          git diff "${BASE_SHA}" HEAD -- pyproject.toml > pyproject_diff.txt || true
+          echo "--- pyproject diff (first 60 lines) ---"
+          head -60 pyproject_diff.txt || true
+
+      - name: Collect added .py source files
+        # Lists Python files that were ADDED (status A) in the PR.
+        # Excludes test files (tests/) and vendor directories.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="$(git rev-parse HEAD~1)"
+          fi
+          git diff --name-status "${BASE_SHA}" HEAD \
+            | awk '$1 == "A" && $2 ~ /\.py$/ && $2 !~ /^tests\// {print $2}' \
+            > added_py_files.txt || true
+          echo "--- added Python files ---"
+          cat added_py_files.txt || true
+
+      - name: Run license + dep gate
+        run: |
+          python3 scripts/ci/license_dep_gate.py \
+            --pyproject-diff pyproject_diff.txt \
+            --added-files added_py_files.txt
+
+      - name: Advisory — pip-licenses resolved-env scan (not a hard gate)
+        # Installs pip-licenses into an isolated env and dumps the resolved
+        # environment's license list to the step summary. Advisory only —
+        # does NOT fail the job. Full blocking of resolved-env disallowed
+        # licenses is tracked under SP-G1 (golden set).
+        # Note: uv run --with pip-licenses keeps this out of pyproject.toml.
+        run: |
+          uv run --no-project --with pip-licenses \
+            pip-licenses --format=json --output-file pip-licenses.json || true
+          if [ -f pip-licenses.json ]; then
+            python3 scripts/ci/license_dep_gate.py \
+              --pyproject-diff pyproject_diff.txt \
+              --added-files added_py_files.txt \
+              --pip-licenses-output pip-licenses.json || true
+            {
+              echo "### Advisory: resolved-env license scan (SP-00h)"
+              echo "_Hard violations in the diff are blocked above. "\
+                   "This is the full resolved-env advisory scan (SP-G1 will harden)._"
+              echo '```'
+              python3 -c "
+          import json
+          data = json.load(open('pip-licenses.json'))
+          bad = [r for r in data if any(
+              kw in (r.get('License') or '').upper()
+              for kw in ['GPL', 'AGPL', 'LGPL', 'PROPRIETARY', 'ALL RIGHTS RESERVED']
+          )]
+          if bad:
+              print(str(len(bad)) + ' advisory hit(s):')
+              for r in bad:
+                  print('  ' + r['Name'] + ': ' + r['License'])
+          else:
+              print('no advisory hits in resolved environment')
+          " || echo '(parse error — see pip-licenses.json artifact)'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Re-run SP-00h acceptance (C1)
+        run: |
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00h.yaml

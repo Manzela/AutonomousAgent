@@ -1,0 +1,220 @@
+# Golden eval corpus — SP-G1
+#
+# Version: v0.1.0
+# Status:  CANDIDATE — every item marked needs-operator-signoff in its `notes`
+#          field.  Do NOT promote to a blocking baseline until the operator
+#          reviews and removes the candidate flag.
+#
+# Grounding: items are derived from REAL completed repo tasks and the PRD's own
+# decomposition examples.  No goals are invented; each `acceptance_ref` points to
+# the corresponding audit/acceptance/<task>.yaml entry that was sha-pinned at
+# time of writing.
+#
+# Contract:  Each item conforms to the schema in evals/golden/schema.json:
+#   { goal, expected_dag: [node...], expected_criteria, expected_trajectory,
+#     version, notes }
+# where node = { id, phase, summary, depends_on:[id], acceptance_ref, allowed_paths:[glob] }
+# (PRD L176).  allowed_paths must be non-empty and non-catch-all.
+
+- goal: "Add dead-code reachability gate that blocks unreachable public symbols (SP-00e.5 / C4)"
+  version: "v0.1.0"
+  notes: >
+    CANDIDATE — needs-operator-signoff.
+    Grounded in completed task SP-00e.5 (PR merged, sha-pinned acceptance at
+    audit/acceptance/SP-00e.5.yaml).  The decomposition mirrors the actual work
+    delivered: a scripts/ci gate + tests + acceptance spec + CI workflow.
+    allowed_paths are the exact files added in that PR.
+  expected_dag:
+    - id: "sp00e5-gate"
+      phase: "build"
+      summary: "Implement dead_code_gate.py: AST callgraph builder + evaluate() + CLI"
+      depends_on: []
+      acceptance_ref: "SP-00e.5 / detects-dead-symbol"
+      allowed_paths:
+        - "scripts/ci/dead_code_gate.py"
+
+    - id: "sp00e5-tests"
+      phase: "test"
+      summary: "Write unit tests for the gate covering all red-green cases"
+      depends_on: ["sp00e5-gate"]
+      acceptance_ref: "SP-00e.5 / accepts-wired-call"
+      allowed_paths:
+        - "tests/ci/test_dead_code_gate.py"
+
+    - id: "sp00e5-acceptance"
+      phase: "review"
+      summary: "Write sha-pinned acceptance YAML with inline red-green assertions"
+      depends_on: ["sp00e5-gate"]
+      acceptance_ref: "SP-00e.5 / self-waiver-scan-is-path-scoped-no-self-trip"
+      allowed_paths:
+        - "audit/acceptance/SP-00e.5.yaml"
+        - "audit/acceptance/SHA256SUMS"
+
+    - id: "sp00e5-workflow"
+      phase: "ship"
+      summary: "Add dead-code-gate.yml CI workflow that fails the PR on drift"
+      depends_on: ["sp00e5-gate", "sp00e5-acceptance"]
+      acceptance_ref: "SP-00e.5 / gate-passes-on-own-source"
+      allowed_paths:
+        - ".github/workflows/dead-code-gate.yml"
+
+  expected_criteria:
+    - "A diff adding an unreachable public symbol fails the gate naming the symbol"
+    - "A diff adding a wired (called or value-referenced) symbol passes the gate"
+    - "@manual self-waiver on an added def is a hard failure (C4 forbids self-waiver)"
+    - "Passive decorators (@cache, @property) do NOT wire a symbol"
+    - "Gate passes on its own full source diff (no self-trip)"
+    - "Acceptance YAML is sha-pinned in SHA256SUMS and guarded by CODEOWNERS"
+
+  expected_trajectory:
+    - phase: "build"
+      description: "Implement AST callgraph (extract_changed_public_symbols, build_callgraph, find_entrypoints, reachable, evaluate)"
+    - phase: "test"
+      description: "Red-green unit tests: orphan fails, wired passes, passive-decorator fails, self-waiver fails"
+    - phase: "review"
+      description: "Write acceptance YAML, pin SHA, add CODEOWNERS guard"
+    - phase: "ship"
+      description: "Wire CI workflow, verify gate passes on repo diff"
+
+
+- goal: "Record llm.call.cost histogram sourced from LiteLLM pricing map (SP-O1)"
+  version: "v0.1.0"
+  notes: >
+    CANDIDATE — needs-operator-signoff.
+    Grounded in completed task SP-O1 (PR merged, sha-pinned acceptance at
+    audit/acceptance/SP-O1.yaml).  The decomposition mirrors the actual work:
+    a helper + post_api_request wiring + unit tests + acceptance.
+    allowed_paths reference the exact files touched.
+  expected_dag:
+    - id: "spo1-helper"
+      phase: "build"
+      summary: "Implement _llm_request_cost_usd() sourcing price from LiteLLM pricing map; return None for unknown models (no fabrication)"
+      depends_on: []
+      acceptance_ref: "SP-O1 / o1-cost-helper-prices-known-model"
+      allowed_paths:
+        - "lib/observability/__init__.py"
+
+    - id: "spo1-hook"
+      phase: "build"
+      summary: "Wire helper into post_api_request hook so histogram.record() is called with real cost"
+      depends_on: ["spo1-helper"]
+      acceptance_ref: "SP-O1 / o1-histogram-record-wired-end-to-end"
+      allowed_paths:
+        - "lib/observability/__init__.py"
+
+    - id: "spo1-tests"
+      phase: "test"
+      summary: "Unit tests: priced model records > 0, unpriced records nothing, fabrication guard"
+      depends_on: ["spo1-hook"]
+      acceptance_ref: "SP-O1 / o1-cost-helper-no-fabrication-on-unknown-model"
+      allowed_paths:
+        - "tests/unit/test_observability_plugin.py"
+
+    - id: "spo1-acceptance"
+      phase: "review"
+      summary: "Write sha-pinned SP-O1 acceptance YAML"
+      depends_on: ["spo1-tests"]
+      acceptance_ref: "SP-O1 / o1-histogram-record-wired-end-to-end"
+      allowed_paths:
+        - "audit/acceptance/SP-O1.yaml"
+        - "audit/acceptance/SHA256SUMS"
+
+  expected_criteria:
+    - "A LiteLLM-priced model returns a positive USD cost from the helper"
+    - "An unknown/unpriced model returns None — no fabricated cost"
+    - "histogram.record() is called with a non-zero cost for a priced model"
+    - "histogram.record() is NOT called for an unpriced model"
+    - "Cost is sourced from the LiteLLM pricing map, not hardcoded"
+
+  expected_trajectory:
+    - phase: "build"
+      description: "Implement and wire _llm_request_cost_usd() into observability hook"
+    - phase: "test"
+      description: "Red-green unit tests covering priced, unpriced, and fabrication cases"
+    - phase: "review"
+      description: "Write acceptance YAML, pin SHA"
+    - phase: "ship"
+      description: "Wire CI workflow (sp-o1-cost-recorder.yml)"
+
+
+- goal: "Add versioned golden eval corpus with regression runner and CI gate (SP-G1)"
+  version: "v0.1.0"
+  notes: >
+    CANDIDATE — needs-operator-signoff.
+    Grounded in SP-G1 itself (this very task from PRD L279).  The decomposition
+    is derived from the PRD acceptance criteria: corpus present + sha recorded;
+    schema validates; a tampered item fails the runner; a regression run emits
+    per-item pass/fail.  allowed_paths are the files delivered by this PR.
+    This item is self-referential by design — it tests that the infrastructure
+    built by SP-G1 can describe its own delivery.
+  expected_dag:
+    - id: "spg1-schema"
+      phase: "plan"
+      summary: "Define golden-item schema (schema.json + Pydantic-equivalent validation in runner)"
+      depends_on: []
+      acceptance_ref: "SP-G1 / schema-validates-valid-item"
+      allowed_paths:
+        - "evals/golden/schema.json"
+
+    - id: "spg1-corpus"
+      phase: "build"
+      summary: "Author 2-3 grounded candidate golden items in corpus.yaml"
+      depends_on: ["spg1-schema"]
+      acceptance_ref: "SP-G1 / corpus-present-sha-recorded"
+      allowed_paths:
+        - "evals/golden/corpus.yaml"
+
+    - id: "spg1-runner"
+      phase: "build"
+      summary: "Implement golden_regression.py: loads corpus, validates schema, emits per-item pass/fail, exits non-zero on drift"
+      depends_on: ["spg1-schema", "spg1-corpus"]
+      acceptance_ref: "SP-G1 / tampered-item-fails-runner"
+      allowed_paths:
+        - "scripts/evals/golden_regression.py"
+
+    - id: "spg1-tests"
+      phase: "test"
+      summary: "Unit tests: valid item passes, invalid item fails, tampered corpus triggers drift, catch-all glob rejected"
+      depends_on: ["spg1-runner"]
+      acceptance_ref: "SP-G1 / tampered-item-fails-runner"
+      allowed_paths:
+        - "tests/ci/test_golden_regression.py"
+
+    - id: "spg1-version-sha"
+      phase: "review"
+      summary: "Write VERSION + SHA256SUMS pinning corpus files; add CODEOWNERS guard for evals/golden/"
+      depends_on: ["spg1-corpus"]
+      acceptance_ref: "SP-G1 / corpus-present-sha-recorded"
+      allowed_paths:
+        - "evals/golden/VERSION"
+        - "evals/golden/SHA256SUMS"
+        - ".github/CODEOWNERS"
+
+    - id: "spg1-workflow"
+      phase: "ship"
+      summary: "Add sp-g1-golden.yml CI workflow running runner + unit tests + acceptance"
+      depends_on: ["spg1-runner", "spg1-tests", "spg1-version-sha"]
+      acceptance_ref: "SP-G1 / regression-run-emits-per-item"
+      allowed_paths:
+        - ".github/workflows/sp-g1-golden.yml"
+        - "audit/acceptance/SP-G1.yaml"
+
+  expected_criteria:
+    - "evals/golden/corpus.yaml is present and sha-recorded in SHA256SUMS"
+    - "schema.json documents the golden-item contract faithful to PRD L176"
+    - "A valid item passes the runner with exit 0"
+    - "A tampered/invalid item causes the runner to exit non-zero"
+    - "A regression run emits per-item pass/fail lines"
+    - "CODEOWNERS guards evals/golden/ (C10 class)"
+
+  expected_trajectory:
+    - phase: "plan"
+      description: "Define schema from PRD L176 node shape"
+    - phase: "build"
+      description: "Author grounded corpus items; implement regression runner"
+    - phase: "test"
+      description: "Unit tests: valid/invalid/tampered/catch-all cases"
+    - phase: "review"
+      description: "Pin SHA, update CODEOWNERS"
+    - phase: "ship"
+      description: "Wire CI workflow and acceptance YAML"

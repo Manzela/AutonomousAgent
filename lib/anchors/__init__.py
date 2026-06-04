@@ -7,9 +7,19 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Iterable, Optional
 from uuid import uuid4
 
+if TYPE_CHECKING:
+    from app.core.spec_drafter import AbstractSpecDrafter
+    from lib.anchors.clarification_driver import ClarificationOutcome
+
+from app.core.trust import (
+    ActionClass,
+    UntrustedContent,
+    guard_action_class,
+    tag_untrusted,
+)
 from lib.anchors.spec_store import SpecStore
 from lib.anchors.task_spec import Scope, SpecStatus, TaskSpec
 
@@ -211,11 +221,45 @@ def _on_pre_tool_call(
             )
         }
 
-    # TODO(P1-1 task 6): wire heuristic + state machine integration. The
-    # state machine + intent classifier exist; the missing piece is the
-    # session-aware adapter that hooks the user-message tool call. Owned by
-    # the Hermes-integration follow-up, not this PR.
+    # SP-03 clarification driver. The state machine (decide_next_action) +
+    # spec-drafter (AbstractSpecDrafter / InMemorySpecDrafter) + round-runner
+    # (run_clarification_round) now exist and wire the gap-finding/clarify loop
+    # (R3/R4). What remains owned by the Hermes-integration layer is the
+    # session-aware ADAPTER that (a) recognises an inbound user-message-style
+    # tool call as a project intent, (b) loads/creates the active draft + its
+    # accumulated answers, and (c) decides to short-circuit the tool. Until that
+    # adapter lands, the hook does not redirect arbitrary tool calls (returning
+    # a block here would mis-fire on every tool call); it returns None to allow.
+    # The driver is exercised directly via lib.anchors.clarification_driver and
+    # its SP-03 acceptance oracles (tests/unit/test_sp03_clarification_driver.py).
     return None
+
+
+def run_clarification(
+    intent: str,
+    *,
+    drafter: "AbstractSpecDrafter | None" = None,
+    **kwargs: Any,
+) -> "ClarificationOutcome":
+    """Run one SP-03 clarification round for an operator goal.
+
+    Thin plugin-level entry point over ``lib.anchors.clarification_driver``: tags
+    the intent UNTRUSTED (C16), drafts TaskSpec fields + typed clarifying
+    questions + an ambiguity report (incl. anti-sycophancy challenges, C18), and
+    returns the ``decide_next_action`` verdict plus the surfaced artifacts.
+
+    The drafter defaults to the deterministic in-memory drafter (hermetic). Prod
+    wiring injects the Vertex concretion (DEFERRED). Imports are local so the
+    fast plugin-registration path stays cheap.
+    """
+    from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
+    from lib.anchors.clarification_driver import run_clarification_round
+
+    return run_clarification_round(
+        intent,
+        drafter=drafter or InMemorySpecDrafter(),
+        **kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -351,14 +395,39 @@ def _setup_new_cli(subparser: argparse.ArgumentParser) -> None:
     )
 
 
-def _draft_from_intent(intent: str, *, title: str | None = None, created_by: int = 0) -> TaskSpec:
+def _draft_from_intent(
+    intent: str,
+    *,
+    title: str | None = None,
+    created_by: int = 0,
+    _untrusted_content: UntrustedContent | None = None,
+) -> TaskSpec:
     """Build a minimal draft TaskSpec from an intent string.
 
     Placeholders for the 5 fields the clarification loop is meant to fill in
     (acceptance_criteria, scope, success_metrics) are valid but explicitly
     marked TBD so a downstream lock without clarification fails closed.
+
+    C16 trust wiring: the ``intent`` string enters from an external channel
+    (user message, Telegram, CLI).  It is tagged as UntrustedContent here
+    and the action-class guard asserts it cannot influence action_class.
+    The guard_action_class call uses the STATIC §4.1 lookup result
+    (PRE_AUTHORIZED — drafting a TaskSpec is a local harness action, not a
+    gated or forbidden operation) and verifies it was NOT derived from the
+    untrusted intent.
     """
-    intent_clean = intent.strip()
+    # Tag external intent as untrusted (C16).
+    untrusted_intent = _untrusted_content or tag_untrusted(intent, source="user_intent")
+
+    # Action-class guard: drafting a TaskSpec is a PRE_AUTHORIZED harness
+    # action (§4.1: "draft commits" is pre-authorized).  The class is derived
+    # from the STATIC table, NOT from the untrusted intent — guard enforces this.
+    guard_action_class(
+        ActionClass.PRE_AUTHORIZED,
+        derived_from_untrusted=False,  # class comes from static §4.1 table
+    )
+
+    intent_clean = untrusted_intent.raw.strip()
     if not intent_clean:
         raise ValueError("intent must be non-empty")
     derived_title = (title or intent_clean.splitlines()[0])[:60].strip() or "Untitled draft"

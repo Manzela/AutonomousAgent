@@ -1,0 +1,86 @@
+# Acceptance — SP-24 · Real predeploy gate + compliance map
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-24: "scripts/predeploy_gate.sh runs explicit checks (eval green,
+# dead-code gate, cosign verify (SP-00d), no -dirty submodule, secrets
+# encrypted, terraform plan clean) as the production Environment gate;
+# compliance map under docs/compliance/ cites controls."
+#
+# PRD acceptance: "for EACH named check, a fixture failing ONLY that check
+# → gate fails citing that check; PLUS one all-green fixture that PASSES.
+# Proof: a red table (one row per check) + the green row."
+#
+# ORACLE MAP (13 oracles — 18 parametrized test cases, all hermetic):
+#
+#   Per-check red table (one per named check):
+#   ①  eval-gate failure → gate exits non-zero, output cites "eval-gate".
+#   ②  dead-code-c4 failure → gate exits non-zero, output cites "dead-code-c4".
+#   ③  cosign-verify failure → gate exits non-zero, output cites "cosign-verify".
+#   ④  submodule-clean failure → gate exits non-zero, output cites "submodule-clean".
+#   ⑤  secrets-encrypted failure → gate exits non-zero, output cites "secrets-encrypted".
+#   ⑥  terraform-plan-clean failure → gate exits non-zero, output cites "terraform-plan-clean".
+#
+#   Green row:
+#   ⑦  All checks pass → gate exits 0, "ALL CHECKS PASSED" in output.
+#
+#   Multi-failure and structural:
+#   ⑧  Two simultaneous failures → both check names cited.
+#   ⑨  scripts/predeploy_gate.sh exists and is executable.
+#   ⑩  scripts/predeploy_gate.sh contains 'set -euo pipefail'.
+#   ⑪  docs/compliance/predeploy-controls.md exists and is non-empty.
+#   ⑫  compliance map references all 6 check names (6 parametrized).
+#
+#   Security oracle (C9 finding, round-1 P1):
+#   ⑬  Empty-string override is treated as failure, not a silent bypass.
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-8
+#   Round 1: REQUEST_CHANGES — 3 findings (P1 empty-string bypass; P2 secrets
+#     glob pattern bypassable; P3 terraform exit-code/doc mismatch).
+#   Round 2: APPROVED — all 3 findings verified remediated; no new blockers.
+#   Review notes (round 2):
+#     - P1 FIXED: `raw=""` → [[ "$raw" == "0" ]] false → result=1 → FAIL.
+#       Only literal "0" passes; empty/garbage all fail.
+#     - P2 FIXED: bash case glob *.sops) anchors to end-of-string (suffix only).
+#       `token.sops.evil` fails. git ls-files also ignores untracked decrypted copies.
+#     - P3 FIXED: compliance doc corrected — exit 2 = FAIL; script + doc agree.
+#     - No new P0/P1 findings.
+#     - Minor: check-1 `grep -q true` fails closed on missing/empty CI run. OK.
+#     - `set -euo pipefail` with empty-array expansions is safe in this bash.
+
+id: SP-24
+title: Real predeploy gate — 6 checks + compliance map
+prd_section: "§6 SP-24"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-8
+
+oracle_count: 13
+test_file: tests/unit/test_sp24_predeploy_gate.py
+implementation:
+  - scripts/predeploy_gate.sh
+  - docs/compliance/predeploy-controls.md
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp24_predeploy_gate.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    18 parametrized test cases (13 oracles) in
+    tests/unit/test_sp24_predeploy_gate.py. All passing, hermetic (no live
+    GH CLI, cosign, or terraform — all checks exercised via PREDEPLOY_*_RESULT
+    env overrides). scripts/predeploy_gate.sh: 6 named checks (eval-gate,
+    dead-code-c4, cosign-verify, submodule-clean, secrets-encrypted,
+    terraform-plan-clean); set -euo pipefail; override values must be exactly
+    "0" to pass (empty or non-"0" = fail, preventing silent bypass via
+    unset env vars); secrets check uses git ls-files with suffix-only *.sops
+    case pattern; terraform exit-code 2 = FAIL (drift must be remediated
+    before deploy). docs/compliance/predeploy-controls.md: compliance map
+    citing PRD controls for all 6 checks. C9 2-round review: REQUEST_CHANGES
+    (P1 bypass, P2 glob, P3 doc mismatch) → fixed → APPROVED. 13 new oracles
+    passing, 0 regressions.

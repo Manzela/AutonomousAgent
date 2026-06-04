@@ -22,8 +22,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional
 
 from app.core.sandbox import AbstractSandbox
@@ -43,6 +47,69 @@ DEFAULT_PEER_TIMEOUT_S = 30.0
 
 # Default task timeout for local dispatch (seconds).
 DEFAULT_LOCAL_TIMEOUT_S = 60.0
+
+# SP-05: env keys whose NAME is secret-shaped are NEVER passed into a sandbox child
+# (default-deny — the sandbox holds no standing secrets; the lethal-trifecta posture).
+_SECRET_KEY_RE = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CRED|PRIVATE", re.IGNORECASE)
+
+# SP-05: the only harness env vars a sandbox child inherits (everything else is dropped).
+# Absolute `sys.executable` cmds don't strictly need PATH, but keep a minimal POSIX set so
+# trivial tools resolve; NONE of these is secret-shaped.
+_SAFE_ENV_ALLOWLIST = ("PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ", "PWD")
+
+
+def _scrubbed_sandbox_env(extra: Optional[dict[str, Any]] = None) -> dict[str, str]:
+    """Build the sandbox child's env: a minimal allowlist from the harness env plus any
+    non-secret ``extra`` overrides. Default-deny — a harness ``*KEY/*TOKEN/*SECRET`` can
+    NOT reach the child (SP-05 acceptance(3); the lethal-trifecta exfil guard).
+
+    ``LocalSubprocessSandbox`` passes ``env=`` straight to the child; ``env=None`` would
+    leak the full ``os.environ``, so callers MUST pass this scrubbed dict.
+    """
+    env: dict[str, str] = {k: os.environ[k] for k in _SAFE_ENV_ALLOWLIST if k in os.environ}
+    if extra:
+        for k, v in extra.items():
+            if _SECRET_KEY_RE.search(k):
+                continue  # never honor a secret-shaped override
+            env[k] = str(v)
+    # Defensive: drop anything secret-shaped that slipped through the allowlist/extras.
+    return {k: v for k, v in env.items() if not _SECRET_KEY_RE.search(k)}
+
+
+# SP-05 (F-1) per-phase egress DECISION (default-deny). The PRD posture is TEST=no egress,
+# BUILD=SP-00g allowlist — but a LIVE allow-listed egress channel needs a netns/gVisor
+# backend (LocalSubprocessSandbox HARD-REFUSES network_allowed=True pre-spawn) and is
+# integration-tier/deferred. So the live allowlist here is EMPTY: every phase → no egress.
+# Keying on the schema phase Literals (research/draft/refine/verify/ship — NOT an invented
+# 'build'/'test') turns the old hardcoded `network_allowed=False` into an auditable,
+# default-deny DATA decision; any future widening of this set trips a red test in review.
+_EGRESS_ALLOWED_PHASES: frozenset[str] = frozenset()
+
+
+def _egress_for_phase(phase: str) -> bool:
+    """Whether a node in ``phase`` may have sandbox egress. Default-deny: unknown/any
+    phase → False until an allow-listed BUILD-egress backend (SP-00g + netns/gVisor) lands."""
+    return phase in _EGRESS_ALLOWED_PHASES
+
+
+def _safe_sandbox_workdir(raw: Any) -> Optional[Path]:
+    """Validate a caller-supplied sandbox workdir (the per-node git worktree, SP-05 F-1).
+
+    HARD GUARD: only forward a workdir that resolves UNDER the system tempdir (where
+    WorkspaceSession materialises the ephemeral worktree). Anything else — most importantly
+    the live repo root — is REFUSED (returns None → run() uses its own tempdir), so a
+    malformed constraint can never make the sandbox child run with the harness checkout as
+    its writable cwd."""
+    if not raw:
+        return None
+    try:
+        wd = Path(str(raw)).resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+    except (OSError, ValueError):
+        return None
+    if wd == tmp_root or tmp_root in wd.parents:
+        return wd if wd.is_dir() else None
+    return None
 
 
 @dataclass
@@ -91,13 +158,19 @@ async def execute(
     capability: AgentCapability,
     *,
     agent_identity: Any = None,
+    sandbox: Optional[AbstractSandbox] = None,
     peer_timeout_s: float = DEFAULT_PEER_TIMEOUT_S,
     local_timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
 ) -> ExecutionResult:
-    """Dispatch a task to a capability — local or across the A2A boundary.
+    """Dispatch a task to a capability — peer (A2A), sandboxed-local, or in-process.
 
-    If ``capability.peer_endpoint`` is set, routes via A2A ``send_message``.
-    Otherwise executes the agent module in-process via ``cap.invoke()``.
+    Routing precedence:
+      1. ``capability.peer_endpoint`` set → A2A ``send_message`` (unchanged).
+      2. ``sandbox`` injected → **SP-05** sandboxed local exec: the node's
+         ``constraints["sandbox_cmd"]`` runs in a real ``AbstractSandbox.run()`` child
+         (different PID, scrubbed env, no network), NEVER in the harness process.
+      3. otherwise → legacy in-process ``capability.invoke()`` (preserved for the
+         SP-01/SP-04 spine skeleton when no sandbox is injected).
 
     Args:
         request: The task to execute.
@@ -105,8 +178,10 @@ async def execute(
         agent_identity: SA identity for outbound JWT minting (Day 5+).
             Pass ``None`` for the pre-production posture per INTEGRATION.md §P-3
             (fail-open auth).
+        sandbox: SP-05 per-node sandbox. When provided (and no peer endpoint), the
+            local capability is executed inside it instead of in-process.
         peer_timeout_s: httpx timeout for A2A peer requests.
-        local_timeout_s: asyncio timeout for local invoke().
+        local_timeout_s: asyncio timeout for local invoke()/sandbox run.
 
     Returns:
         ``ExecutionResult`` with proper status, timing, and cost accounting.
@@ -117,6 +192,13 @@ async def execute(
             capability,
             agent_identity=agent_identity,
             timeout_s=peer_timeout_s,
+        )
+    if sandbox is not None:
+        return await _execute_sandboxed(
+            request,
+            capability,
+            sandbox=sandbox,
+            timeout_s=local_timeout_s,
         )
     return await _execute_local(
         request,
@@ -232,10 +314,10 @@ async def _execute_via_a2a(
                 "a2a peer dispatch protocol error: task_id=%s peer=%s code=%d msg=%s",
                 request.task_id,
                 capability.peer_endpoint,
-                exc.code,  # type: ignore[union-attr]
+                exc.code,  # type: ignore[attr-defined]
                 exc,
             )
-            error_str = f"a2a_peer_error: code={exc.code} msg={exc}"  # type: ignore[union-attr]
+            error_str = f"a2a_peer_error: code={exc.code} msg={exc}"  # type: ignore[attr-defined]
         else:
             logger.error(
                 "a2a peer dispatch error: task_id=%s peer=%s error=%r",
@@ -342,26 +424,117 @@ async def _execute_local(
         )
 
 
+async def _execute_sandboxed(
+    request: TaskRequest,
+    capability: AgentCapability,
+    *,
+    sandbox: AbstractSandbox,
+    timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
+) -> ExecutionResult:
+    """SP-05: run the node's command in a REAL sandbox child — not in-process.
+
+    The command is ``request.constraints["sandbox_cmd"]`` (a ``list[str]``); when the
+    execute node provides ``request.constraints["workdir"]`` (the per-node git worktree,
+    F-1) it is forwarded as the child's cwd AFTER a hard guard (must resolve under the
+    system tempdir — never the live repo). The child runs with a default-deny scrubbed env
+    (no harness secrets); egress is a per-phase DECISION (``_egress_for_phase``, default-deny
+    — empty live allowlist, so every phase is denied this slice). The real subprocess exit
+    code drives the status (anti-drift), never agent-emitted output text.
+
+    Deferred to later SP-05 slices: deriving the command from the external Hermes binary
+    (``lib/hermes_bridge.py`` is a host-exec that raises + inherits unscrubbed env — NOT
+    wired), per-node cross-isolation for fan-out (SP-05b), per-role tool allowlist, LIVE
+    BUILD egress allowlist enforcement (SP-00g + netns/gVisor, integration-tier), kernel
+    FS-confinement/EROFS (SP-05c). This node's writable-worktree diff is scope-scored by
+    eval_gate (SP-06), NOT kernel-confined.
+    """
+    t0 = time.monotonic()
+    cmd = request.constraints.get("sandbox_cmd")
+    if not isinstance(cmd, list) or not cmd or not all(isinstance(a, str) for a in cmd):
+        return ExecutionResult(
+            task_id=request.task_id,
+            status=TaskStatus.FAILED,
+            agent_id=capability.agent_id,
+            output=None,
+            error="sandbox_exec_missing_or_invalid_cmd",
+            duration_s=time.monotonic() - t0,
+        )
+
+    env = _scrubbed_sandbox_env(request.constraints.get("sandbox_env"))
+    workdir = _safe_sandbox_workdir(request.constraints.get("workdir"))
+    effective_timeout = (
+        min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
+    )
+
+    try:
+        result = await sandbox.run(
+            cmd=cmd,
+            workdir=workdir,
+            env=env,
+            timeout_s=effective_timeout,
+            # SP-05 F-1: per-phase egress (default-deny; empty live allowlist → False here).
+            network_allowed=_egress_for_phase(request.phase),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface any sandbox failure as a task failure
+        # logger.exception (not .error) preserves the traceback so an internal sandbox
+        # bug (e.g. a broken AbstractSandbox impl) is debuggable; exc_info is scrubbed
+        # on the log path (lib/scrubber.py). C9 (gemini-2-5-pro) review.
+        logger.exception(
+            "sandbox exec error: task_id=%s sandbox=%s",
+            request.task_id,
+            sandbox.__class__.__name__,
+        )
+        return ExecutionResult(
+            task_id=request.task_id,
+            status=TaskStatus.FAILED,
+            agent_id=capability.agent_id,
+            output=None,
+            error=f"sandbox_exec_error: {exc!r}",
+            duration_s=time.monotonic() - t0,
+        )
+
+    ok = result.returncode == 0
+    return ExecutionResult(
+        task_id=request.task_id,
+        status=TaskStatus.COMPLETED if ok else TaskStatus.FAILED,
+        agent_id=capability.agent_id,
+        output={
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "returncode": result.returncode,
+            "killed": result.killed,
+        },
+        error=None if ok else f"sandbox_exit_{result.returncode}",
+        duration_s=result.duration_s,
+    )
+
+
 def _map_a2a_status(status: str) -> TaskStatus:
     """Map an A2A Task status string to the orchestrator's TaskStatus enum.
 
     A2A uses: SUBMITTED, WORKING, INPUT_REQUIRED, COMPLETED, CANCELED, FAILED.
-    The orchestrator uses: PENDING, INFLIGHT, COMPLETED, FAILED, REFUSED.
+    The orchestrator uses: PENDING, INFLIGHT, INPUT_REQUIRED, COMPLETED, FAILED,
+    REFUSED, CANCELED.
 
-    INPUT_REQUIRED maps to FAILED because the peer is blocked waiting for
-    human input that the orchestrator cannot provide.  Operators are warned
-    via a log message so the blockage is surfaced rather than silently
-    treated as in-progress work.
+    SP-04: INPUT_REQUIRED maps to the NON-TERMINAL TaskStatus.INPUT_REQUIRED — it
+    is NOT a hard FAILED. The peer is blocked waiting for a human decision, which
+    is exactly what the spine's sign_off interrupt() gate exists to provide: the
+    parked task is routable to a human (HITL) and resumable on /approve, never
+    discarded as a failure. (Previously this collapsed to FAILED, killing the run;
+    that was the SP-04 bug.)
     """
     if status == "INPUT_REQUIRED":
-        logger.warning(
-            "a2a: peer returned INPUT_REQUIRED — task is blocked waiting for human input; "
-            "orchestrator has no mechanism to unblock this task (treating as FAILED)"
+        logger.info(
+            "a2a: peer returned INPUT_REQUIRED — task is parked waiting for a human "
+            "decision; routable to the sign_off interrupt() gate (non-terminal, "
+            "resumable on /approve), NOT failed"
         )
     mapping = {
         "SUBMITTED": TaskStatus.INFLIGHT,
         "WORKING": TaskStatus.INFLIGHT,
-        "INPUT_REQUIRED": TaskStatus.FAILED,
+        "INPUT_REQUIRED": TaskStatus.INPUT_REQUIRED,
         "COMPLETED": TaskStatus.COMPLETED,
         "CANCELED": TaskStatus.CANCELED,
         "FAILED": TaskStatus.FAILED,

@@ -1,0 +1,88 @@
+# Acceptance — SP-R1 (slice) · checkpoint PII/secret scrub-before-persist
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 Spine-risk SP-R1:
+#   "plant ≥3 distinct PII/secret shapes (API key, email/phone, an SA private-key block)
+#    across goal text, clarification dialogue, AND a tool-output field; assert NONE appear
+#    verbatim in the persisted checkpoint bytes; assert the serializer routes through the
+#    same lib/scrubber.py as the model path (call-site/import-identity assertion); Cloud
+#    SQL kms_key_name set."
+#
+# Scope of THIS slice: the GOAL field (already scrubbed at goal_intake, SP-01) + the
+# TOOL-OUTPUT field (NEW — the execute node scrubs the sandbox child's stdout/stderr
+# before it enters the checkpoint), proven with 3 distinct secret shapes the scrubber
+# covers (openai/anthropic key, AWS access-key id, PEM private-key block) + a call-site
+# identity assertion that the execute path routes through the SAME lib.scrubber.scrub_string
+# as the goal/model path (so coverage cannot drift).
+#
+# DEFERRED: the clarification-dialogue field (needs SP-03 clarify wired into the spine);
+# the full serde-level scrub of EVERY persisted checkpoint value (not just goal+tool-out);
+# email/phone PII patterns in lib/scrubber (today it covers credentials, not PII); CMEK
+# kms_key_name on the prod Cloud SQL checkpoint DB (GCP/operator).
+
+task: SP-R1
+title: "checkpoint scrub-before-persist: goal + tool-output secrets absent from the persisted checkpoint, via the same lib/scrubber (3 shapes + call-site identity)"
+driver: V
+phase: spine-risk
+run_from: repo_root
+
+assertions:
+  - id: spr1-tool-output-scrubbed
+    description: >
+      RED→GREEN: a secret printed to the sandbox child's stdout/stderr is NOT present
+      verbatim in the persisted `tasks` checkpoint value (the execute node scrubs tool
+      output before persist); a benign output is preserved (non-destructive control).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_spr1_tooloutput_scrub.py::test_tool_output_secret_absent_from_persisted_task \
+        tests/unit/test_spr1_tooloutput_scrub.py::test_clean_tool_output_unchanged \
+        -q
+    expect_exit: 0
+
+  - id: spr1-three-secret-shapes
+    description: >
+      ≥3 distinct secret shapes (openai/anthropic key, AWS access-key id, PEM private-key
+      block) planted across stdout+stderr are all absent from the persisted checkpoint.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_spr1_tooloutput_scrub.py::test_three_secret_shapes_scrubbed_from_tool_output \
+        -q
+    expect_exit: 0
+
+  - id: spr1-call-site-identity
+    description: >
+      The execute node routes tool output through the SAME lib.scrubber.scrub_string the
+      goal/model path uses (so PII/secret coverage cannot drift between paths).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_spr1_tooloutput_scrub.py::test_tool_output_routes_through_lib_scrubber \
+        -q
+    expect_exit: 0
+
+  - id: spr1-goal-scrubbed-existing
+    description: >
+      Regression: the goal field remains scrubbed before it enters the checkpoint
+      (SP-01 spine_runner scrub-before-persist, unchanged by this slice).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_graph_spine.py::test_secret_in_goal_absent_from_persisted_checkpoint \
+        -q
+    expect_exit: 0
+
+proof:
+  red_green: >
+    On origin/main the execute node persists result.model_dump() verbatim — a secret in
+    sandbox stdout lands in the checkpoint (RED). After the execute node deep-scrubs the
+    task via lib.scrubber.scrub_string, the 3 shapes are absent (GREEN); 4 oracles in
+    tests/unit/test_spr1_tooloutput_scrub.py + the existing goal-scrub regression.
+  hermetic: >
+    No Vertex/LLM/network/docker. In-test AbstractSandbox double returns a SandboxResult
+    with planted secrets in stdout/stderr; the scrub is lib/scrubber's process-wide
+    patterns singleton.
+  deferred: >
+    clarification-dialogue field (needs clarify wired into the spine), full serde-level
+    scrub of every persisted value, email/phone PII patterns in lib/scrubber, CMEK on the
+    prod Cloud SQL checkpoint DB — later SP-R1 work.

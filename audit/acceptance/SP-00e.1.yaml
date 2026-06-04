@@ -1,0 +1,67 @@
+# Acceptance — SP-00e.1 · Enforcement substrate: §4 PR template + CODEOWNERS guards + acceptance-frozen
+#
+# C8 (Executor Operating Contract): immutable, machine-checkable acceptance.
+#   - Pass = EVERY assertion exits 0.
+#   - This file is sha256-pinned in audit/acceptance/SHA256SUMS (the acceptance-frozen
+#     manifest), which is CODEOWNERS-guarded (4-eyes / C10). It MUST NOT be edited in
+#     the PR that claims SP-00e.1 done without an operator-approved manifest update.
+#   - Assertions are stdlib/shell only so run_acceptance.py can re-run them in a
+#     minimal env (C1: evidence = re-run).
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 EPIC 0, row SP-00e (sub-PR #1 slice).
+
+task: SP-00e.1
+title: "Enforcement substrate — §4 PR template, CODEOWNERS guards, acceptance-frozen gate"
+driver: V            # Value
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: pr-template-has-section-4-blocks
+    description: >
+      The PR template carries the §4 contract sections an executor must fill
+      (Evidence/C1, Red-Green/C2, Test Truth/C7, Refutation/C12, Test Changes/C6).
+    cmd: |
+      t=.github/PULL_REQUEST_TEMPLATE.md
+      for s in '## Evidence' '## Red-Green' '## Test Truth' '## Refutation attempted' '## Test Changes'; do
+        grep -qF "$s" "$t" || { echo "missing PR-template section: $s"; exit 1; }
+      done
+    expect_exit: 0
+
+  - id: codeowners-guards-acceptance-and-github
+    description: >
+      CODEOWNERS guards audit/acceptance/ (incl. the SHA256SUMS manifest) AND .github/
+      so the executor cannot self-edit its gates/acceptance (C10).
+    cmd: |
+      grep -Eq '(^|/)audit/acceptance/' .github/CODEOWNERS \
+        && grep -Eq '(^|/)\.github/' .github/CODEOWNERS
+    expect_exit: 0
+
+  - id: acceptance-frozen-passes-on-clean-tree
+    description: >
+      On the committed tree, every audit/acceptance/*.yaml matches its pinned sha in
+      SHA256SUMS — the gate PASSES (green control).
+    cmd: |
+      python3 scripts/ci/acceptance_frozen.py
+    expect_exit: 0
+
+  - id: acceptance-frozen-detects-drift
+    description: >
+      Self-contained red-green (C2/C12): mutate a COPY of an acceptance file without
+      updating the manifest; the gate MUST return non-zero (drift caught). The cmd exits
+      0 only if the gate correctly FAILED on the mutated input.
+    cmd: |
+      tmp="$(mktemp -d)"
+      cp audit/acceptance/*.yaml "$tmp/"
+      cp audit/acceptance/SHA256SUMS "$tmp/"
+      printf '\n# injected drift (deliberately broken input)\n' >> "$tmp/SP-00.yaml"
+      if python3 scripts/ci/acceptance_frozen.py --dir "$tmp" --manifest "$tmp/SHA256SUMS" >/dev/null 2>&1; then
+        echo "FAIL: acceptance-frozen did NOT detect the injected drift"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"
+      echo "OK: acceptance-frozen detected the injected drift (non-vacuous gate)"
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/acceptance-frozen.yml
+  artifact: acceptance-frozen-evidence

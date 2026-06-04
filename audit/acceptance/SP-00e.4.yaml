@@ -1,0 +1,79 @@
+# Acceptance — SP-00e.4 · test-integrity-gate + strict-markers + no-skip extension (C6)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Scope (honest): the anti-reward-hacking core of C6 —
+#   (1) --strict-markers + -p no:cacheprovider committed in pyproject (addopts);
+#   (2) no-skip workflow extended to skip/skipif/xfail/manual (forward-looking);
+#   (3) test-integrity-gate: a PR deleting a test fn / net-removing asserts (in TEST paths)
+#       must carry a `## Test Changes` block, else FAIL.
+# DEFERRED (tracked): the coverage-floor (coverage-baseline.json) — needs SP-00c's CI-green
+# suite to baseline; and the C9-APPROVES-the-block enforcement — the adversarial-review job.
+# Assertions are stdlib + the script only (run_acceptance.py re-runs them).
+#
+# Source: PRD §6 EPIC 0 SP-00e (C6) — "a PR deleting an existing test fn ... without an
+# APPROVED `## Test Changes` block fails test-integrity-gate (red), an all-clean PR passes (green)."
+
+task: SP-00e.4
+title: "test-integrity-gate (C6) — block test-deletion/weakening; strict-markers; no new skips"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: strict-markers-and-nocache-committed
+    description: >
+      addopts pins --strict-markers (unregistered/typo'd markers error, not silently pass)
+      and -p no:cacheprovider (CI runs exactly what it claims).
+    cmd: |
+      grep -Eq 'addopts.*strict-markers' pyproject.toml \
+        && grep -Eq 'addopts.*no:cacheprovider|no:cacheprovider' pyproject.toml
+    expect_exit: 0
+
+  - id: no-skip-gate-covers-skipif-xfail-manual
+    description: >
+      The no-skip workflow blocks newly-added skip/skipif/xfail/manual (not just bare skip).
+    cmd: |
+      w=.github/workflows/no-skip-on-remediation.yml
+      grep -q 'skipif' "$w" && grep -q 'xfail' "$w" && grep -q 'manual' "$w"
+    expect_exit: 0
+
+  - id: test-integrity-blocks-deletion-without-block
+    description: >
+      Red (ImpossibleBench): a diff DELETING a test function + a PR body with NO `## Test
+      Changes` block MUST fail the gate. Exits 0 only if the gate correctly returned non-zero.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '%s\n' '--- a/tests/unit/test_x.py' '+++ b/tests/unit/test_x.py' '@@ -1,4 +1,1 @@' ' def test_keep():' '-' '-def test_gone():' '-    assert foo() == 1' > "$tmp/d.patch"
+      printf '## Summary\nno block here\n' > "$tmp/body.md"
+      if python3 scripts/ci/test_integrity_gate.py --diff-file "$tmp/d.patch" --pr-body "$tmp/body.md" >/dev/null 2>&1; then
+        echo "FAIL: test deletion not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: test deletion blocked without a Test Changes block"
+    expect_exit: 0
+
+  - id: test-integrity-allows-deletion-with-block
+    description: >
+      Green: the SAME deletion WITH a non-empty `## Test Changes` block PASSES (deliberate,
+      reviewer-approved change).
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '%s\n' '--- a/tests/unit/test_x.py' '+++ b/tests/unit/test_x.py' '@@ -1,4 +1,1 @@' ' def test_keep():' '-' '-def test_gone():' '-    assert foo() == 1' > "$tmp/d.patch"
+      printf '## Test Changes\nRemoved test_gone — folded into a parametrized test_keep.\n' > "$tmp/body.md"
+      python3 scripts/ci/test_integrity_gate.py --diff-file "$tmp/d.patch" --pr-body "$tmp/body.md"
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: test-integrity-passes-net-new-test
+    description: >
+      Green control: a diff ADDING a test (no deletion/weakening) passes with no block needed.
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '%s\n' '--- a/tests/unit/test_x.py' '+++ b/tests/unit/test_x.py' '@@ -0,0 +1,2 @@' '+def test_new():' '+    assert thing() is True' > "$tmp/d.patch"
+      printf '## Summary\nnet-new test\n' > "$tmp/body.md"
+      python3 scripts/ci/test_integrity_gate.py --diff-file "$tmp/d.patch" --pr-body "$tmp/body.md"
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/test-integrity-gate.yml
+  artifact: test-integrity-gate (diff-vs-body) + acceptance re-run + gate unit tests

@@ -1,0 +1,118 @@
+# Acceptance — SP-02 · TaskGraph DAG + TaskSpec→TaskRequest phase bridge
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Scope (PRD §6 EPIC-1 SP-02, P-2): a validated DAG type in app/ + a decomposer seam +
+# a TaskSpec→TaskRequest phase bridge. TaskNode/TaskGraph TypedDicts already exist in
+# app/core/graph_state.py (SP-01). NET-NEW here:
+#   (1) AbstractDecomposer ABC (app/core/decompose.py) + a DETERMINISTIC, hermetic,
+#       rule-based InMemoryDecomposer (app/adapters/inmemory/decompose.py) for CI — NO
+#       LLM. The Vertex/LLM concretion (app/adapters/gcp/decompose.py) is a DEFERRED stub.
+#   (2) DAG VALIDATION: acyclic, every depends_on resolves to a node id, every node has a
+#       valid SDLC phase.
+#   (3) DECOMPOSITION FIDELITY: union of node acceptance_ref == TaskSpec.acceptance_criteria
+#       indices (no orphan criterion, no invented node).
+#   (4) NON-CATCH-ALL allowed_paths: every node has a non-empty, acceptance-derived
+#       allowed_paths that is NOT a wildcard (**/*/./ FAILS fidelity — else SP-06's
+#       out-of-scope fail-branch is unreachable).
+#   (5) TaskSpec→TaskRequest phase bridge: TaskSpec has no phase; the bridge assigns one
+#       per node and emits a TaskRequest carrying it.
+#
+# DEFERRED (with PRD trigger): the Vertex/LLM concretion (vendored hermes-agent decomposer
+# prompt + Vertex client) — app/adapters/gcp/decompose.py is the present-not-yet-wired
+# shell that raises NotImplementedError; richer cross-criterion dependency inference; the
+# C8-pinned per-node audit/acceptance/<node-id>.yaml copy (SP-06 owns that gate). CI is
+# hermetic against the in-memory adapter — NO live Vertex/LLM calls.
+
+task: SP-02
+title: "TaskGraph DAG validation + decomposition fidelity + TaskSpec→TaskRequest phase bridge"
+driver: P
+phase: gate-1
+run_from: repo_root
+
+assertions:
+
+  - id: sp02-files-exist
+    description: >
+      The SP-02 modules exist: the AbstractDecomposer + validators in app/core/decompose.py,
+      the deterministic InMemoryDecomposer adapter, and the deferred Vertex stub.
+    cmd: |
+      for f in app/core/decompose.py \
+               app/adapters/inmemory/decompose.py \
+               app/adapters/gcp/decompose.py; do
+        test -f "$f" || { echo "FAIL: $f absent"; exit 1; }
+      done
+      echo "OK: all SP-02 decompose modules present"
+    expect_exit: 0
+
+  - id: sp02-abc-and-deterministic-adapter
+    description: >
+      AbstractDecomposer ABC cannot instantiate; InMemoryDecomposer is a subclass and is
+      DETERMINISTIC + hermetic (same TaskSpec in => byte-identical TaskGraph out, no LLM).
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider \
+        -k "abstract_decomposer_cannot_instantiate or subclass_of_abc or deterministic_hermetic"
+    expect_exit: 0
+
+  - id: sp02-dag-validation
+    description: >
+      TaskGraph validation (SP-02 (2)): a valid graph passes; a cycle is rejected; a dangling
+      depends_on is rejected; an invalid (non-SDLC) phase is rejected; every node phase is a
+      valid SDLC phase; the edges list mirrors depends_on exactly. Red-greens on each.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider \
+        -k "valid_graph_passes or cycle_is_rejected or dangling_depends_on or invalid_phase or valid_sdlc_phase or edges_mirror"
+    expect_exit: 0
+
+  - id: sp02-decomposition-fidelity
+    description: >
+      Decomposition fidelity (SP-02 (3)): union of node acceptance_ref == criterion indices;
+      an ORPHAN criterion (dropped node) FAILS; an INVENTED node (ref outside range) FAILS.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider \
+        -k "fidelity_union_equals or orphan_criterion or invented_node"
+    expect_exit: 0
+
+  - id: sp02-non-catch-all-allowed-paths
+    description: >
+      Non-catch-all allowed_paths (SP-02 (4)): **/*/./ and empty/whitespace are detected as
+      catch-all; specific paths are not; every node has a non-empty non-catch-all allowed_paths;
+      a wildcard allowed_paths FAILS fidelity; an empty allowed_paths FAILS fidelity.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider \
+        -k "catch_all or noncatchall or wildcard_allowed_paths or empty_allowed_paths or specific_globs"
+    expect_exit: 0
+
+  - id: sp02-multistep-golden
+    description: >
+      A multi-step golden goal yields >1 node spanning >=2 SDLC phases; a single-criterion
+      spec yields a single valid node (the degenerate base case).
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider \
+        -k "multistep_goal or single_criterion_yields_single_node"
+    expect_exit: 0
+
+  - id: sp02-phase-bridge
+    description: >
+      TaskSpec→TaskRequest phase bridge (SP-02 (5)): TaskSpec has NO phase field; the bridge
+      emits one TaskRequest per node carrying the per-node assigned phase + summary.
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider \
+        -k "phase_bridge_emits or taskspec_has_no_phase or bridge_preserves_summary"
+    expect_exit: 0
+
+  - id: sp02-full-suite
+    description: >
+      The full SP-02 oracle file is green (all property + red-green tests).
+    cmd: |
+      uv run --extra dev python -m pytest tests/unit/test_decompose.py -q -p no:cacheprovider
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    SP-02 red-greens (the SP-02 unit oracles in tests/unit/test_decompose.py): AbstractDecomposer
+    ABC non-instantiable + deterministic hermetic InMemoryDecomposer; DAG validation (acyclic,
+    depends_on resolves, valid SDLC phase, edges mirror depends_on); decomposition fidelity
+    (acceptance_ref union == criterion indices, orphan + invented red-greens); non-catch-all
+    acceptance-derived allowed_paths (wildcard + empty red-greens); multi-step golden (>1 node,
+    >=2 phases); TaskSpec→TaskRequest phase bridge (TaskSpec has no phase; per-node phase carried).

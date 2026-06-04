@@ -95,8 +95,11 @@ against `adapters/inmemory/`; staging + prod run against `adapters/gcp/`.
 ## Audit reviewer model class rule
 
 Every P0/P1 fix produced by an LLM agent MUST be reviewed by an LLM of a different model class.
-Same-vendor counts as same-class (Opus reviewing Sonnet → ALLOWED; Opus reviewing Opus → FORBIDDEN; Claude → Gemini → ALLOWED).
+A different MODEL counts as a different class — the class is the specific model (operator-resolved 2026-06-01).
+(Opus reviewing Sonnet → ALLOWED; Opus reviewing Opus → FORBIDDEN; Claude → Gemini → ALLOWED.)
+Vendor-sameness alone does NOT make same-class.
 The reviewer model is recorded in the PR description under `Reviewer model:` (line literal). PR template enforces.
+Machine-enforced by `.github/workflows/c9-reviewer-class-gate.yml` (C-04).
 
 ## Audit rubric immutability
 
@@ -109,6 +112,25 @@ actor (4-eyes principle). No in-session rubric edits.
 
 ## Commit signing
 
-All commits to `main` MUST be signed (Sigstore gitsign OR GPG). Verify:
+All commits MUST be signed (Sigstore gitsign OR GPG/SSH). Verify:
   git log --show-signature -1
-Pre-commit hook `verify-signed-commits` enforces locally. Branch protection enforces remotely.
+
+**How signing is actually enforced (ground truth, not aspiration):**
+- **Locally**: the repo's git config sets `commit.gpgsign=true` (with
+  `gpg.format=ssh`), so commits are signed automatically. There is **no**
+  `verify-signed-commits` pre-commit hook — the only `repo: local` hooks in
+  `.pre-commit-config.yaml` are `block-plaintext-in-secrets` and
+  `block-update-plan-scripts`. Do not rely on a pre-commit hook to catch an
+  unsigned commit.
+- **Server-side**: branch-protection `required_signatures` is currently
+  **`false`** on `main` (see `docs/runbooks/branch-protection.md`). This is
+  intentional — squash-only merges break per-commit verification because
+  GitHub re-signs the squash commit with its own key. The Terraform in
+  `terraform/phase-0a-gcp/branch_protection.tf` declares
+  `require_signed_commits = true`, but the live branch protection has **not**
+  been flipped; treat that line as desired-state drift, not active
+  enforcement.
+
+**Tracked future gate:** `commit-identity-attested` (C13) is the planned
+mechanism to assert signed/attested author identity end-to-end; until it
+lands, signing relies on the local `commit.gpgsign` config above.

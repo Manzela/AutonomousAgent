@@ -1,0 +1,5 @@
+== SP-00e.4 RED: diff deletes test_gone + removes an assert, PR body has NO ## Test Changes block ==
+::error::test-integrity: PR deletes test function/class(es): test_gone without an approved '## Test Changes' block (C6)
+::error::test-integrity: PR removes/weakens 1 assertion line(s) without an approved '## Test Changes' block (C6)
+== test-integrity-gate: FAIL (2 issue(s)) ==
+exit=1

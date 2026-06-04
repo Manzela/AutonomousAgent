@@ -85,6 +85,8 @@ jobs:
 
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
+      hermes_digest: ${{ steps.build_hermes.outputs.digest }}
+      sandbox_digest: ${{ steps.build_sandbox.outputs.digest }}
 
     steps:
       - name: Check out code
@@ -101,7 +103,7 @@ jobs:
       # ------------------------------------------------------------------
       - name: Authenticate to GCP (WIF)
         id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
@@ -112,14 +114,14 @@ jobs:
       # --platform linux/amd64 cross-build and build cache export.
       # ------------------------------------------------------------------
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2  # v3.10.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       # ------------------------------------------------------------------
       # Log in to Artifact Registry using the short-lived access token
       # minted by google-github-actions/auth above.
       # ------------------------------------------------------------------
       - name: Log in to Artifact Registry
-        uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772  # v3.4.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
         with:
           registry: ${{ env.AR_REGISTRY }}
           username: oauth2accesstoken
@@ -138,9 +140,10 @@ jobs:
 
       # ------------------------------------------------------------------
       # Build and push hermes image.
-      # Cache: inline layer cache stored as a separate manifest tag
-      # (:buildcache-hermes) so subsequent builds on the same base layer
-      # are fast without needing an external cache backend.
+      # Cache: GitHub Actions cache (type=gha) with a per-image scope so
+      # hermes and shell-sandbox don't collide. type=gha writes no tags to
+      # AR, which is required because immutable_tags=true is repo-scoped
+      # and would reject any `:buildcache` overwrite on the second build.
       # ------------------------------------------------------------------
       - name: Build and push hermes
         id: build_hermes
@@ -152,9 +155,8 @@ jobs:
           push: true
           tags: |
             ${{ env.AR_REPO }}/hermes:${{ steps.meta.outputs.tag }}
-            ${{ env.AR_REPO }}/hermes:latest
-          cache-from: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache
-          cache-to: type=registry,ref=${{ env.AR_REPO }}/hermes:buildcache,mode=max
+          cache-from: type=gha,scope=hermes
+          cache-to: type=gha,mode=max,scope=hermes
           provenance: mode=max
           sbom: true
 
@@ -171,9 +173,8 @@ jobs:
           push: true
           tags: |
             ${{ env.AR_REPO }}/shell-sandbox:${{ steps.meta.outputs.tag }}
-            ${{ env.AR_REPO }}/shell-sandbox:latest
-          cache-from: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache
-          cache-to: type=registry,ref=${{ env.AR_REPO }}/shell-sandbox:buildcache,mode=max
+          cache-from: type=gha,scope=shell-sandbox
+          cache-to: type=gha,mode=max,scope=shell-sandbox
           provenance: mode=max
           sbom: true
 
@@ -186,7 +187,7 @@ jobs:
       # id-token: write is already granted to this job for WIF auth above.
       # ------------------------------------------------------------------
       - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14  # v3.5.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
 
       - name: Sign hermes image
         run: |
@@ -207,14 +208,87 @@ jobs:
           echo "| shell-sandbox | \`${{ steps.meta.outputs.tag }}\` |" >> "$GITHUB_STEP_SUMMARY"
 
   # ------------------------------------------------------------------
+  # Supply-chain security scans (Gate checks)
+  # ------------------------------------------------------------------
+  osv-scanner:
+    name: OSV Scanner
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2 # v2.3.8
+    with:
+      scan-args: |-
+        --lockfile=uv.lock
+        --fail-on-vuln
+
+  trivy:
+    name: Trivy Scan
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Authenticate to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          token_format: access_token
+
+      - name: Log in to Artifact Registry
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee  # v4.2.0
+        with:
+          registry: us-central1-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Install Trivy
+        run: |
+          TRIVY_VERSION=0.70.0
+          TARBALL="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${TARBALL}" \
+            -o "${TARBALL}"
+          curl -fsSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_checksums.txt" \
+            -o checksums.txt
+          grep "${TARBALL}" checksums.txt | sha256sum -c -
+          tar -xzf "${TARBALL}" trivy
+          sudo mv trivy /usr/local/bin/
+          trivy version
+
+      - name: Scan hermes image
+        run: |
+          trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --vuln-type os,library \
+            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes@${{ needs.build-and-push.outputs.hermes_digest }}"
+
+      - name: Scan shell-sandbox image
+        run: |
+          trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --vuln-type os,library \
+            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/shell-sandbox@${{ needs.build-and-push.outputs.sandbox_digest }}"
+
+  scorecard:
+    name: Scorecard Scan
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      id-token: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+  # ------------------------------------------------------------------
   # Deploy: SSH to the VM via IAP, pull new images, restart compose.
-  # Runs only after build-and-push succeeds.
   # ------------------------------------------------------------------
   deploy:
     name: Deploy to VM (IAP SSH)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: build-and-push
+    needs: [build-and-push, osv-scanner, trivy, scorecard]
     environment:
       name: production
       url: https://autonomousagent-vm.autonomous-agent-2026.cloud.goog
@@ -225,6 +299,8 @@ jobs:
 
     env:
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      HERMES_DIGEST: ${{ needs.build-and-push.outputs.hermes_digest }}
+      SANDBOX_DIGEST: ${{ needs.build-and-push.outputs.sandbox_digest }}
 
     steps:
       - name: Check out code
@@ -234,7 +310,7 @@ jobs:
 
       - name: Authenticate to GCP (WIF)
         id: auth
-        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
@@ -257,11 +333,24 @@ jobs:
           gcloud auth list
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@dc72c7d5f4d10ebf7b4f4148564db731c34a2c14  # v3.5.0
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Verify image signatures
+        env:
+          HERMES_IMAGE: ${{ env.AR_REPO }}/hermes@${{ env.HERMES_DIGEST }}
+          SANDBOX_IMAGE: ${{ env.AR_REPO }}/shell-sandbox@${{ env.SANDBOX_DIGEST }}
+        run: |
+          for img in "$HERMES_IMAGE" "$SANDBOX_IMAGE"; do
+            echo "Verifying signature for $img..."
+            cosign verify \
+              --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$img"
+          done
 
       - name: Verify SLSA provenance
         env:
-          IMAGE: ${{ env.AR_REPO }}/hermes:${{ env.IMAGE_TAG }}
+          IMAGE: ${{ env.AR_REPO }}/hermes@${{ env.HERMES_DIGEST }}
         run: |
           cosign verify-attestation \
             --type slsaprovenance \
@@ -275,25 +364,44 @@ jobs:
       # a file to the VM). Steps:
       #   1. Pull bootstrap tarball from GCS (contains compose + secrets mount
       #      stubs if needed — primarily ensures the compose file is current).
-      #   2. Run `docker compose pull` to fetch the new :latest images.
-      #   3. Restart the stack with zero-downtime rolling update.
+      #   2. Verify cosign signatures using the EXACT digests from the build job
+      #      (no tag→digest resolve on the VM — closes TOCTOU window).
+      #   3. Pull both images by digest, re-tag to :<sha> for compose resolution.
+      #   4. Restart the stack with zero-downtime rolling update.
       #
       # Note on bootstrap tarball: the tarball at the GCS path is the
       # canonical source of the compose file + config on the VM. CI does NOT
       # push a new tarball on every deploy — the tarball is updated manually
-      # when the compose file changes. `docker compose pull` + `up -d` is
-      # sufficient for image-only updates.
+      # when the compose file changes. digest-pull + `up -d` is sufficient
+      # for image-only updates.
       # ------------------------------------------------------------------
       - name: Deploy via IAP SSH
+        env:
+          HERMES_DIGEST: ${{ env.HERMES_DIGEST }}
+          SANDBOX_DIGEST: ${{ env.SANDBOX_DIGEST }}
         run: |
           gcloud compute ssh "$VM_NAME" \
             --zone="$GCP_ZONE" \
             --project="$GCP_PROJECT" \
             --tunnel-through-iap \
             --quiet \
-            --command="sudo bash -s" \
+            --command="sudo bash -s -- '$IMAGE_TAG' '$HERMES_DIGEST' '$SANDBOX_DIGEST'" \
             << 'REMOTE_SCRIPT'
           set -euo pipefail
+
+          IMAGE_TAG="$1"
+          HERMES_DIGEST="$2"
+          SANDBOX_DIGEST="$3"
+
+          # Validate digest format: must start with sha256: and be 71 chars total.
+          # Prevents a blank/injected value from reaching docker pull.
+          for digest_var in HERMES_DIGEST SANDBOX_DIGEST; do
+            digest_val="${!digest_var}"
+            if [[ ! "${digest_val}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "[deploy] ERROR: ${digest_var} has unexpected format: '${digest_val}'" >&2
+              exit 1
+            fi
+          done
 
           # Bootstrap lives at /opt/hermes/bootstrap/ on the VM.
           # Compose files: docker-compose.yml + docker-compose.gcp.override.yml
@@ -302,6 +410,7 @@ jobs:
           COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
           BOOTSTRAP_TARBALL="gs://autonomous-agent-2026-snapshots/bootstrap/hermes-bootstrap.tar.gz"
           EXPECTED_CONTAINERS=10
+          AR_BASE="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images"
 
           echo "[deploy] Refreshing bootstrap tarball from GCS..."
           gsutil -q cp "${BOOTSTRAP_TARBALL}" /tmp/hermes-bootstrap.tar.gz
@@ -313,10 +422,7 @@ jobs:
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
           # Verify the image attestation via cosign before pulling
-          echo "[deploy] Verifying SLSA provenance and SBOM attestation..."
-          IMAGE_URI="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes:${IMAGE_TAG}"
-          # We resolve the digest from the remote registry to verify it
-          DIGEST=$(gcloud container images describe "${IMAGE_URI}" --format="value(image_summary.digest)")
+          echo "[deploy] Verifying image signatures and attestations..."
 
           # Fallback to cosign if it exists, but install it if missing.
           # Version is pinned; binary is verified against the release checksums.txt
@@ -334,13 +440,31 @@ jobs:
             rm -f /tmp/cosign_checksums.txt
           fi
 
-          cosign verify-attestation --type spdxjson \
-            --certificate-identity-regexp '^https://github.com/Manzela/AutonomousAgent/' \
+          # Verify both images using the EXACT same digests that the CI build job
+          # produced and cosign-signed — no TOCTOU tag→digest resolve on the VM.
+          echo "[deploy] Verifying hermes@${HERMES_DIGEST}..."
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/hermes@${DIGEST}"
+            "${AR_BASE}/hermes@${HERMES_DIGEST}"
 
-          echo "[deploy] Pulling new images..."
-          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" pull --quiet
+          echo "[deploy] Verifying shell-sandbox@${SANDBOX_DIGEST}..."
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
+
+          # Pull images by digest — the same digest that was cosign-verified above.
+          # This closes the TOCTOU window: no floating-tag resolution on the VM.
+          echo "[deploy] Pulling hermes by digest..."
+          docker pull "${AR_BASE}/hermes@${HERMES_DIGEST}"
+          echo "[deploy] Pulling shell-sandbox by digest..."
+          docker pull "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
+
+          # Re-tag with the SHA tag so docker-compose.gcp.override.yml IMAGE_TAG
+          # lookup resolves to the just-pulled (digest-verified) layers.
+          docker tag "${AR_BASE}/hermes@${HERMES_DIGEST}" "${AR_BASE}/hermes:${IMAGE_TAG}"
+          docker tag "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}" "${AR_BASE}/shell-sandbox:${IMAGE_TAG}"
 
           echo "[deploy] Pruning stopped containers (clears stale references)..."
           # Stopped/killed containers from prior chaos tests or failed deploys

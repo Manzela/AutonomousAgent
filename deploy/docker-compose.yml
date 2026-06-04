@@ -94,8 +94,13 @@ services:
   # ---- Langfuse (Phase 1.8) ----
   langfuse:
     image: ghcr.io/langfuse/langfuse:3
+    <<: [*restart_policy, *json_logging]
+    # SP-O5: capability hardening (mirrors Phoenix, LiteLLM).
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"  # loopback-only (same pattern as Phoenix)
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://litellm:postgres@litellm-db:5432/litellm_db
@@ -107,6 +112,17 @@ services:
       litellm-db: {condition: service_healthy}
     networks:
       - internal
+    # Resource limits.
+    mem_limit: 2g
+    cpus: 1.0
+    pids_limit: 200
+    # SP-O5: healthcheck via the Langfuse /api/public/health endpoint.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/public/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # ---- LiteLLM proxy ----
 
@@ -754,11 +770,11 @@ secrets:
   # chroma_token: removed (Phase 1 — using Chroma Cloud, key is in chroma-cloud.env)
   litellm_master_key:
     file: ${SECRETS_DIR:-../secrets}/litellm-master-key
-  # github_pat: RETIRED by SP-00f.2 (PAT revocation is a GATED operator step).
-  # Remove this block once the PAT has been revoked and github_app_key provisioned.
-  github_pat:
-    file: ${SECRETS_DIR:-../secrets}/github-pat
-  # SP-00f.2 DRAFT — uncomment once the SOPS-encrypted App key is provisioned.
+  # github_pat: REMOVED by SP-00f.2 — PAT revocation is a GATED operator step.
+  #   The secret definition was removed (not just commented) so `docker compose config`
+  #   no longer requires secrets/github-pat to exist.  The github-mcp service's
+  #   `secrets: []` array (line ~353) is already empty, so no consumer references remain.
+  #   Once the GitHub App key is provisioned, uncomment github_app_key below.
   # github_app_key:
   #   file: ${SECRETS_DIR:-../secrets}/github-app-key.pem
   # github_token is a tmpfs file written at runtime by the entrypoint wrapper;

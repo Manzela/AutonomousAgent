@@ -49,8 +49,14 @@ class _RecordingSandbox(AbstractSandbox):
         self.calls: list[dict] = []
         self._rc, self._out, self._err = returncode, stdout, stderr
 
-    async def run(self, *, cmd, env=None, network_allowed=False, **kw) -> SandboxResult:
-        self.calls.append({"cmd": cmd, "env": env, "network_allowed": network_allowed})
+    async def run(
+        self, *, cmd, workdir=None, env=None, network_allowed=False, **kw
+    ) -> SandboxResult:
+        # F-1: record workdir + network_allowed so oracles can assert the worktree is
+        # forwarded and egress stays default-deny.
+        self.calls.append(
+            {"cmd": cmd, "workdir": workdir, "env": env, "network_allowed": network_allowed}
+        )
         return SandboxResult(
             returncode=self._rc, stdout=self._out, stderr=self._err, duration_s=0.01, killed=False
         )
@@ -75,8 +81,14 @@ class _SubprocessSandbox(AbstractSandbox):
     ) -> SandboxResult:
         if network_allowed:
             raise PermissionError("test sandbox enforces no network")
+        # F-1: forward workdir as the child's cwd so the applier writes INTO the worktree
+        # (without this, the worktree oracles would silently write into the test's cwd).
         proc = await asyncio.create_subprocess_exec(
-            *cmd, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *cmd,
+            cwd=str(workdir) if workdir else None,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         rc = proc.returncode if proc.returncode is not None else -1
@@ -225,7 +237,7 @@ async def test_sandbox_run_exception_maps_failed():
 async def test_spine_execute_node_runs_in_sandbox():
     sb = _RecordingSandbox()
     nodes = _build_nodes(_default_capability(), sandbox=sb)
-    out = await nodes["execute"](
+    out = await nodes["fan_out"](
         {"thread_id": "t1", "goal": "do x"}, {"configurable": {"thread_id": "t1"}}
     )
     assert len(sb.calls) == 1, "the spine execute node must drive AbstractSandbox.run()"
@@ -235,7 +247,7 @@ async def test_spine_execute_node_runs_in_sandbox():
 async def test_spine_execute_node_legacy_without_sandbox():
     # back-compat: no sandbox injected => the merged in-process skeleton path is unchanged.
     nodes = _build_nodes(_default_capability(), sandbox=None)
-    out = await nodes["execute"](
+    out = await nodes["fan_out"](
         {"thread_id": "t2", "goal": "legacy"}, {"configurable": {"thread_id": "t2"}}
     )
     assert out["tasks"][0]["status"] == TaskStatus.COMPLETED.value

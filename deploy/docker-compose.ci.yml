@@ -46,31 +46,27 @@ services:
     # Override the image ENTRYPOINT so `command:` runs the stub directly (the image
     # ENTRYPOINT is ["hermes"]).
     entrypoint: []
-    # Fix NEW-227-A/-C (OD-2): fastapi + uvicorn[standard] live under pyproject
-    # [project.optional-dependencies].a2a (NOT main deps); Dockerfile.hermes bakes them
-    # into the builder venv at /app/.venv/lib/python*/site-packages (#243). The boot then
-    # failed twice on INTERPRETER RESOLUTION, not the deps:
-    #   (A) the original code pip-installed at container start, but read_only:true makes the
-    #       rootfs unwritable → pip failed → container exited(1) (fixed by baking, #243);
-    #   (B) `/app/.venv/bin/python` does NOT exist in this image (dangling/absent venv
-    #       symlink → "stat: no such file or directory"); bare `python` therefore resolves
-    #       to the SYSTEM interpreter, which lacks fastapi (ModuleNotFoundError).
-    # THIS fix uses the system `python` (which DOES run) and points PYTHONPATH at the venv
-    # site-packages (glob-resilient to the base python minor), so the baked deps are
-    # importable without depending on a venv python binary. read_only-safe (no writes).
-    # (Still off pyproject main deps → the SP-00h license/dep gate is unaffected.)
+    # Fix NEW-227-A/-C/-D (OD-2). fastapi + uvicorn[standard] live under pyproject
+    # [project.optional-dependencies].a2a (NOT main deps) and are baked into the builder
+    # venv at /app/.venv/lib/python*/site-packages (#243). The boot then failed on
+    # INTERPRETER RESOLUTION, not the deps — through four wrong guesses:
+    #   (A) runtime `pip install` → read_only rootfs → exit(1) (fixed by baking, #243);
+    #   (B) bare `python` → SYSTEM interpreter, no fastapi (ModuleNotFoundError);
+    #   (C) `/app/.venv/bin/python` → "stat: no such file";
+    #   (D) system python + PYTHONPATH → pydantic_core ABI mismatch; and
+    #       `ls /app/.venv/bin/python3*` → none found.
+    # GROUND TRUTH (from `docker run … hermes`): the image ENTRYPOINT `hermes` is a WORKING
+    # console script in the venv, so its shebang names the venv's REAL interpreter. Derive
+    # it from hermes itself instead of guessing a python binary name. Unquoted `$(...)` so a
+    # `#!/usr/bin/env pythonX` shebang word-splits correctly too. read_only-safe; the SP-00h
+    # license/dep gate is unaffected (deps stay off pyproject main).
     command:
       - sh
       - -c
       - |
-        # Use the venv's OWN interpreter (whatever its minor version) so its compiled
-        # extensions match: bare `/app/.venv/bin/python` is absent in this image, and
-        # mixing the SYSTEM python with the venv site-packages fails the native-extension
-        # ABI check (ModuleNotFoundError: pydantic_core._pydantic_core). Pick the
-        # highest python3.X actually present in the venv bin.
-        PY="$(ls /app/.venv/bin/python3* 2>/dev/null | sort -V | tail -1)"
-        echo "ci_hermes_api: using venv interpreter: ${PY:-<none found>}" >&2
-        exec "$PY" /app/deploy/scripts/ci_hermes_api.py
+        PY="$(head -1 /app/.venv/bin/hermes | sed 's/^#!//')"
+        echo "ci_hermes_api: deriving interpreter from hermes shebang -> ${PY:-<none>}" >&2
+        exec $PY /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"

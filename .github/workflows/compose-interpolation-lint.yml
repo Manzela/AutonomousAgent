@@ -1,0 +1,60 @@
+# compose-interpolation-lint — regression guard for the OD-2 `$VAR`-blanking trap.
+#
+# Docker Compose interpolates `${VAR}` at config-parse time; an unset, un-defaulted `${VAR}`
+# silently becomes "" with only a stderr WARN. That blanked `$PY` in the nightly live-stack
+# across 9 dispatch cycles. This gate forbids a BARE `${VAR}` in the compose files — every
+# interpolation must carry an explicit `:-` default or `:?` loud-fail; `$${VAR}` is exempt.
+#
+# Hermetic: a pure-stdlib SOURCE scan (no docker daemon, no env_file resolution). The gate's
+# own machinery is covered by committed red-green tests run here too.
+#
+# CODEOWNERS guards .github/, so this gate-config is reviewed by the operator + the
+# cross-vendor (Gemini) reviewer (C9).
+name: compose-interpolation-lint
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+    paths:
+      - "deploy/docker-compose*.yml"
+      - "scripts/ci/compose_interpolation_lint.py"
+      - "tests/ci/test_compose_interpolation_lint.py"
+      - ".github/workflows/compose-interpolation-lint.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/docker-compose*.yml"
+      - "scripts/ci/compose_interpolation_lint.py"
+      - "tests/ci/test_compose_interpolation_lint.py"
+      - ".github/workflows/compose-interpolation-lint.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  compose-interpolation:
+    name: compose-interpolation (no bare ${VAR})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Lint machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_compose_interpolation_lint.py -q
+
+      - name: Forbid bare ${VAR} in compose files (hermetic source scan)
+        # No file args → the script globs every deploy/docker-compose*.yml, matching the
+        # live regression guard in tests/ci/test_compose_interpolation_lint.py.
+        run: python3 scripts/ci/compose_interpolation_lint.py

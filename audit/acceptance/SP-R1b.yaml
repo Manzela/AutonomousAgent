@@ -1,0 +1,106 @@
+# Acceptance — SP-R1b · scrub_state() wired into spine_runner start()/resume() + _SCRUB_SKIP_KEYS
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# Context: SP-R1 (slice a) proved scrub-before-persist on the GOAL field + TOOL-OUTPUT field.
+# SP-R1.yaml deferred "full serde-level scrub of every persisted checkpoint value".
+# This slice (SP-R1b) delivers the defence-in-depth layer: scrub_state() is called on the
+# FINAL returned state dict from start() and resume(), catching any PII that leaked through
+# intermediate node outputs before the caller sees it.
+#
+# New work in this slice:
+#   * _SCRUB_SKIP_KEYS (frozenset) — hex-identifier keys excluded from PII scrubbing
+#     to prevent false-positives on SHA256 digests, thread IDs, commit SHAs, etc.
+#   * scrub_state() enhanced to pass `key=k` to _scrub() and skip _SCRUB_SKIP_KEYS values
+#   * SpineRunner._initial_state() now calls gs.scrub_state() on the initial state dict
+#   * SpineRunner.start() scrubs the ainvoke() return value via gs.scrub_state()
+#   * SpineRunner.resume() scrubs the ainvoke() return value via gs.scrub_state()
+#
+# Prior state: scrub_state() existed but was NOT wired into start()/resume() return values.
+# The existing test_graph_spine.py::test_secret_in_goal_absent_from_persisted_checkpoint
+# proved scrubbing at _initial_state (goal scrub only). This slice adds defence-in-depth.
+#
+# ORACLE MAP (3 hermetic tests — no Docker/LLM/network):
+#   ① test_goal_pii_redacted_in_start_result — email in goal → [REDACTED:email] in start() return
+#   ② test_goal_phone_redacted               — phone number in goal → phone pattern scrubbed
+#   ③ test_resume_result_scrubbed            — PII in start→APPROVE→resume round-trip scrubbed
+#
+# C9 ADVERSARIAL REVIEW (different model class from implementer):
+#   Implementer model: claude-opus-4-6 (Antigravity)
+#   Reviewer model: claude-sonnet-4-6 (this session, 2026-06-04)
+#   Review verdict: APPROVED — no security or correctness findings.
+#   Review notes:
+#     - _SCRUB_SKIP_KEYS correctly targets KEYS (not values): a SHA256 VALUE under
+#       the key "spec_sha" is skipped, but a SHA256 string that appears as a plain goal
+#       value would still be passed through scrub_string (appropriate — scrubber only
+#       hits the high_entropy_hex pattern if it looks like an API key, not a digest format).
+#     - Key propagation through nested dicts is correct: dict values are passed key=k for
+#       their immediate parent key; list items use key=None (no FP risk for list elements).
+#     - _initial_state() scrub is defence-in-depth; goal is already scrubbed at goal_intake node.
+#   0 blocking findings.
+#
+# DEFERRED (named, not silently dropped):
+#   * Scrubbing intermediate checkpoint values (state stored between LG nodes during ainvoke)
+#     is NOT addressed by this slice — only the final returned dict is scrubbed.
+#   * The GET /state/{thread_id} endpoint returns state.values directly from the checkpoint
+#     without calling scrub_state() — aligned with SP-R1 "full serde-level scrub" deferred work.
+#   * Clarification-dialogue field scrub (needs SP-03 clarify wired into the spine).
+
+task: SP-R1b
+title: "scrub_state() defence-in-depth wiring — start()/resume() final state + _SCRUB_SKIP_KEYS (3 oracles)"
+driver: V
+phase: spine-risk
+run_from: repo_root
+
+assertions:
+
+  - id: spr1b-skip-keys-defined
+    description: >
+      _SCRUB_SKIP_KEYS is a frozenset defined in app/core/graph_state.py and contains the
+      expected hex-identifier keys that should not be scrubbed.
+    cmd: |
+      uv run --extra dev python -c "
+      from app.core.graph_state import _SCRUB_SKIP_KEYS
+      assert isinstance(_SCRUB_SKIP_KEYS, frozenset), '_SCRUB_SKIP_KEYS must be frozenset'
+      expected = {'spec_sha', 'source_sha256', 'thread_id', 'commit_sha', 'digest', 'sha'}
+      missing = expected - _SCRUB_SKIP_KEYS
+      assert not missing, f'Expected skip keys missing: {missing}'
+      print(f'OK: _SCRUB_SKIP_KEYS is frozenset with {len(_SCRUB_SKIP_KEYS)} keys')
+      "
+    expect_exit: 0
+
+  - id: spr1b-start-scrubs-pii
+    description: >
+      SpineRunner.start() scrubs PII from the returned state dict.
+      Email and phone PII planted in the goal must be redacted in the start() return value.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_spr1_scrub_state_wired.py::test_goal_pii_redacted_in_start_result \
+        tests/unit/test_spr1_scrub_state_wired.py::test_goal_phone_redacted \
+        -q -p no:cacheprovider
+    expect_exit: 0
+
+  - id: spr1b-resume-scrubs-pii
+    description: >
+      SpineRunner.resume() scrubs PII from the returned state dict.
+      PII planted in the goal must be absent from the resume() return value after
+      a full start→APPROVE round-trip.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_spr1_scrub_state_wired.py::test_resume_result_scrubbed \
+        -q -p no:cacheprovider
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    app/core/graph_state.py: _SCRUB_SKIP_KEYS frozenset (10 keys) + scrub_state() key-aware
+    dispatch to avoid false-positives on SHA256 digests and thread IDs.
+    app/core/spine_runner.py: _initial_state() + start() + resume() all call gs.scrub_state()
+    on their return value (defence-in-depth — individual node scrubs are the primary layer;
+    this sweeps ALL string values in the final state dict).
+    tests/unit/test_spr1_scrub_state_wired.py: 3 hermetic oracles.
+    Email [REDACTED:email] and phone [REDACTED:phone] patterns confirmed in lib/scrubber
+    (config/scrubber-patterns.yaml — delivered in #247).

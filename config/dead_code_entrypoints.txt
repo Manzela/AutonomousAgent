@@ -81,6 +81,13 @@ app.core.trust
 # this line once SP-05 wires FirecrackerSandbox (it becomes genuinely reachable then).
 app.adapters.gcp.sandbox:FirecrackerSandbox
 
+# app/adapters/gcp/cloud_run_sandbox.py:CloudRunJobSandbox is the SP-05c production sandbox
+# adapter. It is an AbstractSandbox subclass injected at runtime via SpineRunner(sandbox=
+# CloudRunJobSandbox(...)); the static AST callgraph cannot trace this injection. Listed here
+# as an operator-reviewed waiver — wired via runtime injection, not a static call site.
+# REMOVE once a static call site (e.g. SpineRunner.configure_cloud_run_sandbox()) is added.
+app.adapters.gcp.cloud_run_sandbox:CloudRunJobSandbox
+
 # lib.scrubber.ScrubFilter is installed on the ROOT logger via
 # lib/observability/otel_setup.py:310 (root.addFilter(ScrubFilter())); its
 # .filter() is invoked by the Python logging framework's per-record dispatch —
@@ -112,6 +119,15 @@ app.core.decision_record
 app.core.graph
 app.core.spine_runner
 
+# app/main.py is the FastAPI service entrypoint (Pattern B fix). It assembles
+# SpineRunner with production adapters and exposes the spine as an HTTP service.
+# Launched at runtime by `uvicorn app.main:app --host 0.0.0.0 --port 8000`;
+# the static AST callgraph cannot trace a uvicorn launch string as an entrypoint
+# (identical limitation to lib.a2a.server above). Its @app.post() route handlers
+# (start_goal, resume_thread, panic, rollback, healthz) are framework-registered
+# endpoints, not dead code. Operator-reviewed 2026-06-04.
+app.main
+
 # SP-02 goal→DAG decomposition (TaskGraph validation + TaskSpec→TaskRequest phase bridge).
 # app/core/decompose.py is the AbstractDecomposer seam + the pure SP-02 validators
 # (validate_taskgraph / assert_decomposition_fidelity / is_catch_all_glob / acceptance_indices)
@@ -130,6 +146,19 @@ app.core.decompose
 app.adapters.inmemory.decompose
 app.adapters.gcp.decompose
 
+# SP-05 (F-1) per-node workspace. app/core/workspace.py:WorkspaceSession is GENUINELY WIRED
+# and exercised — the execute spine node (app/core/graph.py) calls WorkspaceSession.create()
+# to materialise a real git worktree, runs the applier inside it, and extracts the git diff
+# (16 red-green oracles in tests/unit/test_sp05_workspace_diff.py drive it end-to-end). It is
+# listed here ONLY because the AST callgraph cannot trace reachability INTO the spine's node
+# closures: build_spine() calls the PRIVATE _build_nodes(), whose returned closures (execute,
+# clarify, decompose, ...) are not in the gate's public-symbol reference index, so every
+# symbol a closure references appears unreachable — the IDENTICAL limitation that keeps
+# app.adapters.inmemory.decompose (used in the decompose closure) and app.core.spine_runner
+# above on this list. NOT not-yet-wired; AST-untraceable. (app/core/_workspace_apply.py is
+# reachable via its own __main__ block, so it is NOT listed.)
+app.core.workspace
+
 # SP-03 clarification driver + spec-drafter (PRD §6 EPIC-1 SP-03). NET-NEW hybrid
 # adapter triple + driver:
 #   app/core/spec_drafter.py            — AbstractSpecDrafter ABC + DraftResult /
@@ -141,26 +170,142 @@ app.adapters.gcp.decompose
 #                                         the CLAUDE.md builder-agent rule).
 #   lib/anchors/clarification_driver.py — run_clarification_round + ClarificationOutcome.
 #
-# The LIVE path is: hermes plugin-loader → lib.anchors.register(ctx) →
-# lib.anchors.run_clarification(...) (a public plugin entry point, ~L226 of
-# lib/anchors/__init__.py) → clarification_driver.run_clarification_round →
-# InMemorySpecDrafter.draft + decide_next_action. The AST callgraph cannot trace
-# the loader's dynamic register(ctx) dispatch (identical limitation to app.core.trust
-# and lib.durability:register above), so these symbols appear unreachable even
-# though run_clarification is a registered plugin entry point.
+# WIRED 2026-06-03 (audit F-3): the SP-03 clarify loop is now on the live spine —
+# app/core/graph.py imports InMemorySpecDrafter + run_clarification_round and drives them
+# from the `clarify` node (goal_intake → clarify ⇄ → sign_off). So app.core.spec_drafter,
+# app.adapters.inmemory.spec_drafter, and lib.anchors.clarification_driver are now
+# genuinely reachable via the graph and have been REMOVED from this allowlist (per the
+# header rule "REMOVE each line once [...] they become genuinely reachable").
 #
-# The session-aware ADAPTER that auto-invokes run_clarification from _on_pre_tool_call
-# on an inbound user-message is owned by the Hermes-integration layer and is
-# DEFERRED (the hook returns None until it lands). The Vertex concretion
-# (VertexSpecDrafter) is also DEFERRED. Both are legitimately-present-not-yet-wired
-# foundation that must not be deleted. They are genuinely exercised by 21 red-green
-# oracles in tests/unit/test_sp03_clarification_driver.py. Pending operator review at
-# PR. REMOVE each line once the Hermes adapter + Vertex drafter wire them (they
-# become genuinely reachable then). Operator-reviewed (2026-06-02).
-app.core.spec_drafter
-app.adapters.inmemory.spec_drafter
+# STILL DEFERRED / present-not-yet-wired (kept):
+#   - app.adapters.gcp.spec_drafter:VertexSpecDrafter — the Vertex structured-output
+#     concretion (raises NotImplementedError); the spine injects InMemory in CI, Vertex
+#     in prod once it lands. Sibling kept per the CLAUDE.md builder-agent rule.
+#   - lib.anchors:run_clarification — the hermes plugin entry point (lib/anchors/__init__.py
+#     register(ctx) → run_clarification). graph.py wires clarification_driver DIRECTLY
+#     (run_clarification_round), so the loader's dynamic register(ctx) dispatch to
+#     run_clarification is still untraceable by the AST callgraph until the session-aware
+#     Hermes pre_tool_call adapter lands. Genuinely exercised by the SP-03 oracles.
 app.adapters.gcp.spec_drafter:VertexSpecDrafter
-lib.anchors.clarification_driver
 lib.anchors:run_clarification
+
+# DeepEval judge adapters (Cluster A) — keep the GEval/HallucinationMetric LLM-as-judge
+# OFF OpenAI. DeterministicDeepEvalJudge is the hermetic CI default (fills the metric's
+# structured schema deterministically); LiteLLMVertexJudge is the live cross-vendor
+# Gemini-via-Vertex judge (staging only, DEEPEVAL_JUDGE=vertex); make_ci_judge() selects.
+# Consumed by tests/integration/test_deepeval_trajectory.py (the LLM-judge eval tests) and
+# by the DEFERRED SP-06 DAGMetric LLM leaf (app/core/eval_gate.py, not yet wired into a
+# runtime path). The AST callgraph cannot see test consumers / the deferred leaf, so these
+# read as unreachable. REMOVE once the SP-06 LLM leaf wires make_ci_judge() at runtime.
+# Operator-reviewed 2026-06-03.
+lib.evaluators.deepeval_judges
+lib.evaluators.deepeval_judges:make_ci_judge
+lib.evaluators.deepeval_judges:DeterministicDeepEvalJudge
+lib.evaluators.deepeval_judges:LiteLLMVertexJudge
 # scripts.ci.license_dep_gate  (auto-detected via __main__)
 # scripts.ci.run_acceptance    (auto-detected via __main__)
+
+# SP-R2 per-graph budget primitive (lib/durability/graph_budget.py) — aggregate_spend +
+# budget_verdict are called ONLY from the app/core/graph.py fan_out CLOSURE (nested in the
+# private _build_nodes; the AST callgraph cannot trace into closures — the same limitation that
+# lists run_clarification + the InMemory/Vertex adapters above). GraphBudgetVerdict is constructed
+# only inside budget_verdict. All three are genuinely exercised by the 18 SP-R2 oracles
+# (tests/unit/test_graph_budget.py + test_sp_r2_budget_preempt.py) and live in the fan_out budget
+# admission/enforcement path. Unlike GlobalThreadCap/BranchLease (also closure-used) these have NO
+# module-level reference in _build_nodes' body, so they read as unreachable. Operator-reviewed 2026-06-03.
+lib.durability.graph_budget:aggregate_spend
+lib.durability.graph_budget:budget_verdict
+lib.durability.graph_budget:GraphBudgetVerdict
+
+# SP-16 AbstractBoard kanban projection seam (C14 gate-derived `done`).
+# app/core/board.py = the AbstractBoard ABC + Card + project_plan (DAG->cards); the C14 invariant
+# (the public API refuses agent-initiated `done`; done only via mark_done(gate=...)) lives in its
+# CONCRETE methods. app/adapters/inmemory/board.py = InMemoryBoard, the hermetic store. The prod
+# Hermes `kanban_db` adapter + the real `gh pr checks --required` GateReader are DEFERRED siblings.
+# WIRED (slice 2): SpineRunner injects an InMemoryBoard -> build_spine -> the decompose node calls
+# project_plan and fan_out calls board.set_status. These calls live INSIDE the spine-node CLOSURES
+# (decompose/fan_out, nested in the private _build_nodes), which the AST callgraph CANNOT trace into
+# (the identical limitation behind lib.durability.graph_budget + app.adapters.inmemory.decompose
+# above), so project_plan/Card/BoardProjection/the InMemoryBoard methods still read as unreachable
+# even though they are genuinely exercised — by the spine flow AND tests/unit/test_sp16_board.py +
+# test_sp16_board_wiring.py. Operator-reviewed at PR. (NOT not-yet-wired; AST-untraceable.)
+# Post-audit: SYMBOL-level (not whole-module) so C4 still bites any FUTURE dead symbol added to
+# these two safety-relevant modules (a bare-module entry auto-roots every top-level public symbol).
+# The listed symbols' public METHODS (set_status/mark_done/create_card, etc.) are wired via the
+# gate's class->method edge during BFS, so this is no weaker for the genuinely-used surface.
+app.core.board:AbstractBoard
+app.core.board:Card
+app.core.board:BoardProjection
+app.core.board:BoardError
+app.core.board:GateNotPassedError
+app.core.board:GateReader
+app.core.board:project_plan
+app.adapters.inmemory.board:InMemoryBoard
+app.adapters.inmemory.board:AlwaysReadyGate
+
+# SP-R3 SqliteFileCheckpointer — the vendor-lock fallback adapter. Follows the same
+# pattern as app.adapters.inmemory.checkpointer: the FastAPI lifespan (deferred) selects
+# the checkpointer based on env config (InMemory for CI, Sqlite for fallback, Postgres
+# for prod). The AST callgraph cannot trace the env-conditional lifespan selection
+# (same limitation as app.core.spine_runner above). Operator-reviewed 2026-06-04.
+app.adapters.inmemory.file_checkpointer
+
+# SP-05d WorkspaceReaper + reap_orphaned_worktrees — called from SpineRunner.__init__
+# (app/core/spine_runner.py). Both symbols are genuinely reachable: WorkspaceReaper is
+# instantiated in __init__, and reap_orphaned_worktrees() is called in the same scope.
+# The AST callgraph cannot trace through class-method bodies when the entrypoint is the
+# module root (the identical limitation behind app.core.spine_runner being listed above).
+# _default_reaper() is a factory helper used only by tests that bypass SpineRunner; it
+# is not a dead symbol — it is the intended test-override entry point for the reaper.
+# Operator-reviewed 2026-06-03.
+app.core.reaper
+
+# SP-12 autonomous CI/CD self-heal — SelfHealEvent is the repository_dispatch
+# ci-failure payload parser. It is consumed by the future self-heal agent handler
+# (a repository_dispatch listener — deferred SP-12-INT-3) and is imported from
+# tests only today. The AutoMergePolicy / CheckResult / AutoMergeDecision symbols
+# ARE reachable via scripts/ci/auto_merge_gate.py (__main__-guarded). SelfHealEvent
+# is the only un-wired symbol; listed here as a present-not-yet-wired sibling
+# (same pattern as app.adapters.gcp.decompose:VertexSpecDrafter). REMOVE once
+# a runtime listener (FastAPI webhook / Lambda / Cloud Run handler) imports it.
+# Operator-reviewed 2026-06-04.
+app.core.ci_self_heal:SelfHealEvent
+
+# SP-26 deployment rollback — Cloud Run revision traffic retargeting.
+# app/adapters/gcp/cloud_run_revisions.py:CloudRunRevisionRollback is the GCP production
+# concretion injected at runtime via SpineRunner(revision_rollback=CloudRunRevisionRollback(...)).
+# require_revision_rollback() references AbstractRevisionRollback (C4-reachable), but the static
+# callgraph cannot trace that the concrete GCP subclass is the injected type. The
+# app/adapters/inmemory/rollback.py:RecordingRevisionRollback is the hermetic test double;
+# it is instantiated only in tests, not at a static entrypoint. Both are legitimately-present
+# adapters following the CLAUDE.md builder-agent pattern (abstract in core/, GCP in adapters/gcp/,
+# in-memory in adapters/inmemory/). REMOVE each line once a static call site exists.
+# Operator-reviewed 2026-06-04.
+app.adapters.gcp.cloud_run_revisions:CloudRunRevisionRollback
+app.adapters.inmemory.rollback:RecordingRevisionRollback
+
+# SP-R4 checkpoint retention + judge_events TTL rotation.
+# app/core/checkpoint_retention.py: gc_checkpoints() + find_threads_older_than() are
+#   called from maintenance/teardown paths that are not yet wired to a runtime entrypoint
+#   the AST callgraph can trace — same pattern as app.core.reaper above. These are
+#   genuinely new production functions, not test helpers; they will be called by
+#   SpineRunner teardown and operator maintenance scripts. REMOVE once a runtime wiring
+#   exists (a FastAPI lifespan shutdown hook or a scheduled maintenance task).
+# lib/evaluators/judge_events_retention.py: rotate() is called from the same class of
+#   deferred maintenance contexts; judge_events.py itself is wired (lib.evaluators.judge_events
+#   is already a production path) but the rotator is called by an operator/nightly task,
+#   not inline with the hot path. Listed together with the checkpoint retention module
+#   because they share the same deferred-maintenance pattern. Operator-reviewed 2026-06-04.
+app.core.checkpoint_retention
+lib.evaluators.judge_events_retention
+# SP-J1 judge-calibration library — called by the deferred nightly calibration cron
+#   (SP-J1-INT-1) and the SP-06 quarantine-check integration (SP-J1-INT-3). Not yet
+#   wired to a runtime entrypoint the AST callgraph can trace. Module-level entry covers
+#   top-level symbols; method-level entries added for nested methods/properties.
+#   Operator-reviewed 2026-06-04.
+lib.evaluators.judge_calibration
+lib.evaluators.judge_calibration:CalibrationResult.passes
+lib.evaluators.judge_calibration:JudgeCalibrationMonitor.score
+lib.evaluators.judge_calibration:JudgeQuarantineRegistry.quarantine
+lib.evaluators.judge_calibration:JudgeQuarantineRegistry.is_quarantined
+lib.evaluators.judge_calibration:JudgeQuarantineRegistry.quarantined_ids

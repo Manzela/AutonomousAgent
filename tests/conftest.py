@@ -3,6 +3,22 @@ import socket
 
 
 @pytest.fixture(autouse=True)
+def _isolate_spine_persistence(monkeypatch, tmp_path):
+    """Keep every test's DURABLE spine writes out of the real repo + shared /tmp (post-audit).
+
+    The decision-record JSONL (ship_effect -> append_decision) defaults to the repo's
+    ``trajectories/decision-record.jsonl`` and the SpecStore defaults to a SHARED ``/tmp/spine-specs``
+    (via ``SPINE_DATA_DIR/specs``); the SP-16/SP-R2 live-spine tests exercise both. Point them at a
+    PER-TEST tmp so no test pollutes the working tree or collides cross-file (a real flake source the
+    audit traced). We set ``SPINE_DATA_DIR`` (NOT ``SPINE_SPEC_STORE``) so a test that controls the
+    spec store via either var still wins: ``SPINE_SPEC_STORE`` (set by some tests) takes precedence,
+    and a test that sets only ``SPINE_DATA_DIR`` overrides this default.
+    """
+    monkeypatch.setenv("SPINE_DECISION_RECORD_PATH", str(tmp_path / "decision-record.jsonl"))
+    monkeypatch.setenv("SPINE_DATA_DIR", str(tmp_path / "data"))
+
+
+@pytest.fixture(autouse=True)
 def _block_network(monkeypatch):
     """
     1.1 Deterministic Orchestration Audit:

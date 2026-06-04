@@ -1,0 +1,102 @@
+# Acceptance — SP-R4 · checkpoint + judge_events retention TTL
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-R4: "TTL/compaction caps checkpoint state size AND a data-retention
+#   TTL on Langfuse/OTel traces + judge_events (which carry goal text, tool outputs,
+#   potential PII) — not only checkpoints; traces scrubbed (SP-R1 identity) before
+#   persistence. Proof: GC/TTL run deleting trace data past the bound + scrub assertion."
+#
+# MECHANISM (hermetic — no network/docker):
+#   app/core/checkpoint_retention.py:
+#     gc_checkpoints(saver, expired_thread_ids) — deletes all LangGraph checkpoints
+#       for the given thread IDs (uses BaseCheckpointSaver.adelete_thread, which
+#       AsyncSqliteSaver and MemorySaver implement). FAIL-OPEN: per-thread exceptions
+#       logged and skipped; returns count of successfully deleted threads.
+#     find_threads_older_than(saver, cutoff_ts, candidate_thread_ids) — returns the
+#       subset of threads whose NEWEST checkpoint predates cutoff_ts. Comparison is
+#       instant-based (datetime.fromisoformat, normalizing 'Z' to '+00:00') — safe
+#       for both real producer formats (judge_events.py:48 → 'Z'+microseconds;
+#       LangGraph checkpoint 'ts' → '+00:00'+microseconds). Missing/empty 'ts'
+#       treated as non-expired (KEEP is the safe posture).
+#
+#   lib/evaluators/judge_events_retention.py:
+#     rotate(path, cutoff_ts, scrub_fn=None) — reads the JSONL event log, discards
+#       events with timestamp_utc < cutoff_ts, optionally applies scrub_fn to each
+#       retained line (defense-in-depth pass over SP-R1 scrubbing at write time),
+#       and atomically rewrites the file. FAIL-OPEN on malformed lines (logged,
+#       kept). Returns (kept_count, deleted_count).
+#
+# HONEST BOUNDARY:
+#   - LangGraph checkpoint GC is at the thread level (adelete_thread), not sub-thread.
+#     Intra-thread compaction (keep-last-N checkpoint history) defers to SP-R7.
+#   - OTel/Langfuse trace retention is DEFERRED — trace pipeline not yet wired (SP-O3).
+#     judge_events.jsonl is the current trace-level data store; this covers it.
+#   - The scrub_fn defense-in-depth path in rotate() is proven by R12; write-time
+#     scrubbing (SP-R1 identity) is proven by SP-R1 acceptance tests.
+#
+# C9 REVIEW (Opus — different model class, 2026-06-04):
+#   B1 (HIGH, FIXED): original tests used hand-rolled '+00:00' format; real judge_events
+#      producer emits 'Z'-suffix+microseconds — both formats exercised in R14.
+#   B2 (HIGH, FIXED): lexicographic compare silently over-deleted at the microsecond/Z
+#      boundary (e.g. '.500000Z' < 'Z' lexically); fixed to instant-based datetime
+#      comparison; R15 proves the boundary is correct.
+#   B3 (MEDIUM, FIXED): missing/empty 'ts' in find_threads_older_than was being
+#      classified as expired (unsafe); now uses _parse_ts() returning None → excluded
+#      (safe KEEP posture); R6b proves this.
+#   C1 (HIGH, FIXED): original R12 only put credentials in the OLD (TTL-deleted) event —
+#      a tautology; fixed by planting credentials in a NEW (retained) event and using
+#      scrub_fn=scrub_string to prove the defense-in-depth scrub removes them.
+#   C2 (FIXED): real-format round-trip added (R14).
+#   C3 (FIXED): multi-checkpoint thread with old+new checkpoints added (R16).
+#   C4 (FIXED): malformed JSONL line fail-open behavior tested (R17).
+
+task: SP-R4
+title: "checkpoint + judge_events retention TTL — GC expired threads + JSONL rotate + scrub assertion (18 hermetic oracles)"
+driver: V
+phase: spine-risk
+run_from: repo_root
+
+assertions:
+  - id: spr4-retention-contract
+    description: >
+      18 hermetic oracles (R1–R17 + R6b) proving the SP-R4 retention contract:
+      R1  gc_checkpoints deletes all checkpoints for an expired thread;
+      R2  gc_checkpoints returns accurate count;
+      R3  gc_checkpoints is FAIL-OPEN (exception on one thread, others proceed);
+      R4  find_threads_older_than identifies expired threads;
+      R5  find_threads_older_than excludes newer threads;
+      R6  find_threads_older_than excludes threads with no checkpoints;
+      R6b find_threads_older_than excludes threads with missing/empty ts (B3 fix);
+      R7  rotate deletes events older than cutoff_ts;
+      R8  rotate keeps events newer than cutoff_ts;
+      R9  rotate returns accurate (kept, deleted) counts;
+      R10 rotate handles empty file;
+      R11 rotate is a no-op for missing file;
+      R12 scrub assertion: rotate() with scrub_fn removes SP-R1 credential patterns
+          from RETAINED new events (defense-in-depth proof, C1 fix);
+      R13 rotate is atomic (no .tmp left behind);
+      R14 real-producer Z+microseconds format handled correctly (B1 fix);
+      R15 microsecond/Z boundary: event 0.5s after cutoff is KEPT not deleted (B2 fix);
+      R16 multi-checkpoint thread: newest checkpoint wins, old+new straddle → not expired (C3 fix);
+      R17 malformed JSONL line is kept, not silently dropped (C4 fix).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_spr4_checkpoint_retention.py \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    18 red-green oracles (tests/unit/test_spr4_checkpoint_retention.py) over
+    app/core/checkpoint_retention.py and lib/evaluators/judge_events_retention.py.
+    C9 review (Opus, 2026-06-04) found 4 blocking issues all fixed: B1 wrong
+    timestamp format (real Z+microseconds untested), B2 lexicographic compare
+    over-deletes at microsecond boundary (instant-based compare fixes), B3
+    missing-ts classified as expired (KEEP posture added), C1 R12 was a tautology
+    (now plants credential in NEW retained event + scrub_fn=scrub_string).
+    Plus C2 real-format round-trip (R14), C3 multi-checkpoint-newest (R16),
+    C4 malformed-line fail-open (R17). 948 unit tests passing, 0 regressions.
+    DEFERRED: OTel/Langfuse trace retention (SP-O3 operator-gated);
+    intra-thread checkpoint compaction (SP-R7).

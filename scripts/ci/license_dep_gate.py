@@ -95,6 +95,7 @@ _BUILTIN_ALLOWLIST: frozenset[str] = frozenset(
         "pydantic",
         "langgraph",
         "langgraph-checkpoint",
+        "langgraph-checkpoint-sqlite",  # SP-R3 vendor-lock fallback (SQLite tier)
         "google-cloud-secret-manager",
         "google-cloud-storage",
         "google-cloud-modelarmor",

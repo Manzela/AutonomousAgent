@@ -1,0 +1,89 @@
+# Acceptance — SP-05c · Cloud Run Jobs Sandbox
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §5 SP-05 — production sandbox tier: Cloud Run Jobs (gVisor/runsc isolation).
+# app/adapters/gcp/cloud_run_sandbox.py implements CloudRunJobSandbox(AbstractSandbox)
+# with lazy google.cloud.run_v2 imports so CI runs without the gcp extra installed.
+# Hard refusal: network_allowed=True raises PermissionError (Cloud Run Jobs are not
+# network-isolated; accepting the flag would silently mislead callers).
+# is_production_grade=True (marks this class as the intended production sandbox tier).
+#
+# ORACLE MAP (18 hermetic tests — no GCP credentials / no real Cloud Run Jobs):
+#
+#   Base oracles:
+#   ①  network_allowed=True raises PermissionError (hard refusal).
+#   ②  CloudRunJobSandbox is an AbstractSandbox subclass (class hierarchy).
+#   ③  is_production_grade class attribute is True.
+#   ④  empty project_id raises ValueError at construction.
+#   ⑤  empty region raises ValueError at construction.
+#   ⑥  empty job_name raises ValueError at construction.
+#   ⑦  _build_run_job_request sets args=cmd on the container override.
+#   ⑧  _build_run_job_request forwards env vars as EnvVar objects.
+#   ⑨  _build_run_job_request: None env → empty env list (no EnvVar objects).
+#
+#   _execution_succeeded helper:
+#   ⑩  CONDITION_SUCCEEDED + state=1 → True.
+#   ⑪  CONDITION_FAILED + state=1 → False.
+#   ⑫  Fallback: completion_time set + failed_count=0 → True.
+#   ⑬  Fallback: completion_time None → False.
+#
+#   Integration path:
+#   ⑭  Successful execution (fake LRO) → returncode=0, killed=False.
+#   ⑮  Execution exceeding timeout_s → killed=True, returncode=1.
+#   ⑯  ImportError from lazy _lazy_run_v2() propagates with install hint.
+#   ⑰  job FQN constructed as projects/{p}/locations/{r}/jobs/{j}.
+#   ⑱  _collect_execution_logs deferred stub returns ("", "").
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-7
+#   Review verdict: APPROVED — no security findings.
+#   Review notes:
+#     - network_allowed hard refusal correctly placed before any I/O (cannot bypass).
+#     - Lazy import pattern safe: ImportError propagates loudly with actionable hint.
+#     - No shell interpolation in cmd/env forwarding (passed as list/struct, not shell).
+#     - _build_run_job_request is a pure function; no mutable global state.
+#     - LRO cancel is best-effort fail-open (logged + continues) — correct for panic paths.
+#     - SP-05c-INT-1 log collection deferred: stub returns empty strings, no data leak.
+#
+# DEFERRED (tagged SP-05c-INT):
+#   SP-05c-INT-1: Cloud Logging log collection (stdout/stderr from execution logs).
+#   SP-05c-INT-2: 100-concurrent-execution load test (acceptance criterion).
+#   SP-05c-INT-3: cold-start P95 ≤15 s measurement in staging.
+#   SP-05c-INT-4: real HttpxTransport for logs via Cloud Logging gRPC API.
+
+id: SP-05c
+title: Cloud Run Jobs sandbox adapter
+prd_section: "§5 SP-05"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-7
+
+oracle_count: 18
+test_file: tests/unit/test_sp05c_cloud_run_sandbox.py
+implementation:
+  - app/adapters/gcp/cloud_run_sandbox.py
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp05c_cloud_run_sandbox.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    18 hermetic oracles in tests/unit/test_sp05c_cloud_run_sandbox.py.
+    app/adapters/gcp/cloud_run_sandbox.py implements CloudRunJobSandbox(AbstractSandbox):
+    submits each command as a Cloud Run Job execution via google.cloud.run_v2 (gVisor/runsc
+    isolation); hard-refuses network_allowed=True (cannot guarantee network isolation);
+    lazy-imports google.cloud.run_v2 so CI runs without the gcp extra installed.
+    is_production_grade=True marks this as the intended production sandbox tier.
+    _build_run_job_request is a pure function — unit-testable without GCP credentials.
+    Execution lifecycle: RunJobRequest → LRO.result() with asyncio.wait_for() timeout →
+    _execution_succeeded() → SandboxResult. Timeout sets killed=True, cancels execution
+    best-effort (fail-open). Log collection is deferred (SP-05c-INT-1).
+    google-cloud-run>=0.10 added to [project.optional-dependencies.gcp].
+    C9 review: claude-opus-4-7 (different model class from claude-sonnet-4-6) — APPROVED.
+    DEFERRED: Cloud Logging log collection, 100-concurrent load test, cold-start P95 measurement.
+    18 new oracles passing, 0 regressions (1013 total suite).

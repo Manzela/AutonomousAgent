@@ -49,6 +49,10 @@ ActionKind = Literal["seal_spec", "ship"]  # the skeleton's two irreversible eff
 # PRD §5/§8 (L181) SteeringEvent.kind. `override` is an SP-03 ambiguity-report-item enum
 # (C15 L117), DISTINCT from SteeringEvent.kind, so it is NOT a member here.
 SteeringKind = Literal["approve", "reject", "steer", "abort", "answer"]
+# SP-27: mid-flight monitor command verbs. INTERRUPT_FOR_HUMAN parks the run at __halt__ (C10:
+# the monitor never marks done / edits gates / writes code — only a human operator may unblock).
+# INJECT_RAG / SWITCH_TOOL / CHECKPOINT_REPLAN are advisory; future actuator nodes consume them.
+SteerCommandKind = Literal["INTERRUPT_FOR_HUMAN", "INJECT_RAG", "SWITCH_TOOL", "CHECKPOINT_REPLAN"]
 
 # Deterministic arbitration precedence (C15): higher number wins. REJECT/REPLAN beat
 # APPROVE; TIMEOUT maps to the safe default (treated as REJECT-strength).
@@ -89,6 +93,36 @@ class LedgerReceipt(TypedDict):
     action_kind: ActionKind
     node_label: str  # human-readable only — NOT part of the key
     super_step_label: int  # human-readable only — NOT part of the key
+    ts: str
+
+
+class SteerCommand(TypedDict):
+    """SP-27: signal emitted by the monitor node at each fan_out→eval_gate boundary.
+    `kind` drives the router: INTERRUPT_FOR_HUMAN → __halt__ (C10 invariant: only a human
+    may unblock); INJECT_RAG/SWITCH_TOOL/CHECKPOINT_REPLAN are advisory (future actuators).
+    `step_id` is a human-readable label for the wave/trigger. `thread_id` scopes the record.
+    Accumulated in `steer_commands` via the _append reducer (one list per graph lifetime)."""
+
+    thread_id: str
+    step_id: str  # e.g. "monitor-fix3" or "monitor-loop-key|0|fix"
+    kind: SteerCommandKind
+    reason: str  # human-readable signal description
+    ts: str
+
+
+class AgentNote(TypedDict):
+    """SP-27: per-iteration observation record the monitor (or any observing node) may emit.
+    Provides a structured audit trail of the agent's in-flight state for post-hoc analysis.
+    Deferred: live streaming via LangGraph stream_mode → Langfuse (SP-17 consumer)."""
+
+    step_id: str
+    hypothesis: str  # what the agent believes is blocking progress
+    next_action: str  # what the agent intends to do next
+    confidence: float  # 0.0–1.0 (0 = no idea; 1 = certain)
+    blockers: list  # list[str] — named blockers
+    evidence_needed: list  # list[str] — what evidence would resolve uncertainty
+    tool: str  # last tool invoked (informational)
+    files_touched: list  # list[str] — paths modified this iteration
     ts: str
 
 
@@ -203,21 +237,47 @@ def assert_serializable_state(state: dict) -> None:
         _check(value)
 
 
+# Keys whose values are known-safe identifiers (hex hashes, thread IDs, etc.)
+# that should NOT be passed through the PII/secret scrubber. The high_entropy_hex
+# pattern ([a-f0-9]{40,}) legitimately catches API keys and tokens, but these
+# spine-internal fields are computed SHA256 digests, not secrets.
+_SCRUB_SKIP_KEYS = frozenset(
+    {
+        "spec_sha",
+        "source_sha256",
+        "content_hash",
+        "thread_id",
+        "namespace_token",
+        "record_id",
+        "trace_id",
+        "commit_sha",
+        "digest",
+        "sha",
+    }
+)
+
+
 def scrub_state(state: dict) -> dict:
     """Scrub every string value through lib/scrubber.py before persistence (SP-R1).
-    Returns a deep-cleaned copy; asserts no callables first."""
+    Returns a deep-cleaned copy; asserts no callables first.
+
+    Keys in _SCRUB_SKIP_KEYS are passed through unmodified — they contain hex
+    identifiers that the high_entropy_hex pattern would false-positive on.
+    """
     assert_serializable_state(state)
 
-    def _scrub(v: Any) -> Any:
+    def _scrub(v: Any, *, key: str | None = None) -> Any:
         if isinstance(v, str):
+            if key is not None and key in _SCRUB_SKIP_KEYS:
+                return v  # known-safe identifier, skip scrubbing
             return scrub_string(v, source="spine_state")
         if isinstance(v, dict):
-            return {k: _scrub(x) for k, x in v.items()}
+            return {k: _scrub(x, key=k) for k, x in v.items()}
         if isinstance(v, list):
             return [_scrub(x) for x in v]
         return v
 
-    return {k: _scrub(v) for k, v in state.items()}
+    return {k: _scrub(v, key=k) for k, v in state.items()}
 
 
 def default_spec_store_root():
@@ -240,9 +300,27 @@ class SpineState(TypedDict, total=False):
     goal: str
     # spec contracts
     clarifications: Annotated[list, _append]
+    # SP-03: the drafted PRD the clarify ⇄ loop produced (TaskSpec fields + the surfaced
+    # ambiguity report / applied_standards / assumptions + confidence). Its presence is
+    # the clarify-loop terminator (_route_after_clarify); sign_off gates on it and
+    # seal_spec locks its TaskSpec fields. Last-write (no reducer): the final clarify
+    # round writes it once.
+    spec_draft: Optional[dict]
     plan: Optional[TaskGraph]
     spec_sha: Optional[str]
     spec_id: Optional[str]
+    # SP-06 PRD-conformance: the agent's diff (list of [status, path]) the eval_gate scores
+    # against the locked plan's allowed scope, and the resulting ScopeVerdict (as a dict).
+    # Last-write (no reducer): the execute node AUTHORITATIVELY overwrites changed_paths every
+    # run (empty in the skeleton; the real git diff arrives with the SP-05 drive). base_ref is
+    # the optional base branch for the verdict metadata (defaults to "main").
+    changed_paths: Optional[list]
+    base_ref: Optional[str]
+    # SP-05 (F-1): the subset of changed_paths that are symlinks in the per-node worktree.
+    # Last-write (execute writes it every run); eval_gate passes it to scope_root_verdict —
+    # a symlink inside an allowed dir can point out-of-scope, so it ALWAYS violates.
+    symlink_paths: Optional[list]
+    eval_verdict: Optional[dict]
     # HITL decisions
     sign_off: Optional[HitlDecision]
     ship: Optional[HitlDecision]
@@ -256,13 +334,39 @@ class SpineState(TypedDict, total=False):
     audit: Annotated[list, _append]
     # steering (DoD-4) — full bus deferred; reducer + arbitration live now
     steering_events: Annotated[list, _merge_steering]
+    # SP-27: mid-flight monitor SteerCommands — LAST-WRITE (no reducer). The monitor node
+    # overwrites this on EVERY run: non-empty on a detected signal, empty list on a healthy wave.
+    # This is intentional: _route_after_monitor must see ONLY the current wave's signals so a
+    # healthy resume after operator intervention clears the prior INTERRUPT_FOR_HUMAN (C9 B1 fix:
+    # _append would make a prior halt sticky even on a subsequently healthy wave).
+    steer_commands: Optional[list]
     # replan (continue-as-new) — reserved now, marked in Task 6
     replan_parent: Optional[str]
     pre_decompose_checkpoint_id: Optional[str]
     # workspace (DoD-17) — content-addressed digest, never inline bytes
     workspace_ref: Optional[WorkspaceRef]
+    # SP-11: EVERY fan-out leaf's snapshot ref (distinct refs/aa-snapshots/<tid>/<node> keys),
+    # so a multi-leaf wave records ALL snapshots in state — not just the one ship_effect points
+    # to (workspace_ref). Makes the PRD "A/B snapshot to DISTINCT keys" observable; nothing is
+    # silently dropped. C9 (gemini-3.1-pro) finding 2.
+    workspace_refs: Optional[list[WorkspaceRef]]
     # cost / caps
     cost_accumulator: Annotated[dict, _merge_cost]
+    # SP-R2: the per-graph budget verdict the fan_out super-step stamps (GraphBudgetVerdict as a
+    # dict: {preempt, spend_usd, cap_usd, reason}). Last-write — fan_out overwrites it each wave.
+    # Present only when a per-graph budget is CONFIGURED (SPINE_BUDGET_USD); absent => budget OFF.
+    # _route_after_fan_out reads `.preempt` to park an over-budget graph at __halt__ (fail-safe).
+    budget_verdict: Optional[dict]
+    # SP-B1: the id of the triage card goal_intake creates when a board is injected. The
+    # decomposer "picks it up" by promoting it (triage → todo) and using it as the parent goal
+    # card rather than creating a new one. Last-write idempotency: absent when board=None (OFF);
+    # goal_intake skips card creation when this key is already present (resume-safe).
+    triage_card_id: Optional[str]
+    # SP-16 (slice 2): the kanban projection record the decompose node writes when a board is
+    # injected — {"parent": <goal card id>, "nodes": {node_id: card_id}}. Last-write, and the
+    # IDEMPOTENCY signal: decompose projects the plan onto the board ONLY when this is absent, so a
+    # re-run/resume never duplicates cards. Absent when no board is injected (board=None => OFF).
+    board_cards: Optional[dict]
     fix_attempts: int
     # hygiene
     scrubbed: bool

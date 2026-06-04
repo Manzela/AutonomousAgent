@@ -1,0 +1,88 @@
+# Acceptance — SP-25 · Spec-Kit prompts + EARS criteria as vendored assets
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-25: "Vendor Spec Kit /specify→/clarify→/analyze→/plan→/tasks prompts
+# + EARS cheat-sheet under docs/ as canonical SP-03 prompts — templates, not
+# runtime deps."
+#
+# PRD acceptance: "files present; SP-03 references them; no runtime import of
+# Spec Kit. Proof: grep."
+#
+# ORACLE MAP (16 oracles — 21 parametrized test cases, all hermetic):
+#
+#   Asset files (7 files × oracle 1-7):
+#   ①  docs/spec-kit/constitution.md exists and is non-empty.
+#   ②  docs/spec-kit/ears.md exists and is non-empty.
+#   ③  docs/spec-kit/specify.md exists and is non-empty.
+#   ④  docs/spec-kit/clarify.md exists and is non-empty.
+#   ⑤  docs/spec-kit/analyze.md exists and is non-empty.
+#   ⑥  docs/spec-kit/plan.md exists and is non-empty.
+#   ⑦  docs/spec-kit/tasks.md exists and is non-empty.
+#
+#   spec_drafter.py references:
+#   ⑧  CONSTITUTION_PATH defined, pointing at docs/spec-kit/constitution.md.
+#   ⑨  SPEC_KIT_DIR defined, pointing at docs/spec-kit.
+#   ⑩  CONSTITUTION_PATH resolves to the real file from repo root.
+#   ⑪  No "import spec_kit" in spec_drafter.py (static asset only, not a dep).
+#
+#   Content verification:
+#   ⑫  constitution.md references EARS patterns.
+#   ⑬  ears.md contains all 6 EARS pattern names (6 parametrized cases).
+#   ⑭  CONSTITUTION_PATH is readable with substantial content.
+#   ⑮  SPEC_KIT_DIR contains exactly the 7 expected template files.
+#   ⑯  spec_kit is not installed as a Python package.
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-8
+#   Review verdict: APPROVED — no security findings.
+#   Review notes:
+#     - CONSTITUTION_PATH/SPEC_KIT_DIR are hardcoded literal Path constants.
+#       No user input reaches them; no taint sink exists yet (GCP drafter
+#       is a deferred stub). Future loader must read only these constants.
+#     - Prompt injection: templates are operator-authored vendored text loaded
+#       as system prompt, not untrusted runtime data. Risk is a malicious
+#       committer, mitigated by signed commits + code review.
+#     - Runtime import: oracles 11/16 enforce no "import spec_kit"; package
+#       is not installed in the Python environment.
+#     - Tests: no exec/eval/subprocess/network; read-only file checks only.
+#     - No secrets in the markdown content; OWASP/EARS content is generic.
+
+id: SP-25
+title: Spec-Kit prompts + EARS criteria as vendored documentation assets
+prd_section: "§6 SP-25"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-8
+
+oracle_count: 16
+test_file: tests/unit/test_sp25_spec_kit_assets.py
+implementation:
+  - docs/spec-kit/constitution.md
+  - docs/spec-kit/ears.md
+  - docs/spec-kit/specify.md
+  - docs/spec-kit/clarify.md
+  - docs/spec-kit/analyze.md
+  - docs/spec-kit/plan.md
+  - docs/spec-kit/tasks.md
+  - app/core/spec_drafter.py   # CONSTITUTION_PATH + SPEC_KIT_DIR constants
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp25_spec_kit_assets.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    21 parametrized test cases (16 oracles) in
+    tests/unit/test_sp25_spec_kit_assets.py. All passing, hermetic (no LLM,
+    no network, no credentials). docs/spec-kit/: 7 static Markdown assets —
+    constitution.md (domain best-practice grounding: OWASP, EARS, distributed
+    systems, test-design principles), ears.md (EARS cheat-sheet with all 6
+    patterns), specify/clarify/analyze/plan/tasks.md (SP-03 drafter prompt
+    templates). app/core/spec_drafter.py: CONSTITUTION_PATH +
+    SPEC_KIT_DIR module-level Path constants added; no runtime import of a
+    spec_kit package. C9 review: claude-opus-4-8 (different model) — APPROVED.
+    16 new oracles passing, 0 regressions.

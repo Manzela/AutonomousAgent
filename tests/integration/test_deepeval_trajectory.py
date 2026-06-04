@@ -2,14 +2,24 @@
 
 Uses DeepEval to evaluate agent trajectories against a 7-dimension GEval rubric,
 and asserts against Hallucination/Groundedness thresholds.
+
+NOTE on what these assert (C9): under the hermetic CI default (``make_ci_judge()`` →
+``DeterministicDeepEvalJudge``) these are PIPELINE SMOKE tests — they prove the
+GEval/Hallucination eval path constructs, runs, and scores WITHOUT reaching OpenAI; the
+deterministic judge always returns a passing verdict, so they are NOT a real quality gate.
+The REAL semantic quality evaluation runs in staging with ``DEEPEVAL_JUDGE=vertex``
+(``LiteLLMVertexJudge`` — a cross-vendor Gemini judge with live Vertex creds).
 """
 
 from __future__ import annotations
 
 import pytest
-from deepeval.test_case import LLMTestCase
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 from deepeval.metrics import GEval, HallucinationMetric
 from deepeval.evaluate import assert_test
+
+# CI judge: a project-owned DeepEvalBaseLLM so the metrics never default to OpenAI.
+from lib.evaluators.deepeval_judges import make_ci_judge
 
 pytestmark = [
     pytest.mark.integration,
@@ -32,8 +42,10 @@ def test_trajectory_7_dim_rubric():
             "6. Formatting: Is the output properly structured?",
             "7. Persona: Does the agent maintain a professional, concise tone?",
         ],
-        evaluation_params=["input", "actual_output"],
+        evaluation_params=[LLMTestCaseParams.INPUT, LLMTestCaseParams.ACTUAL_OUTPUT],
         threshold=0.80,  # Target >0.80 human correlation
+        model=make_ci_judge(),  # hermetic deterministic judge in CI; Vertex/Gemini in staging
+        async_mode=False,
     )
 
     # A mocked perfect trajectory for the baseline test
@@ -49,7 +61,9 @@ def test_trajectory_hallucination():
     """Phase 1.7: Hallucination Detection (Groundedness/Faithfulness)."""
 
     # Hallucination metric checks if the output contains information not present in the context
-    hallucination_metric = HallucinationMetric(threshold=0.5)
+    hallucination_metric = HallucinationMetric(
+        threshold=0.5, model=make_ci_judge(), async_mode=False
+    )
 
     test_case = LLMTestCase(
         input="What were the build errors?",

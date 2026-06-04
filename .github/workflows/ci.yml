@@ -163,7 +163,6 @@ jobs:
         with:
           dockerfile: deploy/Dockerfile.hermes
           ignore: DL3008,DL3009,DL3015  # apt pinning, layer caching warnings — noisy
-        continue-on-error: true  # advisory until we baseline
 
       - name: Run hadolint on Dockerfile.shell-sandbox
         if: steps.detect.outputs.has_dockerfiles == 'true'
@@ -171,7 +170,6 @@ jobs:
         with:
           dockerfile: deploy/sandboxes/Dockerfile.shell-sandbox
           ignore: DL3008,DL3009,DL3015
-        continue-on-error: true
 
   # ------------------------------------------------------------------
   # Enforce SHA-pinning on every third-party Action used by workflows.
@@ -431,7 +429,6 @@ jobs:
           touch secrets/honcho-db-password
           touch secrets/litellm-master-key
           touch secrets/chroma-token
-          touch secrets/github-pat
           # Stub HOME-mounted gcloud creds path
           mkdir -p ~/.config/gcloud
 
@@ -686,7 +683,7 @@ jobs:
                 secrets/hermes-provider.env secrets/honcho.env \
                 secrets/litellm-db.env
           # `secrets:` blocks need the file to exist for `config` to validate
-          touch secrets/litellm-master-key secrets/github-pat
+          touch secrets/litellm-master-key
           # gcloud ADC mount (snapshot-watchdog reads this; harmless when empty)
           mkdir -p ~/.config/gcloud
 

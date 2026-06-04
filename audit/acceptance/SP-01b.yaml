@@ -1,0 +1,102 @@
+# Acceptance — SP-01b · FastAPI HTTP service wrapper (Pattern B — "no-mock" entrypoint)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# Context: SP-01 acceptance proved the LangGraph spine internals (walking-skeleton,
+# interrupts, checkpointer, ledger). The PRD-vs-codebase audit (2026-06-03) flagged SP-01
+# as PARTIAL because there was no production-facing HTTP entrypoint (Pattern B). This
+# slice proves the app/main.py FastAPI service that assembles SpineRunner with production
+# adapters and exposes the spine over HTTP.
+#
+# Scope:
+#   * app/main.py — FastAPI service with lifespan-managed SpineRunner
+#   * 7 endpoints: POST /goal, POST /resume, GET /state/{tid}, POST /panic, POST /rollback,
+#     POST /webhook/telegram, GET /healthz
+#   * Kill-switch gate: /goal returns 503 when kill-switch active
+#   * Serialisation: LangGraph Interrupt objects converted to {id, value} dicts
+#
+# ORACLE MAP (11 hermetic tests via httpx ASGITransport — no Docker/network):
+#   ① test_healthz_ok                      — liveness probe returns 200
+#   ② test_healthz_halted                  — 503 when kill-switch active
+#   ③ test_start_goal_returns_interrupt    — POST /goal → sign_off interrupt in body
+#   ④ test_start_goal_kill_switch_blocks   — POST /goal returns 503 when halted
+#   ⑤ test_start_goal_missing_fields       — POST /goal 422 on validation error
+#   ⑥ test_resume_approve_reaches_ship_gate — APPROVE → ship interrupt surfaced
+#   ⑦ test_resume_reject_halts             — REJECT → no interrupt in body
+#   ⑧ test_get_state                       — GET /state/{tid} returns thread state + next
+#   ⑨ test_panic_triggers_halt             — POST /panic activates kill-switch
+#   ⑩ test_rollback_503_when_unconfigured  — POST /rollback 503 when no adapter
+#   ⑪ test_telegram_webhook_503_when_unconfigured — POST /webhook/telegram 503 when unconfigured
+#
+# C9 ADVERSARIAL REVIEW (different model class from implementer):
+#   Implementer model: claude-opus-4-6 (Antigravity)
+#   Reviewer model: claude-sonnet-4-6 (this session, 2026-06-04)
+#   Review verdict: APPROVED with 2 advisory notes (non-blocking):
+#     A1 — /panic and /rollback have no application-level authentication. Acceptable for
+#          MVP deployed inside VPC with operator-only access; must add infrastructure-level
+#          auth (VPC-SC / IAP) before public-facing deployment.
+#     A2 — _serialise_result calls _make_json_safe on LG Interrupt objects (which converts
+#          them to str) before overwriting them with proper serialisation. Non-breaking
+#          because output is correct; minor efficiency gap.
+#   0 blocking findings.
+#
+# DEFERRED (named, not silently dropped):
+#   * Application-level auth on /panic and /rollback (acceptable for MVP, must land before
+#     public-facing deployment: infrastructure-level VPC-SC / IAP guards are planned)
+#   * GET /state/{thread_id} scrub of state.values (aligned with SP-R1 deferred: "full
+#     serde-level scrub of every persisted checkpoint value")
+#   * Direct unit test for _serialise_result (covered implicitly by ③ above)
+
+task: SP-01b
+title: "FastAPI HTTP service wrapper — Pattern B: SpineRunner assembled into HTTP service (11 oracles)"
+driver: V
+phase: spine-risk
+run_from: repo_root
+
+assertions:
+
+  - id: sp01b-service-file-present
+    description: >
+      app/main.py exists and the FastAPI app object is importable.
+    cmd: |
+      uv run --extra dev python -c "
+      from app.main import app, lifespan, _state
+      assert hasattr(app, 'routes'), 'app must be a FastAPI instance'
+      print('OK: app/main.py importable, FastAPI app present')
+      "
+    expect_exit: 0
+
+  - id: sp01b-endpoints-registered
+    description: >
+      All 7 endpoints are registered on the FastAPI app.
+    cmd: |
+      uv run --extra dev python -c "
+      from app.main import app
+      paths = {r.path for r in app.routes}
+      required = {'/goal', '/resume', '/state/{thread_id}', '/panic', '/rollback',
+                  '/webhook/telegram', '/healthz'}
+      missing = required - paths
+      assert not missing, f'Missing endpoints: {missing}'
+      print('OK: all 7 endpoints registered')
+      "
+    expect_exit: 0
+
+  - id: sp01b-11-http-oracles
+    description: >
+      11 hermetic HTTP integration oracles via httpx ASGITransport (no Docker/network).
+      Covers healthz, goal interrupt, kill-switch gate, resume APPROVE/REJECT, state,
+      panic, rollback 503, telegram 503, and validation error.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest tests/unit/test_main.py -q -p no:cacheprovider
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    app/main.py: FastAPI service with lifespan assembling SpineRunner + InMemoryCheckpointer
+    + InMemoryBoard + SteeringEventBus + KillSwitch. All 7 endpoints registered.
+    Kill-switch gate: POST /goal returns 503 if kill-switch active. Serialisation:
+    _serialise_result converts LangGraph Interrupt objects to {id, value} dicts for JSON.
+    tests/unit/test_main.py: 11 hermetic HTTP oracles via httpx ASGITransport.
+    ADVISORY: /panic and /rollback have no app-level auth (MVP acceptance, VPC-level auth planned).

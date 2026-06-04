@@ -1,0 +1,106 @@
+# Acceptance — SP-R7 · Workspace filesystem snapshot/rehydrate (lossless resume, 2nd state piece)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-R7 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L303):
+#   "on sandbox spin-down, snapshot the workspace to GCS (<thread_id>/<node_id>.tar.zst,
+#    scrubbed SP-R1 + CMEK + retention SP-R4) — OR, for the worktree-per-agent model (SP-05b),
+#    the committed agent BRANCH *is* the snapshot; resume rehydrates a FRESH sandbox losslessly."
+#   Acceptance: "a kill timed mid-execute (after >=1 file edit, before pytest) resumes with edits
+#   intact: (i) rehydrated id != original, (ii) edited file byte-equal to pre-kill, (iii) zero
+#   secret material on the sandbox FS." Closes audit-2026-06-03 F-2 / DUR-3 (the prior DoD-17 test
+#   round-tripped a hardcoded "deadbeef"*8 digest STRING through an in-memory checkpoint — it
+#   re-proved DoD-1, never an FS rehydrate).
+#
+# MECHANISM (hermetic, the PRD's blessed worktree/branch alternative — NO GCS, NO zstd):
+#   WorkspaceSession.snapshot() git-write-tree + commit-tree + update-ref refs/aa-snapshots/
+#   <_slug(tid)>/<_slug(node)> (durable, survives `git gc --prune=now`); digest = sha256 of
+#   `git ls-tree -r --full-tree` (a deterministic per-file content manifest — NOT `git archive`,
+#   whose tar embeds mtimes). WorkspaceSession.rehydrate() git-worktree-add --detach into a FRESH
+#   $TMPDIR dir. close() is the hermetic stand-in for a kill. All git calls fail-open (None /
+#   ok=False), so a snapshot/rehydrate failure degrades, never crashes the spine.
+#
+# DEFERRED (NOT built; named here so the gap is tracked, not silently dropped):
+#   - GCS .tar.zst upload + WorkspaceRef kind="gcs" (gs://autonomousagent-snapshots/<tid>/<node>)
+#     — needs GCP creds + a bucket; macOS dev host has none. F-2 ships kind="branch" only.
+#   - CMEK encryption at rest (GCS/KMS-tier).
+#   - SP-R4 bounded-retention GC of refs/aa-snapshots/* (cross-thread refs accumulate one-per-
+#     shipped-node; intra-thread re-snapshot OVERWRITES the ref — bounded). Production sweeper TBD.
+#   - SP-05b cross-node worktree/branch isolation (F-2 snapshots ONE node's worktree).
+#   - A live SIGKILL timed mid-execute (the execute node is one-shot, no docker on macOS) — proven
+#     by the MECHANISM (edit->snapshot->close()==kill->rehydrate->byte-equal), not a real signal.
+#   - An auto-rehydrate-on-resume spine node (F-2 delivers the rehydrate() mechanism + durable
+#     ref/digest; a node that calls it before re-execute is a follow-up).
+#   - zstandard / .tar.zst compression: NOT used (git-snapshot needs no compression). NOTE:
+#     zstandard 0.25.0 IS installed; "no new dep" is because git-snapshot adds no tar, not absence.
+
+task: SP-R7
+title: "workspace filesystem snapshot/rehydrate — real edit->kill->rehydrate->byte-equal (git commit-snapshot)"
+driver: V
+phase: P0
+run_from: repo_root
+
+assertions:
+  - id: spr7-dod17-real-edit-kill-rehydrate-byte-equal
+    description: >
+      THE DoD-17 replacement: a REAL workspace edit -> snapshot -> close()==kill -> rehydrate
+      into a FRESH worktree is (i) id != original, (ii) edited file BYTE-EQUAL to pre-kill,
+      (iii) secret-free, (iv) digest re-derivable as a content address. RED on the F-1 base:
+      WorkspaceSession has no snapshot/rehydrate (AttributeError).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_graph_spine.py::test_dod17_real_edit_snapshot_kill_rehydrate_byte_equal -q
+    expect_exit: 0
+
+  - id: spr7-snapshot-durable-across-gc
+    description: >
+      The snapshot ref outlives the worktree teardown AND survives `git gc --prune=now`
+      (an unreferenced commit-tree object would be pruned — proves update-ref into the COMMON
+      store, not a dangling object).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_workspace_diff.py::test_snapshot_ref_durable_across_close_and_gc -q
+    expect_exit: 0
+
+  - id: spr7-digest-content-addressed
+    description: >
+      digest is a REAL deterministic content address: different file bytes -> different digest,
+      and it is NOT the content-blind synthetic sha256(goal+spec_sha). 64-hex, survives SP-R1.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_workspace_diff.py::test_snapshot_digest_content_addressed_and_distinct_from_synthetic -q
+    expect_exit: 0
+
+  - id: spr7-slug-forgery-and-fail-open-and-no-leak
+    description: >
+      Security/robustness: a hostile node_id ('../../HEAD') slugs to ONE valid git-ref segment
+      (no traversal, no nested-ref, no '..' that git rejects); a degraded ws / bogus ref
+      fail-open (None / ok=False, never raises); re-snapshotting the same (tid,node) OVERWRITES
+      exactly one ref (bounded, no leak).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_workspace_diff.py::test_snapshot_node_id_slug_blocks_ref_forgery \
+        tests/unit/test_sp05_workspace_diff.py::test_snapshot_and_rehydrate_fail_open \
+        tests/unit/test_sp05_workspace_diff.py::test_snapshot_ref_overwrite_is_idempotent_no_leak -q
+    expect_exit: 0
+
+  - id: spr7-execute-stamps-real-workspace-ref
+    description: >
+      WIRING: the execute node stamps a REAL content-addressed workspace_ref (kind=branch,
+      ref under refs/aa-snapshots/, 64-hex digest that survived the SP-R1 scrub and is NOT the
+      synthetic placeholder); sandbox=None emits no workspace_ref (ship_effect falls back).
+      RED on base: execute emits no workspace_ref.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_workspace_diff.py::test_execute_stamps_real_workspace_ref \
+        tests/unit/test_sp05_workspace_diff.py::test_sandbox_none_emits_no_workspace_ref -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    1 DoD-17 replacement (test_graph_spine.py) + 6 mechanism/wiring oracles
+    (tests/unit/test_sp05_workspace_diff.py) covering: real edit->snapshot->kill->rehydrate
+    byte-equal + secret-scan + digest re-derive, durable-across-gc, content-addressed digest
+    distinct from the synthetic _digest, _slug ref-forgery block, fail-open, idempotent-overwrite
+    no-leak, and the execute-node real-workspace_ref wiring. Pure git commit-snapshot (no GCS,
+    no zstd, no new dependency). The _prune_worktrees autouse fixture sweeps refs/aa-snapshots/*.

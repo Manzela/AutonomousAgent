@@ -44,6 +44,7 @@ dependencies = [
   # introduced — both packages were already present in the a2a extra.
   "pyjwt[crypto]>=2.9",
   "cryptography>=43.0",
+  "aiogram>=3.28,<4",
 ]
 
 [project.optional-dependencies]
@@ -61,7 +62,7 @@ dev = [
   "pytest-vcr>=1.0.2",
   "hypothesis>=6.92",
   "inspect-ai>=0.3.0",
-  "deepeval>=1.0.0",
+  "deepeval>=4,<5",  # GEval/Hallucination schema shapes are major-version-coupled (deepeval_judges.py)
   "pyrit>=0.4.0",
   # garak removed by SP-22 — was a dev-only adversarial-probe tool;
   # langgraph is now a DIRECT dep (SP-00) so the garak→langchain→langgraph
@@ -78,6 +79,9 @@ gcp = [
   # Vertex AI embeddings (VertexEmbeddingsEmbedder in app/adapters/gcp/embedder.py).
   # Uses the gapic PredictionServiceClient from the high-level aiplatform package.
   "google-cloud-aiplatform>=1.50",
+  # SP-05c: Cloud Run Jobs sandbox (CloudRunJobSandbox in app/adapters/gcp/cloud_run_sandbox.py).
+  # Lazy-imported; CI runs against LocalSubprocessSandbox (no GCP credentials needed).
+  "google-cloud-run>=0.10",
 ]
 # A2A spike extra — Day 1 scaffolding pulls the runtime deps the Day 2-10
 # build-out will use (FastAPI/uvicorn for the JSON-RPC server, httpx + httpx-sse
@@ -139,4 +143,9 @@ markers = [
   "network: tests that require real outbound internet access (TCP/443); implies docker; skipped in air-gapped / CI-sandboxed environments",
   "slow: tests that take a long time to run (e.g. sleep, live DB setups)",
   "persistence_trap: Persistence Trap (#12.c) contract tests for the J3 trajectory shipper. Required on every PR that touches lib/trajectory/, lib/durability/failure_matrix.py, lib/evaluators/judge_events.py, or terraform/phase-0a-gcp/model-armor/.",
+]
+
+[dependency-groups]
+dev = [
+    "langgraph-checkpoint-sqlite>=3.1.0",
 ]

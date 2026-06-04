@@ -71,3 +71,6 @@ docker-compose.override.yml
 *.tfstate.*
 crash.log
 crash.*.log
+
+# deepeval runtime telemetry artifact
+.deepeval/

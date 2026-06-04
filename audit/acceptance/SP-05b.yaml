@@ -1,0 +1,86 @@
+# Acceptance — SP-05b · per-node workspace isolation (WorkspaceSession primitive contract)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# MECHANISM (hermetic — real git worktrees, no docker/LLM/network):
+#   app/core/workspace.py:WorkspaceSession materialises the PRD §5.1 "one git worktree
+#   per node" guarantee. create() calls `git worktree add --detach` under $TMPDIR; each
+#   call mints a unique mkdtemp parent so no two create() results share a path. close()
+#   calls `git worktree remove --force` + `shutil.rmtree(parent)` — both the worktree
+#   AND its temp parent are removed to bound $TMPDIR growth. The fan_out node (SP-11)
+#   drives one WorkspaceSession per ready leaf; SP-05b proves the PRIMITIVE contract so
+#   SP-11 can rely on it.
+#
+# HONEST BOUNDARY (NOT claimed here):
+#   - Kernel FS-confinement (chroot/mount-ns/EROFS) is SP-05c (docker/gVisor); a git
+#     worktree is PATH-isolation, not a kernel boundary — a child process can still
+#     escape via absolute paths or unsanitised input. Defense-in-depth: applier's
+#     '../'/absolute refusal + symlink-escape verdict at eval_gate (SP-06).
+#   - Cross-fan-out isolation (cross-access denial via SP-R6 lease, distinct snapshot
+#     keys, concurrency peak) is proven at the integration level by SP-11.
+#   - Snapshot durability + rehydrate round-trip is proven by SP-R7 (test_sp05_workspace_diff.py).
+#   - diff() rename/copy parse path + symlink detection are proven by SP-05 (test_sp05_workspace_diff.py).
+#   - Live concurrent thread-pool stress test (N≥8 concurrent creates) is deferred; W1
+#     proves path-distinctness at the primitive level.
+#
+# C9 REVIEW (Opus — different model class, 2026-06-03):
+#   B1 (MEDIUM, FIXED): W1 originally claimed "concurrent" but was sequential; renamed to
+#      "two independent creates" (the real guarantee — mkdtemp is always distinct) and W7
+#      added for content-isolation (the headline feature gap).
+#   B2 (MEDIUM, FIXED): W2 uses `--porcelain -uall --ignored` (catches untracked/ignored
+#      leakage) and adds base_sha assertion (verifies worktree is at the requested commit).
+#   B4 (MEDIUM, FIXED): W4 and W5 now assert the PARENT dir (not just ws_dir) is removed
+#      after close(); an implementation that only removed ws_dir would grow $TMPDIR per node.
+#   B3 (LOW, FIXED): W3 asserts ws._parent is None and ws.base_sha == "" and no temp dir leaked.
+#   B6 (LOW, FIXED): W6 uses Path.parents check (not string-prefix) — robust if $TMPDIR
+#      were set to a path structurally similar to the repo root.
+#   C1 (HIGH, FIXED): W7 added — writes a sentinel file in ws_a and asserts it is absent
+#      from ws_b AND the main repo tree (the headline SP-05b content-isolation guarantee).
+
+task: SP-05b
+title: "per-node workspace isolation — WorkspaceSession primitive contract: distinct paths, clean turn-0, fail-open on bad ref, idempotent close, parent-dir removal, outside-repo placement, content isolation (7 hermetic oracles)"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp05b-primitive-contract
+    description: >
+      7 hermetic oracles (W1–W7) proving the WorkspaceSession primitive contract:
+      W1 two independent create() calls yield DISTINCT ws_dir AND parent paths;
+      W2 turn-0 state is clean (--uall --ignored) and at base_sha (no dirty-index leak);
+      W3 bogus base ref → ok=False, ws_dir/parent/base_sha all None/"", no temp leak;
+      W4 close() idempotent — parent dir gone after first call, no raise on second;
+      W5 close() after exception removes BOTH worktree AND parent dir (no $TMPDIR growth);
+      W6 ws_dir is outside repo root — Path.parents check (not string-prefix);
+      W7 content written in ws_a is ABSENT from ws_b AND main repo tree (headline isolation).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp05b_workspace_isolation.py \
+        -v -q
+    expect_exit: 0
+
+  - id: sp05b-integration-via-sp11
+    description: >
+      Integration-level isolation (cross-access denial, distinct snapshot keys, concurrent
+      fan-out) proven by SP-11's 12 oracles in test_sp11_fanout.py — regression guard.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp11_fanout.py::test_cross_access_denial_distinct_worktrees \
+        tests/unit/test_sp11_fanout.py::test_cross_read_denied_marker_invisible_across_worktrees \
+        tests/unit/test_sp11_fanout.py::test_distinct_snapshot_keys_per_leaf \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    7 red-green oracles (tests/unit/test_sp05b_workspace_isolation.py) over
+    app/core/workspace.py:WorkspaceSession (create/close/diff/snapshot/rehydrate).
+    C9 review (Opus, 2026-06-03) found 5 real issues: B1 W1 was sequential not concurrent
+    (renamed + W7 content-isolation added), B2 W2 missing --uall and base_sha check,
+    B4 W4/W5 missing parent-dir removal assertion, B3 W3 missing base_sha/""/parent=None,
+    B6 W6 string-prefix fragile (replaced with Path.parents). All 5 fixed.
+    913 unit tests passing, 0 regressions.
+    DEFERRED (named): kernel FS-confinement (SP-05c), N≥8 concurrent stress test,
+    diff() rename parse, snapshot/rehydrate round-trip (in SP-R7).

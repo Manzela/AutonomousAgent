@@ -232,3 +232,10 @@ integrity:
   # The value below is a SHA-256 digest, not a credential. detect-secrets
   # flags it as a high-entropy string; the inline pragma silences that.
   soul_md_sha256: c642f9ce5aa80e380086d8177af77d7422405ebadfc45c22b4c683c138fc7919  # pragma: allowlist secret
+
+disaster_recovery:
+  rpo_hours: 24
+  rto_hours: 4
+  drill_schedule: quarterly
+  staging_project: autonomousagent-staging-2026
+  prod_project: autonomous-agent-2026

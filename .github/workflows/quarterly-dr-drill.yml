@@ -1,0 +1,42 @@
+name: Quarterly DR Drill
+on:
+  schedule:
+    - cron: '7 9 1 1,4,7,10 *'   # 1st of Jan/Apr/Jul/Oct at 09:07 UTC
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: staging
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Auth to GCP via WIF
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER_STAGING }}
+          service_account: ${{ vars.GCP_DR_DRILL_SA }}
+      - name: Restore Postgres from latest snapshot
+        run: |
+          LATEST=$(gcloud sql backups list --instance=autonomousagent-honcho-prod \
+                    --project=autonomous-agent-2026 --limit=1 --format='value(id)')
+          gcloud sql backups restore "$LATEST" \
+            --restore-instance=autonomousagent-honcho-staging-drill \
+            --project=autonomousagent-staging-2026
+      - name: Restore GCE snapshot
+        run: |
+          LATEST=$(gcloud compute snapshots list --project=autonomous-agent-2026 \
+                    --filter='sourceDisk:autonomousagent-vm-data' \
+                    --sort-by=~creationTimestamp --limit=1 --format='value(name)')
+          gcloud compute disks create autonomousagent-drill-data \
+            --source-snapshot="$LATEST" --project=autonomousagent-staging-2026 \
+            --zone=us-central1-a
+      - name: Smoke test
+        run: bash scripts/smoke-staging.sh
+      - name: Record drill outcome
+        run: |
+          echo "DR drill $(date -u +%Y-%m-%dT%H:%M:%SZ) OK" \
+            | tee -a compliance/dr-drill-log.md
+          gh api /repos/Manzela/AutonomousAgent/issues -f title="DR drill report $(date -u +%Y-%m-%d)" -f body="Drill passed; RTO observed: TBD."

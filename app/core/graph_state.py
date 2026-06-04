@@ -237,21 +237,47 @@ def assert_serializable_state(state: dict) -> None:
         _check(value)
 
 
+# Keys whose values are known-safe identifiers (hex hashes, thread IDs, etc.)
+# that should NOT be passed through the PII/secret scrubber. The high_entropy_hex
+# pattern ([a-f0-9]{40,}) legitimately catches API keys and tokens, but these
+# spine-internal fields are computed SHA256 digests, not secrets.
+_SCRUB_SKIP_KEYS = frozenset(
+    {
+        "spec_sha",
+        "source_sha256",
+        "content_hash",
+        "thread_id",
+        "namespace_token",
+        "record_id",
+        "trace_id",
+        "commit_sha",
+        "digest",
+        "sha",
+    }
+)
+
+
 def scrub_state(state: dict) -> dict:
     """Scrub every string value through lib/scrubber.py before persistence (SP-R1).
-    Returns a deep-cleaned copy; asserts no callables first."""
+    Returns a deep-cleaned copy; asserts no callables first.
+
+    Keys in _SCRUB_SKIP_KEYS are passed through unmodified — they contain hex
+    identifiers that the high_entropy_hex pattern would false-positive on.
+    """
     assert_serializable_state(state)
 
-    def _scrub(v: Any) -> Any:
+    def _scrub(v: Any, *, key: str | None = None) -> Any:
         if isinstance(v, str):
+            if key is not None and key in _SCRUB_SKIP_KEYS:
+                return v  # known-safe identifier, skip scrubbing
             return scrub_string(v, source="spine_state")
         if isinstance(v, dict):
-            return {k: _scrub(x) for k, x in v.items()}
+            return {k: _scrub(x, key=k) for k, x in v.items()}
         if isinstance(v, list):
             return [_scrub(x) for x in v]
         return v
 
-    return {k: _scrub(v) for k, v in state.items()}
+    return {k: _scrub(v, key=k) for k, v in state.items()}
 
 
 def default_spec_store_root():

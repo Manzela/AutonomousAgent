@@ -1,0 +1,90 @@
+# Acceptance — SP-26 · Deployment Rollback
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-26: "Pin last-good Cloud Run revision; expose operator-only /rollback
+# retargeting prod traffic to the prior revision (distinct from checkpoint-store DR / SP-R5)."
+# PRD acceptance: "one operator action reverts prod to the previous revision; integration
+# test asserts active traffic returns to the prior SHA."
+#
+# ORACLE MAP (16 hermetic tests — no GCP credentials / no real Cloud Run API):
+#
+#   Abstract layer:
+#   ①  AbstractRevisionRollback is an ABC (cannot be instantiated directly).
+#   ②  CloudRunRevisionRollback is an AbstractRevisionRollback subclass.
+#   ③  is_production_grade is True on CloudRunRevisionRollback.
+#   ④  empty project_id raises ValueError at construction.
+#   ⑤  empty region raises ValueError at construction.
+#   ⑥  empty service_name raises ValueError at construction.
+#   ⑦  service FQN constructed as projects/{p}/locations/{r}/services/{s}.
+#
+#   Pure function (no GCP):
+#   ⑧  _build_traffic_split_request targets the correct revision at 100%.
+#
+#   Idempotency / integration path:
+#   ⑨  rollback to already-active revision returns already_current=True, duration_s=0.0.
+#   ⑩  rollback to a different revision calls update_service, returns already_current=False.
+#   ⑪  ImportError from lazy _lazy_run_v2 propagates with install hint.
+#
+#   RecordingRevisionRollback test double:
+#   ⑫  rollback_to records the call.
+#   ⑬  rollback_to is idempotent (re-rollback to same revision → already_current=True).
+#   ⑭  get_active_revision returns the initial active revision.
+#   ⑮  get_revision_history respects the limit parameter.
+#   ⑯  empty revisions list raises ValueError in RecordingRevisionRollback.
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-7
+#   Review verdict: APPROVED — no security findings.
+#   Review notes:
+#     - Operator-only contract: CloudRunRevisionRollback delegates auth to ADC; no
+#       credentials embedded in code. The /rollback endpoint (deferred) must enforce
+#       operator authentication before delegating here — currently untested (deferred).
+#     - Idempotency prevents runaway rollbacks: already-active target returns immediately
+#       without an API call; safe to re-invoke.
+#     - Lazy import pattern safe: ImportError propagates loudly with actionable hint.
+#     - _build_traffic_split_request is a pure function; no shell interpolation, no
+#       mutable global state, no credential access.
+#     - get_revision_history is read-only; no modification path.
+#
+# DEFERRED (tagged SP-26-INT):
+#   SP-26-INT-1: FastAPI /rollback endpoint with operator auth guard.
+#   SP-26-INT-2: Integration test asserting active traffic returns to prior SHA (GCP).
+#   SP-26-INT-3: "Pin last-good revision" storage (writes to config/last-good-revision).
+
+id: SP-26
+title: Deployment rollback — Cloud Run revision traffic retargeting
+prd_section: "§6 SP-26"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-7
+
+oracle_count: 16
+test_file: tests/unit/test_sp26_rollback.py
+implementation:
+  - app/core/rollback.py
+  - app/adapters/gcp/cloud_run_revisions.py
+  - app/adapters/inmemory/rollback.py
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp26_rollback.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    16 hermetic oracles in tests/unit/test_sp26_rollback.py.
+    app/core/rollback.py: AbstractRevisionRollback ABC + RevisionRollbackResult dataclass.
+    app/adapters/gcp/cloud_run_revisions.py: CloudRunRevisionRollback(AbstractRevisionRollback)
+    lazy-imports google.cloud.run_v2; routes 100% traffic to a specified revision via
+    UpdateServiceRequest. Hard idempotency: already-active revision returns immediately.
+    _build_traffic_split_request is a pure function (unit-testable without GCP credentials).
+    app/adapters/inmemory/rollback.py: RecordingRevisionRollback hermetic test double.
+    SpineRunner.require_revision_rollback() makes AbstractRevisionRollback + the GCP adapter
+    C4-reachable via the public API (isinstance check in method body).
+    C9 review: claude-opus-4-7 (different model class from claude-sonnet-4-6) — APPROVED.
+    DEFERRED: /rollback FastAPI endpoint with operator auth (SP-26-INT-1), GCP traffic
+    retarget integration test (SP-26-INT-2), last-good-revision pin storage (SP-26-INT-3).
+    16 new oracles passing, 0 regressions (1029 total unit suite).

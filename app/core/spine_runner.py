@@ -27,6 +27,7 @@ from app.core.checkpointer import AbstractCheckpointer, DurabilityMode
 from app.core.graph import build_spine
 from app.core.kill_switch import KillSwitch
 from app.core.reaper import WorkspaceReaper, reap_orphaned_worktrees
+from app.core.rollback import AbstractRevisionRollback
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
 from app.core.steering import SteeringEventBus
@@ -118,6 +119,7 @@ class SpineRunner:
         kill_switch: Optional[KillSwitch] = None,
         telegram_adapter: Optional[TelegramAdapter] = None,
         notifier: Optional[TelegramNotifier] = None,
+        revision_rollback: Optional[AbstractRevisionRollback] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
@@ -136,6 +138,9 @@ class SpineRunner:
         # None => telegram-less skeleton (tests that don't need the Telegram channel).
         self._telegram_adapter = telegram_adapter
         self._notifier = notifier
+        # SP-26: the deployment rollback adapter — retargets Cloud Run traffic to a prior revision.
+        # None => rollback-less skeleton (tests that don't need the rollback path).
+        self._revision_rollback = revision_rollback
         # SP-16 (slice 2): the kanban board the LIVE spine projects its DAG onto. Default to an
         # InMemoryBoard so the entrypoint always renders cards (a build_spine closure arg like
         # cap/lease/sandbox — NEVER in SpineState). The DEFERRED Hermes kanban_db adapter is the
@@ -261,6 +266,20 @@ class SpineRunner:
         if not isinstance(self._notifier, TelegramNotifier):
             raise RuntimeError("TelegramNotifier not configured; pass notifier= to SpineRunner")
         return self._notifier
+
+    def require_revision_rollback(self) -> AbstractRevisionRollback:
+        """Return the injected AbstractRevisionRollback or raise RuntimeError.
+
+        Intended callers: the operator-only /rollback FastAPI endpoint (SP-26).
+        Makes AbstractRevisionRollback + CloudRunRevisionRollback C4-reachable
+        from SpineRunner's public API.
+        """
+        if not isinstance(self._revision_rollback, AbstractRevisionRollback):
+            raise RuntimeError(
+                "RevisionRollback not configured; "
+                "pass revision_rollback=CloudRunRevisionRollback(...) to SpineRunner"
+            )
+        return self._revision_rollback
 
     def get_state(self, thread_id: str):
         return self._app.get_state(self._cfg(thread_id))

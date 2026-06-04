@@ -48,7 +48,7 @@ _TEST_PUBLIC_KEY = _TEST_PRIVATE_KEY.public_key()
 def _make_token(
     iss: str = _CANARY_SA,
     aud: str = _AGENT_SA,
-    acting_for: dict = None,
+    acting_for: dict | None = None,
     exp_offset: int = 300,
     jti: str = "test-jti-001",
 ) -> str:

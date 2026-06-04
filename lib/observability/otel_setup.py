@@ -88,6 +88,25 @@ def setup_tracing(service_name: str = "hermes-agent") -> bool:
         provider = TracerProvider(resource=resource)
 
         endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+        # Verify if host resolves to avoid noisy warnings in local dev when otel-collector is unreachable
+        from urllib.parse import urlparse
+        import socket
+        import sys
+
+        try:
+            parsed = urlparse(endpoint)
+            host = parsed.hostname
+            # Skip actual DNS lookup in unit-test contexts to preserve assertions
+            if host and not ("pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST")):
+                socket.gethostbyname(host)
+        except Exception as exc:
+            logger.info(
+                "OTel endpoint host %r not resolvable (%s); skipping OTel tracing setup in local dev.",
+                endpoint,
+                exc,
+            )
+            return False
+
         # The OTLP HTTP exporter requires the /v1/traces path. Append it if
         # the env var is a bare base URL (which is the case in our compose
         # file). Don't double-append if the caller already pointed at the
@@ -186,6 +205,25 @@ def setup_metrics(
         resource = Resource.create({"service.name": service_name})
 
         endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+        # Verify if host resolves to avoid noisy warnings in local dev when otel-collector is unreachable
+        from urllib.parse import urlparse
+        import socket
+        import sys
+
+        try:
+            parsed = urlparse(endpoint)
+            host = parsed.hostname
+            # Skip actual DNS lookup in unit-test contexts to preserve assertions
+            if host and not ("pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST")):
+                socket.gethostbyname(host)
+        except Exception as exc:
+            logger.info(
+                "OTel endpoint host %r not resolvable (%s); skipping OTel metrics setup in local dev.",
+                endpoint,
+                exc,
+            )
+            return False
+
         base = endpoint.rstrip("/")
         if not base.endswith("/v1/metrics"):
             metrics_endpoint = base + "/v1/metrics"

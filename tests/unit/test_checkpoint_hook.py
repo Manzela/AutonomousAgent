@@ -15,8 +15,7 @@ unknown future kwargs via ``**_`` — same contract as ``trichotomy.after_tool_c
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -128,15 +127,8 @@ def test_hook_caps_recent_tool_history():
 
 
 @patch("lib.durability.checkpoint.Checkpoint")
-def test_hook_calls_maybe_write_with_step_and_state(mock_checkpoint_cls):
-    """The hook constructs a Checkpoint and calls .maybe_write(step, state).
-    Checkpoint internally enforces the every-N-steps gate — we verify the
-    *call* happens with the right step/state, not the gating logic itself
-    (that lives in test_checkpoint.py).
-    """
-    mock_cp = MagicMock()
-    mock_checkpoint_cls.return_value = mock_cp
-
+def test_hook_does_not_construct_checkpoint_or_write(mock_checkpoint_cls):
+    """The hook no longer constructs Checkpoint or calls maybe_write (Issue #232)."""
     _p1_3_checkpoint_on_tool_call(
         session_id="sess1",
         tool_name="read_file",
@@ -146,83 +138,7 @@ def test_hook_calls_maybe_write_with_step_and_state(mock_checkpoint_cls):
         tool_call_id="tc1",
         duration_ms=10.0,
     )
-    mock_cp.maybe_write.assert_called_once()
-    call_kwargs = mock_cp.maybe_write.call_args.kwargs
-    assert call_kwargs["step"] == 1
-    state = call_kwargs["state"]
-    assert state["session_id"] == "sess1"
-    assert state["task_id"] == "task1"
-    assert state["last_tool_name"] == "read_file"
-    assert state["last_tool_call_id"] == "tc1"
-    assert isinstance(state["recent_tool_history"], list)
-    assert state["recent_tool_history"][-1]["tool_name"] == "read_file"
-
-
-@patch("lib.durability.checkpoint.Checkpoint")
-def test_hook_constructs_checkpoint_with_session_root_and_taskspec(mock_checkpoint_cls):
-    """The hook MUST pass session_id, taskspec_id, and root_dir=/data/checkpoints
-    to ``Checkpoint(...)``. The taskspec_id falls back to a session-derived value
-    when task_id is missing (some internal Hermes tool paths don't populate it).
-    """
-    mock_checkpoint_cls.return_value = MagicMock()
-
-    # task_id supplied → used verbatim as taskspec_id
-    _p1_3_checkpoint_on_tool_call(
-        session_id="sess-explicit",
-        tool_name="t",
-        task_id="my-task-7",
-    )
-    init_kwargs = mock_checkpoint_cls.call_args.kwargs
-    assert init_kwargs["session_id"] == "sess-explicit"
-    assert init_kwargs["taskspec_id"] == "my-task-7"
-    assert init_kwargs["root_dir"] == Path("/data/checkpoints")
-
-    mock_checkpoint_cls.reset_mock()
-
-    # task_id missing → synthesized taskspec_id ("session-<id>")
-    _p1_3_checkpoint_on_tool_call(session_id="sess-anon", tool_name="t")
-    init_kwargs = mock_checkpoint_cls.call_args.kwargs
-    assert init_kwargs["taskspec_id"] == "session-sess-anon"
-
-
-@patch("lib.durability.checkpoint.Checkpoint")
-def test_hook_passes_monotonic_step_to_maybe_write(mock_checkpoint_cls):
-    """The hook passes the per-session monotonic step counter so Checkpoint
-    can enforce its every-N gating. Three calls → steps 1, 2, 3."""
-    mock_cp = MagicMock()
-    mock_checkpoint_cls.return_value = mock_cp
-    for _ in range(3):
-        _p1_3_checkpoint_on_tool_call(session_id="s", tool_name="t")
-    steps_passed = [c.kwargs["step"] for c in mock_cp.maybe_write.call_args_list]
-    assert steps_passed == [1, 2, 3]
-
-
-# ---------------------------------------------------------------------------
-# Fail-open contract
-# ---------------------------------------------------------------------------
-
-
-def test_hook_no_crash_on_checkpoint_write_failure(monkeypatch):
-    """Per the durability contract, the hook MUST fail-open: any exception
-    raised by Checkpoint.maybe_write (e.g. ENOSPC, permission denied) is
-    swallowed at DEBUG. The counter still increments — we want to know how
-    many tool calls happened even when the disk is full, so that when the
-    disk recovers, the next checkpoint reflects accurate progress."""
-    from lib.durability import checkpoint as cp_mod
-
-    def boom(*a, **kw):
-        raise OSError("disk full: no space left on device")
-
-    monkeypatch.setattr(
-        cp_mod,
-        "Checkpoint",
-        lambda **kw: type("X", (), {"maybe_write": boom})(),
-    )
-    # Must not raise
-    out = _p1_3_checkpoint_on_tool_call(session_id="s", tool_name="t")
-    assert out is None
-    # Counter increments despite the write failure
-    assert _session_step_counter["s"] == 1
+    mock_checkpoint_cls.assert_not_called()
 
 
 def test_hook_returns_none_always():
@@ -234,26 +150,16 @@ def test_hook_returns_none_always():
     assert _p1_3_checkpoint_on_tool_call(session_id="s") is None  # only session
 
 
-# ---------------------------------------------------------------------------
-# End-to-end: cadence interaction with the real Checkpoint writer
-# ---------------------------------------------------------------------------
-
-
-def test_hook_writes_file_at_interval_via_real_checkpoint(tmp_path, monkeypatch):
-    """Drive the hook with the REAL Checkpoint writer pointed at a tmp dir.
-    With interval_steps=5 (matches limits.yaml default), 4 calls produce
-    nothing on disk; the 5th call produces step-5.json. This is the unit-
-    level analog of the live docker-exec verification.
+def test_hook_does_not_write_file_at_interval_via_real_checkpoint(tmp_path, monkeypatch):
+    """Drive the hook with the real path configuration.
+    With writing disabled, even 5 calls produce nothing on disk (Issue #232).
     """
-
     # Redirect _CHECKPOINT_ROOT to the tmp dir for this test
     monkeypatch.setattr("lib.durability._CHECKPOINT_ROOT", tmp_path)
 
-    for _ in range(4):
+    for _ in range(10):
         _p1_3_checkpoint_on_tool_call(session_id="sess-e2e", tool_name="t")
-    assert not list((tmp_path / "sess-e2e").glob("step-*.json"))
 
-    _p1_3_checkpoint_on_tool_call(session_id="sess-e2e", tool_name="t")
-    files = sorted((tmp_path / "sess-e2e").glob("step-*.json"))
-    assert len(files) == 1
-    assert files[0].name == "step-5.json"
+    assert not (tmp_path / "sess-e2e").exists() or not list(
+        (tmp_path / "sess-e2e").glob("step-*.json")
+    )

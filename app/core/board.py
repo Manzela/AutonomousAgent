@@ -160,15 +160,19 @@ class AbstractBoard(ABC):
     ) -> Card:
         """Create a card. C14: a card cannot be BORN `done` (nor any non-vocabulary status)."""
         self._check_status(status, allow_done=False)
+        from lib.guardrails.sanitize import sanitize_html, sanitize_markdown
+
+        sanitized_title = sanitize_html(title)
+        sanitized_body = sanitize_markdown(body) if body is not None else None
         card = Card(
             id=self._new_id(),
-            title=title,
+            title=sanitized_title,
             thread_id=thread_id,
             status=status,
             node_id=node_id,
             parent_id=parent_id,
             gate_ref=gate_ref,
-            body=body,
+            body=sanitized_body,
         )
         self._put(card)
         return card

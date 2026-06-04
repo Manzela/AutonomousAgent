@@ -187,7 +187,10 @@ class TelegramNotifier:
         if not self._ledger.try_claim(thread_id, event_key):
             logger.debug("notifier: skip duplicate thread=%s event_key=%s", thread_id, event_key)
             return False
-        self._transport.send(chat_id=self._chat_id, text=text)
+        from lib.guardrails.sanitize import sanitize_markdown
+
+        sanitized_text = sanitize_markdown(text)
+        self._transport.send(chat_id=self._chat_id, text=sanitized_text)
         logger.info("notifier: sent thread=%s event_key=%s", thread_id, event_key)
         return True
 
@@ -225,9 +228,12 @@ class TelegramNotifier:
                 "notifier: skip duplicate gate thread=%s event_key=%s", thread_id, event_key
             )
             return False
+        from lib.guardrails.sanitize import sanitize_markdown
+
+        sanitized_text = sanitize_markdown(text)
         self._transport.send(
             chat_id=self._chat_id,
-            text=text,
+            text=sanitized_text,
             reply_markup=keyboard,
         )
         logger.info(

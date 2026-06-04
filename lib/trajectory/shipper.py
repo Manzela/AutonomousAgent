@@ -338,5 +338,60 @@ class TrajectoryShipper:
 
     @classmethod
     def delete_user_blobs(cls, user_id: str) -> dict[str, Any]:
-        """GDPR deletion stub for GCS trajectories."""
-        raise NotImplementedError("GDPR deletion stub for GCS trajectories")
+        """GDPR deletion: lists and deletes GCS blobs containing user_id."""
+        import os
+
+        # Determine the bucket name
+        bucket_name = os.environ.get("TRAJECTORY_BUCKET")
+        if not bucket_name:
+            try:
+                from scripts.run_trajectory_shipper import _read_config_secret
+
+                config = _read_config_secret()
+                bucket_name = config.get("bucket_name")
+            except Exception:
+                pass
+
+        if not bucket_name:
+            # Settle on a default production bucket name
+            bucket_name = "autonomous-agent-2026-trajectories"
+
+        summary: dict[str, Any] = {
+            "status": "completed",
+            "bucket": bucket_name,
+            "deleted_blobs": [],
+            "errors": [],
+        }
+
+        try:
+            gcs_client = _default_gcs_client()
+            bucket_handle = gcs_client.bucket(bucket_name)
+
+            # List and verify blobs under prefixes
+            for prefix in ("trajectory/", "malt/trajectory/"):
+                try:
+                    blobs = gcs_client.list_blobs(bucket_handle, prefix=prefix)
+                    for blob in list(blobs):
+                        try:
+                            # 1. Direct path/name check
+                            if user_id in blob.name:
+                                blob.delete()
+                                summary["deleted_blobs"].append(blob.name)
+                            else:
+                                # 2. Content payload check
+                                payload = blob.download_as_bytes().decode("utf-8", errors="ignore")
+                                if user_id in payload:
+                                    blob.delete()
+                                    summary["deleted_blobs"].append(blob.name)
+                        except Exception as e:
+                            logger.error("Failed to process GCS blob %s: %s", blob.name, e)
+                            summary["errors"].append(f"blob:{blob.name} error: {e}")
+                except Exception as e:
+                    logger.error("Failed to list GCS blobs under prefix %s: %s", prefix, e)
+                    summary["errors"].append(f"prefix:{prefix} error: {e}")
+        except Exception as e:
+            logger.error("GCS delete_user_blobs failed: %s", e)
+            summary["status"] = "failed"
+            summary["errors"].append(str(e))
+
+        return summary

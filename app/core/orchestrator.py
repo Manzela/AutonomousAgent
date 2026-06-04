@@ -28,7 +28,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 from app.core.sandbox import AbstractSandbox
 from app.core.embedder import AbstractEmbedder
@@ -41,6 +41,9 @@ from app.core.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from lib.cost_tracker import CostTracker
 
 # Default timeout for A2A peer requests (seconds).
 DEFAULT_PEER_TIMEOUT_S = 30.0
@@ -161,6 +164,7 @@ async def execute(
     sandbox: Optional[AbstractSandbox] = None,
     peer_timeout_s: float = DEFAULT_PEER_TIMEOUT_S,
     local_timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
+    cost_tracker: Optional["CostTracker"] = None,
 ) -> ExecutionResult:
     """Dispatch a task to a capability — peer (A2A), sandboxed-local, or in-process.
 
@@ -199,11 +203,13 @@ async def execute(
             capability,
             sandbox=sandbox,
             timeout_s=local_timeout_s,
+            cost_tracker=cost_tracker,
         )
     return await _execute_local(
         request,
         capability,
         timeout_s=local_timeout_s,
+        cost_tracker=cost_tracker,
     )
 
 
@@ -346,6 +352,7 @@ async def _execute_local(
     capability: AgentCapability,
     *,
     timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
+    cost_tracker: Optional["CostTracker"] = None,
 ) -> ExecutionResult:
     """Execute task via the capability's in-process ``invoke`` coroutine.
 
@@ -385,11 +392,33 @@ async def _execute_local(
                 output=None,
                 error="invoke_returned_non_execution_result",
                 duration_s=time.monotonic() - t0,
-                cost_usd=0.0,
+                cost_usd=cost_tracker.total_usd if cost_tracker else 0.0,
                 tokens_in=0,
                 tokens_out=0,
                 artifacts=(),
             )
+        # P0-2: inject tracked cost if the invoke() returned 0.0 and tracker has data.
+        if cost_tracker and result.cost_usd == 0.0 and cost_tracker.total_usd > 0.0:
+            result = ExecutionResult(
+                task_id=result.task_id,
+                status=result.status,
+                agent_id=result.agent_id,
+                output=result.output,
+                error=result.error,
+                duration_s=result.duration_s,
+                cost_usd=cost_tracker.total_usd,
+                tokens_in=result.tokens_in,
+                tokens_out=result.tokens_out,
+                artifacts=result.artifacts,
+            )
+        # Inject output provenance metadata if not already present
+        if getattr(result, "provenance", None) is None:
+            from lib.guardrails.sanitize import generate_provenance_metadata
+
+            prov = generate_provenance_metadata(
+                output_data=result.output, model_version=capability.version or "unknown"
+            )
+            result = result.model_copy(update={"provenance": prov})
         return result
 
     except asyncio.TimeoutError:
@@ -430,6 +459,7 @@ async def _execute_sandboxed(
     *,
     sandbox: AbstractSandbox,
     timeout_s: float = DEFAULT_LOCAL_TIMEOUT_S,
+    cost_tracker: Optional["CostTracker"] = None,
 ) -> ExecutionResult:
     """SP-05: run the node's command in a REAL sandbox child — not in-process.
 
@@ -496,18 +526,26 @@ async def _execute_sandboxed(
         )
 
     ok = result.returncode == 0
+    from lib.guardrails.sanitize import generate_provenance_metadata
+
+    out_payload = {
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "returncode": result.returncode,
+        "killed": result.killed,
+    }
+    prov = generate_provenance_metadata(
+        output_data=out_payload, model_version=capability.version or "unknown"
+    )
     return ExecutionResult(
         task_id=request.task_id,
         status=TaskStatus.COMPLETED if ok else TaskStatus.FAILED,
         agent_id=capability.agent_id,
-        output={
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode,
-            "killed": result.killed,
-        },
+        output=out_payload,
         error=None if ok else f"sandbox_exit_{result.returncode}",
         duration_s=result.duration_s,
+        cost_usd=cost_tracker.total_usd if cost_tracker else 0.0,
+        provenance=prov,
     )
 
 

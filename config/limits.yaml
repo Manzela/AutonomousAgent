@@ -49,6 +49,9 @@ snapshots:
   gcs_snapshot_cron: "0 4 * * *"
   gcs_retention_days: 30
   local_db_vacuum_cron: "0 5 * * 0"
+  include_spend_logs: false
+  include_honcho_sessions: false
+  include_phoenix_db: false
 
 approval:
   always_ask_patterns:

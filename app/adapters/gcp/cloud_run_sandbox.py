@@ -271,15 +271,75 @@ def _execution_succeeded(execution: Any) -> bool:
 
 
 async def _collect_execution_logs(execution_name: str) -> tuple[str, str]:
-    """SP-05c-INT-1 deferred: collect stdout/stderr from Cloud Logging.
+    """Collect stdout/stderr from Cloud Logging for a Cloud Run Execution.
 
-    Returns empty strings until the Cloud Logging integration is wired.
-    The execution_name is recorded so operators can query logs manually:
-      gcloud logging read 'resource.labels.job_name=...' --project=...
+    Uses google-cloud-logging API to query execution logs.
     """
-    logger.debug(
-        "cloud_run_sandbox: log collection deferred (SP-05c-INT-1) — "
-        "execution=%s; query logs manually via Cloud Logging",
-        execution_name,
-    )
-    return "", ""
+    logger.debug("cloud_run_sandbox: fetching logs for execution=%s", execution_name)
+    try:
+        from google.cloud import logging as cloud_logging
+    except ImportError:
+        logger.warning(
+            "cloud_run_sandbox: google-cloud-logging is not installed; returning empty logs"
+        )
+        return "", ""
+
+    # execution_name is projects/{project_id}/locations/{region}/executions/{execution_id}
+    execution_id = execution_name.split("/")[-1]
+
+    def _fetch() -> tuple[str, str]:
+        import json
+
+        client = cloud_logging.Client()
+        filter_str = (
+            f'resource.type="cloud_run_job" AND '
+            f'labels."run.googleapis.com/execution_name"="{execution_id}"'
+        )
+
+        stdout_lines = []
+        stderr_lines = []
+
+        # list_entries defaults to chronological order (timestamp ASC)
+        for entry in client.list_entries(filter_=filter_str):
+            msg = ""
+            if getattr(entry, "text_payload", None):
+                msg = entry.text_payload
+            elif getattr(entry, "json_payload", None):
+                if isinstance(entry.json_payload, dict):
+                    msg = entry.json_payload.get("message") or json.dumps(entry.json_payload)
+                else:
+                    msg = str(entry.json_payload)
+            elif getattr(entry, "payload", None):
+                if isinstance(entry.payload, dict):
+                    msg = entry.payload.get("message") or json.dumps(entry.payload)
+                else:
+                    msg = str(entry.payload)
+
+            if not msg:
+                continue
+
+            # Determine stream
+            stream = None
+            if entry.labels and "stream" in entry.labels:
+                stream = str(entry.labels["stream"]).lower()
+
+            if not stream:
+                severity = getattr(entry, "severity", "INFO") or "INFO"
+                if severity in ("ERROR", "CRITICAL", "ALERT", "EMERGENCY"):
+                    stream = "stderr"
+                else:
+                    stream = "stdout"
+
+            if stream == "stderr":
+                stderr_lines.append(msg)
+            else:
+                stdout_lines.append(msg)
+
+        return "\n".join(stdout_lines), "\n".join(stderr_lines)
+
+    try:
+        stdout, stderr = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        return stdout, stderr
+    except Exception as e:
+        logger.exception("cloud_run_sandbox: failed to fetch logs from Cloud Logging: %s", e)
+        return "", ""

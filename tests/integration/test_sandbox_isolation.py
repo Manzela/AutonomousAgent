@@ -10,6 +10,7 @@ on hosts without docker — mirroring the pattern proven in
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 
@@ -57,6 +58,61 @@ pytestmark = [
         reason="docker daemon or `docker compose` CLI not available",
     ),
 ]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def sandbox_container():
+    """Ensure the shell-sandbox container is running for the duration of the tests."""
+    if not _docker_available():
+        pytest.skip("docker daemon and/or `docker compose` CLI not available on this host")
+
+    # Establish isolated project context
+    project = os.environ.get("COMPOSE_PROJECT_NAME")
+    if not project:
+        worker = os.environ.get("PYTEST_XDIST_WORKER", "0")
+        project = f"sandbox-isolation-{worker}-{os.getpid()}"
+        os.environ["COMPOSE_PROJECT_NAME"] = project
+
+    # Bring up shell-sandbox in the background.
+    up = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            "deploy/docker-compose.yml",
+            "up",
+            "-d",
+            "--force-recreate",
+            "shell-sandbox",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    if up.returncode != 0:
+        pytest.skip(
+            f"docker compose up shell-sandbox failed (rc={up.returncode}).\n"
+            f"stdout:\n{up.stdout}\nstderr:\n{up.stderr}"
+        )
+    try:
+        yield
+    finally:
+        # Tear down the container and its volumes/networks
+        subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                "deploy/docker-compose.yml",
+                "down",
+                "-v",
+                "--remove-orphans",
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
 
 
 def test_docker_skip_guard_fires_when_docker_absent(monkeypatch):

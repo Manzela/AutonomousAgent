@@ -342,13 +342,54 @@ def _message_role_content(msg: Any) -> Tuple[Optional[str], Optional[str]]:
 #      kwarg, fall back to the model captured at pre_llm_call;
 #   3. ``ContextUsageDetector.record_usage`` is called; if it returns
 #      ``"F36"`` we dispatch the failure-matrix handler so operators are
-#      paged (current handler is ``escalate_context_pressure`` — a STUB
-#      that delegates to fallback_local_log until Task #56 implements
-#      the real escalation).
+#      paged (current handler is ``escalate_context_pressure`` — which
+#      escalates via Telegram alerts, forensic logging, and compaction hints).
 #
 # Failures inside this path are swallowed at the bottom of
 # ``_record_context_usage`` because the wrapper SHALL NOT break model
 # tracing if the detector or dispatch logic raises.
+
+
+_ledger: Any = None
+_ledger_lock = threading.Lock()
+
+
+def _get_ledger() -> Any:
+    global _ledger
+    if _ledger is not None:
+        return _ledger
+    with _ledger_lock:
+        if _ledger is not None:
+            return _ledger
+        try:
+            from lib.observability.ledger import TamperEvidentLedger
+
+            _ledger = TamperEvidentLedger()
+        except Exception as exc:
+            logger.warning("ledger init failed: %s", exc)
+            _ledger = None
+    return _ledger
+
+
+_failure_detector: Any = None
+_failure_detector_lock = threading.Lock()
+
+
+def _get_failure_detector() -> Any:
+    global _failure_detector
+    if _failure_detector is not None:
+        return _failure_detector
+    with _failure_detector_lock:
+        if _failure_detector is not None:
+            return _failure_detector
+        try:
+            from lib.observability.failure_detectors import FailureDetectors
+
+            _failure_detector = FailureDetectors()
+        except Exception as exc:
+            logger.warning("FailureDetectors init failed: %s", exc)
+            _failure_detector = None
+    return _failure_detector
 
 
 def _get_context_detector() -> Any:
@@ -554,6 +595,21 @@ def _post_tool_call(
     duration_ms: Optional[int] = None,
     **_: Any,
 ) -> None:
+    if session_id:
+        try:
+            ledger = _get_ledger()
+            if ledger:
+                record_payload = {
+                    "session_id": session_id,
+                    "tool_name": tool_name,
+                    "args": args,
+                    "tool_call_id": tool_call_id,
+                    "result": str(result) if result is not None else None,
+                }
+                ledger.append(record_type="tool_call", payload=record_payload)
+        except Exception as exc:
+            logger.debug("ledger append failed: %s", exc)
+
     if _tracer is None:
         return None
     try:
@@ -700,6 +756,35 @@ def _post_llm_call(
     platform: Optional[str] = None,
     **_: Any,
 ) -> None:
+    if session_id and assistant_response is not None:
+        try:
+            if isinstance(assistant_response, dict):
+                resp_text = assistant_response.get("content") or ""
+            else:
+                resp_text = getattr(assistant_response, "content", "") or str(assistant_response)
+
+            detector = _get_failure_detector()
+            if detector:
+                failure_type = detector.check_llm_output(session_id, resp_text)
+                if failure_type:
+                    logger.warning(
+                        "observability: Failure detector tripped in session %s: %s",
+                        session_id,
+                        failure_type,
+                    )
+                    from lib.durability.handlers import dispatch
+
+                    dispatch(
+                        "F34",
+                        session_id=session_id,
+                        payload={
+                            "failure_type": failure_type,
+                            "response_text": resp_text[:1000],
+                        },
+                    )
+        except Exception as e:
+            logger.debug("failure detector check failed: %s", e)
+
     if _tracer is None or not session_id:
         return None
     try:
@@ -758,26 +843,17 @@ def _post_llm_call(
 def _llm_request_cost_usd(
     model: str, prompt_tokens: int, completion_tokens: int
 ) -> Optional[float]:
-    """Per-request cost in USD from the LiteLLM pricing map (the maintained
-    ``model_prices_and_context_window`` data LiteLLM ships; already a dependency via
-    the judge panel). Returns ``None`` — and the caller records NOTHING — when LiteLLM
-    cannot price ``model`` (unknown model, missing dep, or bad token counts), so an
-    unpriced model yields an ABSENT datapoint rather than a fabricated cost. SP-O1:
-    cost claims (SP-23 / U-9 / SP-R2 budget) must be SOURCED, never invented.
-    """
-    try:
-        import litellm  # lazy import: kept off the module-load path (litellm is a required dep)
+    """Per-request cost in USD from the LiteLLM pricing map.
 
-        prompt_cost, completion_cost = litellm.cost_per_token(
-            model=model,
-            prompt_tokens=max(0, int(prompt_tokens)),
-            completion_tokens=max(0, int(completion_tokens)),
-        )
-        total = float(prompt_cost) + float(completion_cost)
-        return total if total >= 0.0 else None
-    except Exception as exc:  # noqa: BLE001  unknown model / litellm absent / bad data
-        logger.debug("llm.call.cost: LiteLLM could not price %r: %s", model, exc)
-        return None
+    P0-2 (Go-Live audit): delegates to ``lib.cost.llm_request_cost_usd``
+    (the extracted standalone module) so both the observability OTel histogram
+    AND the per-graph budget gate share the same pricing source.
+
+    Returns ``None`` when LiteLLM cannot price ``model``.
+    """
+    from lib.cost import llm_request_cost_usd
+
+    return llm_request_cost_usd(model, prompt_tokens, completion_tokens)
 
 
 def _post_api_request(

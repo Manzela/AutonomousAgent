@@ -193,7 +193,7 @@ services:
     pids_limit: 100
 
   langfuse-minio:
-    image: minio/minio:RELEASE.2024-05-10T01-39-38Z
+    image: minio/minio:RELEASE.2024-05-10T01-41-38Z
     command: server /data --console-address ":9001"
     <<: [*restart_policy, *json_logging]
     cap_drop: [ALL]
@@ -713,7 +713,6 @@ services:
     # Pinned to 2.15.x — latest stable at time of writing.
     image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.15.0@sha256:b9dbf4aa34a514f0c38021686928a99f8d778925b2f330e46487cc708c0e61d2
     <<: [*restart_policy, *json_logging]
-    container_name: autonomous-agent-cloud-sql-proxy-1
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
@@ -743,7 +742,6 @@ services:
   escalation-watcher:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
-    container_name: autonomous-agent-escalation-watcher-1
     # Override hermes-image ENTRYPOINT=["hermes"] so `command:` runs as a
     # plain python invocation. Without this, docker concatenates to
     # `hermes python /app/scripts/escalation_loop.py` and Hermes CLI rejects
@@ -789,7 +787,6 @@ services:
   snapshot-watchdog:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
-    container_name: autonomous-agent-snapshot-watchdog-1
     entrypoint: ["sh", "-c", "test -s /secrets/sa-key.json || exit 1; exec python /app/scripts/snapshot_loop.py"]
     command: []
     working_dir: /app
@@ -836,7 +833,6 @@ services:
   budget-watchdog:
     image: autonomousagent/hermes:0.1.0
     <<: [*restart_policy, *json_logging]
-    container_name: autonomous-agent-budget-watchdog-1
     entrypoint: []
     command: ["python", "/app/scripts/budget_watchdog_loop.py"]
     working_dir: /app
@@ -874,7 +870,6 @@ services:
   volume-pruner:
     image: alpine:3.20
     <<: [*restart_policy, *json_logging]
-    container_name: autonomous-agent-volume-pruner-1
     command: >
       sh -c "while true; do
         find /data -type f -mtime +90 -delete;

@@ -95,23 +95,25 @@ def main() -> int:
                 .get("snapshot_watchdog", {})
                 .get("interval_s", DEFAULT_INTERVAL_S)
             )
-            # FinOps slice — include_spend_logs defaults False so existing
-            # operators keep the legacy tar shape; flip via
-            # snapshots.include_spend_logs in limits.yaml once the
-            # spend-log retention runbook is signed off.
             include_spend = bool(snap_cfg.get("include_spend_logs", False))
+            include_honcho = bool(snap_cfg.get("include_honcho_sessions", False))
+            include_phoenix = bool(snap_cfg.get("include_phoenix_db", False))
             state = run_once(
                 snapshot_hour_utc=hour_utc,
                 include_spend_logs=include_spend,
+                include_honcho_sessions=include_honcho,
+                include_phoenix_db=include_phoenix,
             )
             if state.error:
                 logger.warning("snapshot_loop tick error: %s", state.error)
             elif state.uploaded:
                 logger.info(
-                    "snapshot_loop uploaded object=%s bytes=%d spend_rows=%s",
+                    "snapshot_loop uploaded object=%s bytes=%d spend_rows=%s honcho=%s phoenix=%s",
                     state.object_name,
                     state.bytes_uploaded or 0,
                     state.spend_logs_rows if state.spend_logs_rows is not None else "n/a",
+                    include_honcho,
+                    include_phoenix,
                 )
             elif state.skipped:
                 logger.info(

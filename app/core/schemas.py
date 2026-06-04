@@ -202,6 +202,7 @@ class ExecutionResult(BaseModel):
     tokens_in: Annotated[int, Field(ge=0)] = 0
     tokens_out: Annotated[int, Field(ge=0)] = 0
     artifacts: tuple[dict[str, str], ...] = Field(default_factory=tuple)
+    provenance: Optional[dict[str, Any]] = None
 
 
 # ─────────────────────────────────────────────────────────────────────────

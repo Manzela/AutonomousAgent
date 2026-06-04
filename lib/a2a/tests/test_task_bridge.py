@@ -69,7 +69,7 @@ def test_mapping_table_completeness(spec_status: str, expected_a2a_state: str) -
 
         spec = dataclasses.replace(spec, status=spec_status)
     else:
-        spec = spec.model_copy(update={"status": spec_status})
+        spec = spec.model_copy(update={"status": spec_status})  # type: ignore[attr-defined]
     result = tb.bridge_taskspec_status_to_a2a(spec)
     assert (
         result == expected_a2a_state

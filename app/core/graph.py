@@ -66,6 +66,8 @@ from app.core.spec_drafter import AbstractSpecDrafter
 from lib.anchors.clarification_driver import run_clarification_round
 from lib.anchors.spec_store import SpecStore
 from lib.anchors.task_spec import Scope, TaskSpec
+from lib.cost_tracker import CostTracker
+from lib.guardrails.model_armor import ModelArmorGuardrail
 from lib.scrubber import scrub_string
 
 
@@ -299,7 +301,15 @@ async def _run_node(
                     }
                 )
 
-            result: ExecutionResult = await orchestrate(run_req, capability, sandbox=sandbox)
+            # P0-2 (Go-Live audit): create a per-leaf cost tracker so that
+            # ExecutionResult.cost_usd reflects real LLM spend (makes budget_verdict live).
+            leaf_tracker = CostTracker()
+            result: ExecutionResult = await orchestrate(
+                run_req,
+                capability,
+                sandbox=sandbox,
+                cost_tracker=leaf_tracker,
+            )
             if ws is not None and ws.ok and result.status == TaskStatus.COMPLETED:
                 diff = ws.diff()
                 result = result.model_copy(update={"artifacts": diff})
@@ -351,6 +361,10 @@ def _build_nodes(
     cap = cap or GlobalThreadCap(1)
     lease = lease or BranchLease(tempfile.mkdtemp(prefix="aa-lease-"))
 
+    # P1-5 (Go-Live audit): Model Armor guardrail for input/output safety.
+    # Instantiated once per build_spine; fail-open when unconfigured.
+    _guardrail = ModelArmorGuardrail()
+
     async def goal_intake(state: SpineState, config) -> dict:
         tid = config["configurable"]["thread_id"]
         delta: dict = {
@@ -369,6 +383,23 @@ def _build_nodes(
             goal_title = (state.get("goal") or "goal")[:80]
             card = board.create_card(title=goal_title, thread_id=tid, status="triage")
             delta["triage_card_id"] = card.id
+
+        # P1-5 (Go-Live audit): screen the goal through Model Armor before
+        # it enters the spine. Blocked inputs park at goal_intake with a
+        # refusal audit entry. Fail-open: screen_input returns ALLOW on any error.
+        if _guardrail.active:
+            goal_text = state.get("goal", "")
+            verdict = _guardrail.screen_input(goal_text)
+            if verdict.blocked:
+                delta["audit"] = [f"goal_intake BLOCKED by Model Armor: {verdict.reason}"]
+                delta["model_armor_verdict"] = {
+                    "action": verdict.action.value,
+                    "reason": verdict.reason,
+                    "stage": "input",
+                }
+                # Return immediately — the graph will not advance past goal_intake
+                return delta
+
         return delta
 
     async def clarify(state: SpineState, config) -> dict:

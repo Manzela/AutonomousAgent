@@ -222,36 +222,10 @@ def _p1_3_checkpoint_on_tool_call(
         # Cap the history in place so other readers see the bounded version.
         if len(history) > _RECENT_HISTORY_MAX:
             del history[: len(history) - _RECENT_HISTORY_MAX]
-        current_history = list(history)
 
-    try:
-        # Local import keeps the unit suite hermetic and matches the pattern
-        # established by the P1-4 _p1_4_inject_rejected stub above.
-        from lib.durability.checkpoint import Checkpoint
-
-        cp = Checkpoint(
-            session_id=session_id,
-            # task_id isn't always populated by Hermes (some tool calls
-            # synthesize an empty string); fall back to a session-derived
-            # value so Checkpoint always has a non-empty taskspec_id field.
-            taskspec_id=task_id or f"session-{session_id}",
-            root_dir=_CHECKPOINT_ROOT,
-        )
-        state: Dict[str, Any] = {
-            "session_id": session_id,
-            "task_id": task_id,
-            "last_tool_name": tool_name,
-            "last_tool_call_id": tool_call_id,
-            "recent_tool_history": current_history,
-        }
-        cp.maybe_write(step=step, state=state)
-    except Exception as exc:  # noqa: BLE001 — never block the agent loop
-        logger.debug(
-            "P1-3 checkpoint write failed for session %s step %d: %s",
-            session_id,
-            step,
-            exc,
-        )
+    # Legacy step-N.json writes are deprecated (Issue #232) to avoid split-brain
+    # with the primary LangGraph checkpointer store. The hook is now a read-through
+    # shim keeping only step counter and rolling history in memory.
     return None
 
 

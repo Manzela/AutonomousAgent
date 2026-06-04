@@ -233,19 +233,35 @@ except ImportError:
                 child_env["PYTHONPATH"] = f"{site_dir}{os.pathsep}{project_root}"
             child_env["SANDBOX_ALLOWED_DIR"] = str(cwd.resolve())
 
-            preexec = _make_preexec(
-                cpu_seconds=cpu_seconds, memory_mb=memory_mb, max_files=max_files
-            )
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=str(cwd),
-                env=child_env,
-                stdin=asyncio.subprocess.PIPE if stdin is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                preexec_fn=preexec,
-                start_new_session=True,  # for killpg cleanup
-            )
+            if sys.platform != "win32":
+                wrapper_code = (
+                    "import sys, os, resource; "
+                    f"resource.setrlimit(resource.RLIMIT_CPU, ({cpu_seconds}, {cpu_seconds + 5})); "
+                    f"as_bytes = {memory_mb} * 1024 * 1024; "
+                    f"resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes)) if sys.platform != 'darwin' else None; "
+                    f"resource.setrlimit(resource.RLIMIT_NOFILE, ({max_files}, {max_files})); "
+                    "os.execvp(sys.argv[1], sys.argv[1:])"
+                )
+                wrapped_cmd = [sys.executable, "-c", wrapper_code] + list(cmd)
+                proc = await asyncio.create_subprocess_exec(
+                    *wrapped_cmd,
+                    cwd=str(cwd),
+                    env=child_env,
+                    stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,  # for killpg cleanup
+                )
+            else:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=str(cwd),
+                    env=child_env,
+                    stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    start_new_session=True,  # for killpg cleanup
+                )
             t0 = _now()
             killed = False
             try:
@@ -281,56 +297,7 @@ except ImportError:
             )
 
 
-def _make_preexec(*, cpu_seconds: int, memory_mb: int, max_files: int):
-    """Build a preexec_fn that applies POSIX rlimits to the child.
-
-    KNOWN RISK (P3-11): preexec_fn is unsafe in multi-threaded Python processes
-    because the child is created via fork() while other threads may hold locks
-    that are never released in the forked child (fork-deadlock).  This is
-    accepted for the CI / test-only context where LocalSubprocessSandbox runs.
-    Production deployments MUST use FirecrackerSandbox, which uses a
-    process-manager sidecar instead of fork+exec (no preexec_fn).
-    """
-
-    def preexec() -> None:
-        import resource  # POSIX-only; safe inside the preexec closure
-
-        # CPU seconds (SIGXCPU at soft limit, SIGKILL at hard).
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 5))
-        # Address space (bytes). Affects malloc/mmap and most heap growth.
-        # Fail-CLOSED: if the OS rejects the rlimit (ValueError = bad value;
-        # OSError/EPERM = container hard-limit prevents the request), abort the
-        # child process before exec rather than running without memory isolation.
-        # The parent sees this as SubprocessError from create_subprocess_exec.
-        if sys.platform != "darwin":
-            as_bytes = memory_mb * 1024 * 1024
-            try:
-                resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
-            except (ValueError, OSError) as exc:
-                sys.stderr.write(
-                    f"sandbox: RLIMIT_AS ({as_bytes // (1024 * 1024)}MB) rejected by OS: {exc!r}; "
-                    f"aborting child (fail-closed — no memory isolation)\n"
-                )
-                raise  # Abort child process before exec; parent gets SubprocessError.
-        else:
-            sys.stderr.write("sandbox: skipping RLIMIT_AS enforcement on macOS (darwin)\n")
-        # Max open files. Same fail-closed policy.
-        try:
-            resource.setrlimit(resource.RLIMIT_NOFILE, (max_files, max_files))
-        except (ValueError, OSError) as exc:
-            sys.stderr.write(
-                f"sandbox: RLIMIT_NOFILE ({max_files}) rejected by OS: {exc!r}; "
-                f"aborting child (fail-closed — no file-descriptor isolation)\n"
-            )
-            raise  # Abort child process before exec.
-        # Detach from parent's stdio session (start_new_session already does
-        # this when set on subprocess.create), but make doubly sure.
-        try:
-            os.setsid()
-        except OSError:
-            pass  # already a session leader — expected when start_new_session=True was set
-
-    return preexec
+# preexec_fn is unsafe in multi-threaded processes (P3-11), so limits are wrapped inline via os.execvp above.
 
 
 def _now() -> float:

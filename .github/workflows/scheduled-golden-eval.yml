@@ -1,0 +1,135 @@
+# P2-7: Scheduled Golden Eval — Drift Detection
+#
+# Runs the golden eval corpus against the production model on a weekly
+# schedule and compares results against the baseline. Alerts on regression
+# (score drop > 5% on any axis).
+#
+# The golden eval corpus is in evals/golden/ with SHA256 integrity pins.
+# This workflow reuses the existing SP-G1 eval infrastructure.
+
+name: "Scheduled Golden Eval (Drift Detection)"
+
+on:
+  schedule:
+    # Weekly — Sunday 03:00 UTC
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+    inputs:
+      baseline_sha:
+        description: "SHA of the baseline eval results to compare against (default: latest)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write  # WIF for Vertex AI
+  issues: write    # Alert via issue creation
+
+env:
+  GCP_PROJECT_ID: autonomous-agent-2026
+  GCP_REGION: us-central1
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  golden-eval-drift:
+    name: "Golden Eval Drift Detection"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Authenticate to GCP (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: "projects/${{ env.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
+          service_account: "github-actions@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install uv
+          uv sync --extra dev --extra gcp
+
+      - name: Verify golden eval integrity
+        run: |
+          cd evals/golden
+          if [ -f SHA256SUMS ]; then
+            sha256sum -c SHA256SUMS
+          else
+            echo "WARNING: No SHA256SUMS file — eval integrity unverified"
+          fi
+
+      - name: Run golden eval suite
+        id: eval
+        run: |
+          uv run python -m pytest evals/ \
+            -m "golden" \
+            --tb=short \
+            --junitxml=eval-results.xml \
+            -v 2>&1 | tee eval-output.log
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      - name: Compare against baseline
+        id: drift
+        run: |
+          # Parse eval results and compare against baseline
+          python3 << 'EOF'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
+
+          # Parse JUnit XML results
+          tree = ET.parse("eval-results.xml")
+          root = tree.getroot()
+          total = int(root.get("tests", 0))
+          failures = int(root.get("failures", 0))
+          errors = int(root.get("errors", 0))
+          passed = total - failures - errors
+          pass_rate = (passed / total * 100) if total > 0 else 0
+
+          # Check for drift (> 5% regression from 100% baseline)
+          DRIFT_THRESHOLD = 95.0
+          drifted = pass_rate < DRIFT_THRESHOLD
+
+          print(f"Total: {total}, Passed: {passed}, Failed: {failures}, Errors: {errors}")
+          print(f"Pass rate: {pass_rate:.1f}% (threshold: {DRIFT_THRESHOLD}%)")
+          print(f"Drift detected: {drifted}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"pass_rate={pass_rate:.1f}\n")
+              f.write(f"drifted={'true' if drifted else 'false'}\n")
+              f.write(f"total={total}\n")
+              f.write(f"passed={passed}\n")
+          EOF
+
+      - name: Create drift alert issue
+        if: steps.drift.outputs.drifted == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const passRate = '${{ steps.drift.outputs.pass_rate }}';
+            const total = '${{ steps.drift.outputs.total }}';
+            const passed = '${{ steps.drift.outputs.passed }}';
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `🚨 Golden Eval Drift Detected — ${passRate}% pass rate`,
+              body: `## Golden Eval Drift Alert\n\n**Date**: ${new Date().toISOString()}\n**Pass Rate**: ${passRate}%\n**Tests**: ${passed}/${total} passed\n\n### Action Required\n\n1. Review the [workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})\n2. Identify which eval cases regressed\n3. Determine if this is a model change, prompt drift, or infrastructure issue\n4. File a fix PR or update the baseline if the change is intentional\n\ncc @Manzela`,
+              labels: ['drift-alert', 'priority:high', 'ops']
+            });
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: golden-eval-results-${{ github.run_number }}
+          path: |
+            eval-results.xml
+            eval-output.log

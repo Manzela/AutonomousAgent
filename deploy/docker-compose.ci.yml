@@ -140,6 +140,15 @@ services:
   langfuse:
     profiles: ["disabled"]
 
+  langfuse-clickhouse:
+    profiles: ["disabled"]
+
+  langfuse-redis:
+    profiles: ["disabled"]
+
+  langfuse-minio:
+    profiles: ["disabled"]
+
   # otel-collector — disabled; OTEL exporters set to none.
   otel-collector:
     profiles: ["disabled"]

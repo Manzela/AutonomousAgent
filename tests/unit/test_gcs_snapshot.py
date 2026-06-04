@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import sqlite3
 import tarfile
 from datetime import datetime, timezone
 from unittest import mock
@@ -560,3 +562,167 @@ def test_run_once_default_does_not_dump_spend_logs(monkeypatch, tmp_path):
     called.assert_not_called()
     assert result.uploaded is True
     assert result.spend_logs_rows is None
+
+
+def test_resolve_honcho_config_env(monkeypatch):
+    monkeypatch.setenv("HONCHO_API_KEY", "env-key")
+    monkeypatch.setenv("HONCHO_BASE_URL", "https://custom.api")
+    monkeypatch.setenv("HONCHO_WORKSPACE_ID", "custom-workspace")
+    key, url, workspace = gs._resolve_honcho_config()
+    assert key == "env-key"
+    assert url == "https://custom.api"
+    assert workspace == "custom-workspace"
+
+
+def test_resolve_honcho_config_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("HONCHO_API_KEY", raising=False)
+    monkeypatch.delenv("HONCHO_WORKSPACE_ID", raising=False)
+    monkeypatch.setenv("HONCHO_BASE_URL", "https://api.honcho.dev")
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    honcho_config = hermes_home / "honcho.json"
+    honcho_config.write_text(
+        json.dumps(
+            {
+                "hosts": {
+                    "hermes": {
+                        "apiKey": "file-key",  # pragma: allowlist secret
+                        "workspace": "file-workspace",
+                        "baseUrl": "https://file.api",
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    key, url, workspace = gs._resolve_honcho_config()
+    assert key == "file-key"
+    assert url == "https://file.api"
+    assert workspace == "file-workspace"
+
+
+def test_export_honcho_sessions_success(tmp_path, monkeypatch):
+    sessions_data = {"items": [{"id": "session-1", "name": "s1"}], "pages": 1}
+    messages_data = {"items": [{"id": "msg-1", "content": "hello"}], "pages": 1}
+
+    class FakeResponse:
+        def __init__(self, json_data):
+            self._json_data = json_data
+            self.status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._json_data
+
+    class FakeClient:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json=None):
+            if "sessions/list" in url:
+                return FakeResponse(sessions_data)
+            elif "messages/list" in url:
+                return FakeResponse(messages_data)
+            return FakeResponse({})
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", lambda *args, **kwargs: FakeClient())
+
+    dest = tmp_path / "honcho_sessions.jsonl"
+    success = gs._export_honcho_sessions_to_jsonl(
+        "key", "https://api.honcho.dev", "workspace", str(dest)
+    )
+    assert success is True
+
+    content = dest.read_text()
+    assert "session-1" in content
+    assert "msg-1" in content
+
+
+def test_backup_phoenix_db_success(tmp_path):
+    src = tmp_path / "phoenix.db"
+    conn = sqlite3.connect(str(src))
+    conn.execute("CREATE TABLE test (val TEXT)")
+    conn.execute("INSERT INTO test VALUES ('hello')")
+    conn.commit()
+    conn.close()
+
+    dest = tmp_path / "backup.db"
+    success = gs._backup_phoenix_db(str(src), str(dest))
+    assert success is True
+
+    conn_b = sqlite3.connect(str(dest))
+    cursor = conn_b.execute("SELECT val FROM test")
+    assert cursor.fetchone()[0] == "hello"
+    conn_b.close()
+
+
+def test_run_once_with_honcho_and_phoenix_enabled(monkeypatch, tmp_path):
+    src = tmp_path / "hermes"
+    src.mkdir()
+    (src / "marker").write_text("ok")
+
+    phoenix_dir = src / "phoenix"
+    phoenix_dir.mkdir()
+    live_phoenix = phoenix_dir / "phoenix.db"
+    conn = sqlite3.connect(str(live_phoenix))
+    conn.execute("CREATE TABLE test (val TEXT)")
+    conn.execute("INSERT INTO test VALUES ('live')")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("PHOENIX_WORKING_DIR", str(live_phoenix))
+    monkeypatch.setenv("HONCHO_API_KEY", "dummy-key")
+    monkeypatch.setenv("HONCHO_WORKSPACE_ID", "dummy-workspace")
+    monkeypatch.setattr(gs, "_utc_now", lambda: datetime(2026, 5, 20, 10, 0, tzinfo=timezone.utc))
+
+    def fake_export(key, url, workspace, dest):
+        with open(dest, "w") as f:
+            f.write(json.dumps({"session": "s1"}) + "\n")
+        return True
+
+    monkeypatch.setattr(gs, "_export_honcho_sessions_to_jsonl", fake_export)
+
+    uploaded_tar_paths = []
+
+    class _FakeBlob:
+        def upload_from_filename(self, path, content_type):
+            uploaded_tar_paths.append(path)
+
+    fake_bucket = mock.MagicMock()
+    fake_bucket.blob.return_value = _FakeBlob()
+    fake_client = mock.MagicMock()
+    fake_client.bucket.return_value = fake_bucket
+    fake_client.list_blobs.return_value = []
+
+    members_at_upload = []
+    real_upload = gs._upload_blob
+
+    def _spy_upload(client, bucket, object_name, local_path):
+        with tarfile.open(local_path, "r:gz") as tar:
+            members_at_upload.append(tar.getnames())
+        real_upload(client, bucket, object_name, local_path)
+
+    monkeypatch.setattr(gs, "_upload_blob", _spy_upload)
+
+    with mock.patch.object(gs, "_gcs_client", return_value=fake_client):
+        result = gs.run_once(
+            bucket="my-bucket",
+            source_dir=str(src),
+            include_honcho_sessions=True,
+            include_phoenix_db=True,
+        )
+
+    assert result.uploaded is True
+    assert len(members_at_upload) == 1
+    assert "hermes/marker" in members_at_upload[0]
+    assert "hermes/honcho_sessions.jsonl" in members_at_upload[0]
+    assert "hermes/phoenix/phoenix.db" in members_at_upload[0]

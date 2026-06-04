@@ -45,6 +45,9 @@ dependencies = [
   "pyjwt[crypto]>=2.9",
   "cryptography>=43.0",
   "aiogram>=3.28,<4",
+  # P0-3 (Go-Live audit): rate-limiting middleware for FastAPI endpoints.
+  # Uses in-memory backend by default; Redis when RATE_LIMIT_STORAGE_URI is set.
+  "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]
@@ -82,6 +85,7 @@ gcp = [
   # SP-05c: Cloud Run Jobs sandbox (CloudRunJobSandbox in app/adapters/gcp/cloud_run_sandbox.py).
   # Lazy-imported; CI runs against LocalSubprocessSandbox (no GCP credentials needed).
   "google-cloud-run>=0.10",
+  "google-cloud-logging>=3.0.0",
 ]
 # A2A spike extra — Day 1 scaffolding pulls the runtime deps the Day 2-10
 # build-out will use (FastAPI/uvicorn for the JSON-RPC server, httpx + httpx-sse

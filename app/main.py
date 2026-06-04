@@ -38,9 +38,12 @@ from app.adapters.inmemory.board import InMemoryBoard
 from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
 from app.core.checkpointer import AbstractCheckpointer
 from app.core.kill_switch import KillSwitch
+from app.core.orchestrator import OrchestratorConfig
 from app.core.reaper import WorkspaceReaper
+from app.core.sandbox import AbstractSandbox
 from app.core.spine_runner import SpineRunner
 from app.core.steering import SteeringEventBus
+from app.middleware import setup_rate_limiting, LIMITS
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +132,45 @@ def _build_kill_switch(reaper: Optional[WorkspaceReaper] = None) -> KillSwitch:
     return KillSwitch(reaper=reaper, sentinel_path=sentinel_path)
 
 
+def _build_sandbox() -> Optional[AbstractSandbox]:
+    """Select sandbox based on SPINE_SANDBOX env var.
+
+    Wires CloudRunJobSandbox for production (gVisor container isolation)
+    or LocalSubprocessSandbox for dev/CI (POSIX rlimit isolation).
+    Unset → None (legacy in-process path — backward-compatible).
+
+    P0-1 (Go-Live audit): CloudRunJobSandbox is the only production-grade
+    sandbox (is_production_grade=True). OrchestratorConfig.validate() rejects
+    non-production sandboxes when SPINE_ENVIRONMENT=production.
+    """
+    kind = os.environ.get("SPINE_SANDBOX", "").lower()
+    if not kind or kind == "none":
+        return None
+    if kind == "inmemory" or kind == "local":
+        from app.adapters.inmemory.sandbox import LocalSubprocessSandbox
+
+        return LocalSubprocessSandbox()
+    if kind == "cloudrun":
+        project_id = os.environ.get("GCP_PROJECT_ID", "autonomous-agent-2026")
+        region = os.environ.get("GCP_REGION", "us-central1")
+        job_name = os.environ.get("SPINE_SANDBOX_JOB_NAME", "aa-sandbox")
+        from app.adapters.gcp.cloud_run_sandbox import CloudRunJobSandbox
+
+        logger.info(
+            "spine: wiring CloudRunJobSandbox (project=%s, region=%s, job=%s)",
+            project_id,
+            region,
+            job_name,
+        )
+        return CloudRunJobSandbox(
+            project_id=project_id,
+            region=region,
+            job_name=job_name,
+        )
+    logger.warning("Unknown SPINE_SANDBOX=%r — running without sandbox", kind)
+    return None
+
+
 # ── App state holder ─────────────────────────────────────────────────────────
 
 
@@ -178,6 +220,24 @@ async def lifespan(app: FastAPI):
     board = InMemoryBoard()
     reaper = WorkspaceReaper()
     kill_switch = _build_kill_switch(reaper=reaper)
+    sandbox = _build_sandbox()
+
+    # P0-1 (Go-Live audit): validate sandbox grade in production.
+    # OrchestratorConfig.validate() raises RuntimeError if a non-production-grade
+    # sandbox is used when environment="production".
+    spine_env = os.environ.get("SPINE_ENVIRONMENT", "development").lower()
+    if spine_env == "production":
+        OrchestratorConfig(
+            sandbox=sandbox,
+            environment="production",
+        )  # raises on invalid sandbox
+        logger.info("spine: production sandbox validation passed")
+
+    # Prompt and Model Config Integrity Verification (§25 Gap)
+    from lib.guardrails.integrity import verify_integrity
+
+    verify_integrity(fail_closed=(spine_env == "production"))
+    logger.info("spine: prompt & model config integrity verification passed")
 
     # SP-17: the SteeringEventBus for inbound channel arbitration (C15).
     # Constructed here so all adapters (Telegram, board webhook) share ONE bus.
@@ -188,6 +248,7 @@ async def lifespan(app: FastAPI):
         board=board,
         bus=bus,
         kill_switch=kill_switch,
+        sandbox=sandbox,
     )
 
     _state.runner = runner
@@ -219,6 +280,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# P0-3 (Go-Live audit): rate-limiting middleware.
+# Gracefully degrades if slowapi is not installed (limiter=None → no enforcement).
+_limiter = setup_rate_limiting(app)
+
+
+def _limit(limit_key: str):
+    """Return a SlowAPI limit decorator, or a no-op if the limiter is disabled/absent."""
+    if _limiter is None:
+
+        def _noop(fn):
+            return fn
+
+        return _noop
+    return _limiter.limit(LIMITS.get(limit_key, LIMITS["default"]))
+
 
 def _require_runner() -> SpineRunner:
     """Return the SpineRunner or 503 if not yet initialised."""
@@ -231,7 +307,8 @@ def _require_runner() -> SpineRunner:
 
 
 @app.get("/healthz", tags=["ops"])
-async def healthz():
+@_limit("healthz")
+async def healthz(request: Request):
     """Liveness probe. Returns 200 if the service is up; 503 if the kill-switch
     is active (operator HALT)."""
     if _state.kill_switch and _state.kill_switch.is_active():
@@ -243,7 +320,8 @@ async def healthz():
 
 
 @app.post("/goal", tags=["spine"])
-async def start_goal(req: GoalRequest):
+@_limit("goal")
+async def start_goal(req: GoalRequest, request: Request):
     """Start a new spine run for the given goal.
 
     Returns the initial state (which will contain __interrupt__ for sign_off).
@@ -260,7 +338,8 @@ async def start_goal(req: GoalRequest):
 
 
 @app.post("/resume", tags=["spine"])
-async def resume_thread(req: ResumeRequest):
+@_limit("resume")
+async def resume_thread(req: ResumeRequest, request: Request):
     """Resume an interrupted spine run (sign_off / ship_gate decision).
 
     The decision dict must contain at minimum: verb, actor, reason.
@@ -295,7 +374,8 @@ async def get_state(thread_id: str):
 
 
 @app.post("/panic", tags=["ops"])
-async def panic(req: PanicRequest):
+@_limit("ops")
+async def panic(req: PanicRequest, request: Request):
     """Operator kill-switch (SP-IR1). Triggers HALT sentinel + reaper sweep + token revocation."""
     if _state.kill_switch is None:
         raise HTTPException(status_code=503, detail="KillSwitch not configured")
@@ -304,7 +384,8 @@ async def panic(req: PanicRequest):
 
 
 @app.post("/rollback", tags=["ops"])
-async def rollback(req: RollbackRequest):
+@_limit("ops")
+async def rollback(req: RollbackRequest, request: Request):
     """Operator deployment rollback (SP-26). Retargets Cloud Run traffic to a prior revision."""
     runner = _require_runner()
     try:
@@ -319,6 +400,7 @@ async def rollback(req: RollbackRequest):
 
 
 @app.post("/webhook/telegram", tags=["integrations"])
+@_limit("webhook")
 async def telegram_webhook(request: Request):
     """Inbound Telegram webhook (SP-13). Delegates to TelegramAdapter."""
     runner = _require_runner()

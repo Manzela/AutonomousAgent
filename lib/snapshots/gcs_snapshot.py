@@ -58,8 +58,10 @@ slice can ship without blocking on those subsystems.
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import os
+import sqlite3
 import tarfile
 import tempfile
 from dataclasses import dataclass
@@ -165,6 +167,7 @@ def _tar_source_dir(
     source_dir: str,
     dest_path: str,
     extras: Optional[Iterable[tuple[str, str]]] = None,
+    exclude_phoenix: bool = False,
 ) -> int:
     """Tar ``source_dir`` to ``dest_path`` (gzip). Returns bytes written.
 
@@ -181,8 +184,18 @@ def _tar_source_dir(
     src = Path(source_dir)
     if not src.exists():
         raise FileNotFoundError(f"snapshot source missing: {source_dir}")
+
+    def tar_filter(tarinfo: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+        if exclude_phoenix:
+            if tarinfo.name == "hermes/phoenix/phoenix.db" or tarinfo.name.endswith(
+                "/phoenix/phoenix.db"
+            ):
+                logger.info("snapshot: skipping live phoenix.db from tar recursion")
+                return None
+        return tarinfo
+
     with tarfile.open(dest_path, "w:gz") as tar:
-        tar.add(str(src), arcname="hermes")
+        tar.add(str(src), arcname="hermes", filter=tar_filter)
         for local, arc in extras or ():
             if not local or not os.path.exists(local):
                 logger.warning("snapshot: extra missing, skipping: %s", local)
@@ -299,12 +312,171 @@ def evaluate_should_skip(
     return None
 
 
+def _resolve_honcho_config() -> tuple[str, str, str]:
+    """Resolve Honcho API key, base URL, and workspace ID from env and config files.
+
+    Returns:
+        (api_key, base_url, workspace_id)
+    """
+    api_key = os.environ.get("HONCHO_API_KEY")
+    base_url = os.environ.get("HONCHO_BASE_URL", "https://api.honcho.dev").rstrip("/")
+    workspace_id = os.environ.get("HONCHO_WORKSPACE_ID")
+
+    if not api_key or not workspace_id or base_url == "https://api.honcho.dev":
+        config_paths = []
+        hermes_home_env = os.environ.get("HERMES_HOME")
+        if hermes_home_env:
+            config_paths.append(Path(hermes_home_env) / "honcho.json")
+        else:
+            config_paths.append(Path.home() / ".hermes" / "honcho.json")
+        config_paths.append(Path.home() / ".honcho" / "config.json")
+
+        for path in config_paths:
+            if path.exists():
+                try:
+                    raw = json.loads(path.read_text(encoding="utf-8"))
+                    host = os.environ.get("HERMES_HONCHO_HOST", "hermes")
+                    host_block = raw.get("hosts", {}).get(host, {})
+
+                    if not api_key:
+                        api_key = host_block.get("apiKey") or raw.get("apiKey")
+                    if not workspace_id:
+                        workspace_id = host_block.get("workspace") or raw.get("workspace")
+                    if base_url == "https://api.honcho.dev":
+                        b_url = (
+                            host_block.get("baseUrl")
+                            or host_block.get("base_url")
+                            or raw.get("baseUrl")
+                            or raw.get("base_url")
+                        )
+                        if b_url:
+                            base_url = b_url.rstrip("/")
+
+                    if api_key and workspace_id:
+                        break
+                except Exception:
+                    pass
+
+    workspace_id = workspace_id or "hermes"
+    api_key = api_key or ""
+    return api_key, base_url, workspace_id
+
+
+def _export_honcho_sessions_to_jsonl(
+    api_key: str, base_url: str, workspace_id: str, dest_path: str
+) -> bool:
+    """Query all sessions and messages from Honcho and write to dest_path in JSONL format.
+
+    Each line is: {"session": session_data, "messages": [...] }
+    Returns True on success, False if skipped/failed.
+    """
+    if not api_key:
+        logger.warning("snapshot: Honcho API key not found, skipping sessions export")
+        return False
+
+    import httpx
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        with httpx.Client(headers=headers, timeout=15.0) as client:
+            sessions: list[Any] = []
+            page = 1
+            size = 100
+            while True:
+                url = (
+                    f"{base_url}/v3/workspaces/{workspace_id}/sessions/list?page={page}&size={size}"
+                )
+                resp = client.post(url, json={})
+                resp.raise_for_status()
+                data = resp.json()
+                items = data.get("items") or []
+                sessions.extend(items)
+                if len(items) < size or page >= data.get("pages", 1):
+                    break
+                page += 1
+
+            if not sessions:
+                logger.info("snapshot: No Honcho sessions found in workspace %s", workspace_id)
+                with open(dest_path, "w", encoding="utf-8") as f:
+                    pass
+                return True
+
+            with open(dest_path, "w", encoding="utf-8") as f:
+                for session in sessions:
+                    session_id = session.get("id")
+                    if not session_id:
+                        continue
+
+                    messages: list[Any] = []
+                    msg_page = 1
+                    msg_size = 100
+                    try:
+                        while True:
+                            msg_url = f"{base_url}/v3/workspaces/{workspace_id}/sessions/{session_id}/messages/list?page={msg_page}&size={msg_size}"
+                            msg_resp = client.post(msg_url, json={})
+                            msg_resp.raise_for_status()
+                            msg_data = msg_resp.json()
+                            msg_items = msg_data.get("items") or []
+                            messages.extend(msg_items)
+                            if len(msg_items) < msg_size or msg_page >= msg_data.get("pages", 1):
+                                break
+                            msg_page += 1
+                    except Exception as e:
+                        logger.warning(
+                            "snapshot: Failed to fetch messages for Honcho session %s: %s",
+                            session_id,
+                            e,
+                        )
+
+                    line = {"session": session, "messages": messages}
+                    f.write(json.dumps(line, ensure_ascii=False) + "\n")
+
+            logger.info("snapshot: Exported %d Honcho sessions to %s", len(sessions), dest_path)
+            return True
+
+    except Exception as e:
+        logger.warning("snapshot: Honcho sessions export failed: %s", e)
+        return False
+
+
+def _backup_phoenix_db(src_path: str, dest_path: str) -> bool:
+    """Atomically back up the Phoenix SQLite database to dest_path.
+
+    Returns True on success, False if the source database doesn't exist or backup fails.
+    """
+    if not os.path.exists(src_path):
+        logger.warning("snapshot: Phoenix DB source path not found: %s", src_path)
+        return False
+
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        src_conn = sqlite3.connect(src_path)
+        dest_conn = sqlite3.connect(dest_path)
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            dest_conn.close()
+            src_conn.close()
+
+        logger.info("snapshot: Atomically backed up Phoenix DB from %s to %s", src_path, dest_path)
+        return True
+    except Exception as e:
+        logger.warning("snapshot: Failed to backup Phoenix DB: %s", e)
+        return False
+
+
 def run_once(
     bucket: Optional[str] = None,
     source_dir: str = DEFAULT_SOURCE_DIR,
     snapshot_hour_utc: int = DEFAULT_SNAPSHOT_HOUR_UTC,
     include_spend_logs: bool = False,
     spend_logs_conn_str: Optional[str] = None,
+    include_honcho_sessions: bool = False,
+    include_phoenix_db: bool = False,
 ) -> SnapshotResult:
     """One snapshot tick. Returns a SnapshotResult for the caller to log.
 
@@ -317,7 +489,7 @@ def run_once(
     4. If ``include_spend_logs`` and a DB URL is available, dump
        ``LiteLLM_SpendLogs`` to a temp CSV (fail-open: a DB outage
        logs WARNING and continues without the CSV).
-    5. Tar source_dir (+ optional spend CSV) → temp file → upload →
+    5. Tar source_dir (+ optional spend CSV, Honcho sessions export, Phoenix DB atomic copy) → temp file → upload →
        cleanup.
     6. On upload failure: emit Telegram alert + return error in
        SnapshotResult (no F-dispatch — DR is fail-soft by design; a
@@ -383,15 +555,71 @@ def run_once(
         else:
             logger.warning("snapshot: include_spend_logs=True but no DB URL set; skipping")
 
+    # Honcho sessions JSONL export
+    honcho_jsonl_path: Optional[str] = None
+    if include_honcho_sessions:
+        api_key, base_url, workspace_id = _resolve_honcho_config()
+        if api_key:
+            honcho_fd, honcho_jsonl_path = tempfile.mkstemp(
+                suffix=".jsonl", prefix="hermes-honcho-sessions-"
+            )
+            os.close(honcho_fd)
+            success = _export_honcho_sessions_to_jsonl(
+                api_key, base_url, workspace_id, honcho_jsonl_path
+            )
+            if not success:
+                if os.path.exists(honcho_jsonl_path):
+                    try:
+                        os.unlink(honcho_jsonl_path)
+                    except OSError:
+                        pass
+                honcho_jsonl_path = None
+        else:
+            logger.warning(
+                "snapshot: include_honcho_sessions=True but HONCHO_API_KEY is not set; skipping"
+            )
+
+    # Phoenix DB SQLite atomic backup
+    phoenix_backup_path: Optional[str] = None
+    if include_phoenix_db:
+        phoenix_env = os.environ.get("PHOENIX_WORKING_DIR")
+        if phoenix_env:
+            phoenix_path = Path(phoenix_env)
+            if phoenix_path.is_dir():
+                phoenix_src = phoenix_path / "phoenix.db"
+            else:
+                phoenix_src = phoenix_path
+        else:
+            phoenix_src = Path("/home/hermes/.hermes/phoenix/phoenix.db")
+
+        phoenix_fd, phoenix_backup_path = tempfile.mkstemp(
+            suffix=".db", prefix="hermes-phoenix-backup-"
+        )
+        os.close(phoenix_fd)
+        success = _backup_phoenix_db(str(phoenix_src), phoenix_backup_path)
+        if not success:
+            if os.path.exists(phoenix_backup_path):
+                try:
+                    os.unlink(phoenix_backup_path)
+                except OSError:
+                    pass
+            phoenix_backup_path = None
+
     extras: list[tuple[str, str]] = []
     if spend_csv_path:
         extras.append((spend_csv_path, "hermes/spend_logs.csv"))
+    if honcho_jsonl_path:
+        extras.append((honcho_jsonl_path, "hermes/honcho_sessions.jsonl"))
+    if phoenix_backup_path:
+        extras.append((phoenix_backup_path, "hermes/phoenix/phoenix.db"))
 
     tmp_path: Optional[str] = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".tar.gz", prefix="hermes-snapshot-")
         os.close(tmp_fd)
-        size = _tar_source_dir(source_dir, tmp_path, extras=extras)
+        size = _tar_source_dir(
+            source_dir, tmp_path, extras=extras, exclude_phoenix=include_phoenix_db
+        )
         _upload_blob(client, bucket, object_name, tmp_path)
     except FileNotFoundError as exc:
         msg = f"snapshot tar failed: {exc}"
@@ -412,6 +640,16 @@ def run_once(
                 os.unlink(spend_csv_path)
             except OSError as exc:
                 logger.warning("snapshot: spend csv cleanup failed: %s", exc)
+        if honcho_jsonl_path and os.path.exists(honcho_jsonl_path):
+            try:
+                os.unlink(honcho_jsonl_path)
+            except OSError as exc:
+                logger.warning("snapshot: honcho sessions cleanup failed: %s", exc)
+        if phoenix_backup_path and os.path.exists(phoenix_backup_path):
+            try:
+                os.unlink(phoenix_backup_path)
+            except OSError as exc:
+                logger.warning("snapshot: phoenix backup cleanup failed: %s", exc)
 
     logger.info(
         "snapshot uploaded gs://%s/%s bytes=%d spend_rows=%s",

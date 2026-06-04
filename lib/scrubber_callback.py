@@ -231,14 +231,14 @@ class ScrubberCallback(CustomLogger):
     def logging_hook(self, kwargs: dict, result: Any, call_type: str) -> Tuple[dict, Any]:
         return self._do_scrub(kwargs, result, call_type)
 
-    async def async_pre_call_hook(
+    async def async_pre_call_hook(  # type: ignore[override]
         self, user_api_key_dict: dict, cache: Any, model: str, messages: List[Any], kwargs: dict
     ) -> Tuple[List[Any], dict]:
         import asyncio
 
         return await asyncio.to_thread(self._pre_call_scrub, messages, kwargs)
 
-    def pre_call_hook(
+    def pre_call_hook(  # type: ignore[override]
         self, user_api_key_dict: dict, cache: Any, model: str, messages: List[Any], kwargs: dict
     ) -> Tuple[List[Any], dict]:
         return self._pre_call_scrub(messages, kwargs)

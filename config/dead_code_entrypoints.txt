@@ -119,6 +119,15 @@ app.core.decision_record
 app.core.graph
 app.core.spine_runner
 
+# app/main.py is the FastAPI service entrypoint (Pattern B fix). It assembles
+# SpineRunner with production adapters and exposes the spine as an HTTP service.
+# Launched at runtime by `uvicorn app.main:app --host 0.0.0.0 --port 8000`;
+# the static AST callgraph cannot trace a uvicorn launch string as an entrypoint
+# (identical limitation to lib.a2a.server above). Its @app.post() route handlers
+# (start_goal, resume_thread, panic, rollback, healthz) are framework-registered
+# endpoints, not dead code. Operator-reviewed 2026-06-04.
+app.main
+
 # SP-02 goal→DAG decomposition (TaskGraph validation + TaskSpec→TaskRequest phase bridge).
 # app/core/decompose.py is the AbstractDecomposer seam + the pure SP-02 validators
 # (validate_taskgraph / assert_decomposition_fidelity / is_catch_all_glob / acceptance_indices)

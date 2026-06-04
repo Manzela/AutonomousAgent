@@ -17,7 +17,7 @@ from app.adapters.inmemory.memory import InMemoryStore
 from app.adapters.inmemory.sandbox import LocalSubprocessSandbox
 from app.core.embedder import project_dim
 from app.core.memory import EmptyScope
-from app.core.schemas import MemoryRecord, MemoryTier
+from app.core.schemas import MemoryRecord, MemoryTier, ProjectID
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ def _make_record(
     return MemoryRecord(
         record_id=record_id,
         tier=tier,
-        project_id=project_id,
+        project_id=ProjectID(project_id) if project_id is not None else None,
         content=content,
         embedding=emb,
         expires_at=expires_at,

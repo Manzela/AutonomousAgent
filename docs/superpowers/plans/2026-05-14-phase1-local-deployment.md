@@ -608,7 +608,7 @@ Save to `.github/PULL_REQUEST_TEMPLATE.md`:
 ## Changes
 
 <!-- Bullet list of notable changes. -->
-- 
+-
 
 ## Phase
 
@@ -664,9 +664,9 @@ labels: bug
 
 ## Steps to reproduce
 
-1. 
-2. 
-3. 
+1.
+2.
+3.
 
 ## Expected behavior
 
@@ -838,13 +838,13 @@ Don't write one for purely cosmetic choices or short-lived implementation detail
 ## Consequences
 
 ### Positive
-- 
+-
 
 ### Negative
-- 
+-
 
 ### Neutral
-- 
+-
 
 ## Alternatives considered
 
@@ -860,7 +860,7 @@ Don't write one for purely cosmetic choices or short-lived implementation detail
 
 ## References
 
-- 
+-
 ```
 
 - [ ] **Step 5: Write ADR 0001**

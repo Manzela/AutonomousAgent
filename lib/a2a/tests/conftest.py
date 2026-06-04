@@ -13,6 +13,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from typing import Generator
+
 # Install a real TracerProvider once. Subsequent set_tracer_provider calls
 # are no-ops (OTel logs a warning and ignores them), so any module that
 # tries to install its own provider will silently defer to this one.
@@ -23,7 +25,7 @@ trace.set_tracer_provider(_SHARED_PROVIDER)
 
 
 @pytest.fixture()
-def otel_exporter() -> InMemorySpanExporter:  # type: ignore[return]
+def otel_exporter() -> Generator[InMemorySpanExporter, None, None]:
     """Yield the shared in-memory exporter, cleared before and after each test."""
     _SHARED_EXPORTER.clear()
     yield _SHARED_EXPORTER

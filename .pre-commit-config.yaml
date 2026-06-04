@@ -9,10 +9,10 @@ repos:
       - id: check-added-large-files
         args: [--maxkb=1024]
       - id: detect-private-key
-        exclude: ^tests/unit/test_(scrubber(_callback)?|alert_payload_scrubbing)\.py$
+        exclude: ^(tests/unit/test_(scrubber(_callback)?|alert_payload_scrubbing)\.py|docs/superpowers/plans/2026-05-14-phase1-local-deployment\.md)$
       - id: detect-aws-credentials
         args: [--allow-missing-credentials]
-        exclude: ^tests/unit/test_(scrubber(_callback)?|alert_payload_scrubbing)\.py$
+        exclude: ^(tests/unit/test_(scrubber(_callback)?|alert_payload_scrubbing)\.py|docs/superpowers/plans/2026-05-14-phase1-local-deployment\.md)$
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:

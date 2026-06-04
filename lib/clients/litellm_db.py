@@ -20,7 +20,7 @@ class LiteLLMDb:
                 "user_id": user_id,
             }
 
-        summary = {"status": "completed", "deleted_count": 0, "errors": []}
+        summary: dict[str, Any] = {"status": "completed", "deleted_count": 0, "errors": []}
 
         try:
             import psycopg

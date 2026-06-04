@@ -36,7 +36,7 @@ pytestmark = [
 
 import app.adapters.gcp.memory as gcp_memory  # noqa: E402
 from app.core.memory import EmptyScope  # noqa: E402
-from app.core.schemas import MemoryRecord, MemoryTier  # noqa: E402
+from app.core.schemas import MemoryRecord, MemoryTier, ProjectID  # noqa: E402
 
 CloudSqlPgvectorStore = gcp_memory.CloudSqlPgvectorStore
 
@@ -151,7 +151,7 @@ def _make_record(
     return MemoryRecord(
         record_id=record_id,
         tier=tier,
-        project_id=project_id,
+        project_id=ProjectID(project_id) if project_id is not None else None,
         content=content,
         embedding=emb,
         expires_at=expires_at,
@@ -206,7 +206,7 @@ async def test_search_returns_closest_embedding(
     results = await store.search(
         query_embedding=e1,
         tier=MemoryTier.EPHEMERAL,
-        project_scopes=["proj-1"],
+        project_scopes=[ProjectID("proj-1")],
         k=3,
     )
     assert len(results) == 3
@@ -242,7 +242,7 @@ async def test_search_wrong_project_returns_empty(
     results = await store.search(
         query_embedding=rec.embedding,
         tier=MemoryTier.EPHEMERAL,
-        project_scopes=["proj-B"],
+        project_scopes=[ProjectID("proj-B")],
     )
     assert len(results) == 0
 
@@ -279,7 +279,7 @@ async def test_search_respects_scope_isolation(
     results = await store.search(
         query_embedding=consensus_emb,
         tier=MemoryTier.EPISODIC,
-        project_scopes=["proj-A"],
+        project_scopes=[ProjectID("proj-A")],
         k=10,
     )
     assert len(results) == 1
@@ -336,7 +336,7 @@ async def test_dim_mismatch_put(store: CloudSqlPgvectorStore) -> None:
     bad_rec = MemoryRecord(
         record_id="bad-dim",
         tier=MemoryTier.EPHEMERAL,
-        project_id="proj-1",
+        project_id=ProjectID("proj-1"),
         content="wrong dim",
         embedding=bad_emb,
         expires_at=9999999999.0,
@@ -352,7 +352,7 @@ async def test_dim_mismatch_search(store: CloudSqlPgvectorStore) -> None:
         await store.search(
             query_embedding=np.zeros(16, dtype=np.float32),
             tier=MemoryTier.EPHEMERAL,
-            project_scopes=["proj-1"],
+            project_scopes=[ProjectID("proj-1")],
         )
 
 

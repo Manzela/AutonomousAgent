@@ -277,7 +277,7 @@ async def _collect_execution_logs(execution_name: str) -> tuple[str, str]:
     """
     logger.debug("cloud_run_sandbox: fetching logs for execution=%s", execution_name)
     try:
-        from google.cloud import logging as cloud_logging
+        from google.cloud import logging as cloud_logging  # type: ignore[attr-defined]
     except ImportError:
         logger.warning(
             "cloud_run_sandbox: google-cloud-logging is not installed; returning empty logs"

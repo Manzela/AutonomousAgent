@@ -429,18 +429,19 @@ def _sp14_detect_on_tool_call(
 
     try:
         # F34 — LoopDetector
-        f34 = _SP14_LOOP_DETECTOR.record_tool_call(
-            session_id=session_id,
-            tool_name=tool_name or "",
-            args=args,
-        )
-        if f34:
-            _sp14_dispatch_f_code(
-                f34,
+        if tool_name:
+            f34 = _SP14_LOOP_DETECTOR.record_tool_call(
                 session_id=session_id,
                 tool_name=tool_name,
-                tool_call_id=tool_call_id,
+                args=args,
             )
+            if f34:
+                _sp14_dispatch_f_code(
+                    f34,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_call_id=tool_call_id,
+                )
     except Exception as exc:  # noqa: BLE001 — never block the agent loop
         _sp14_log_detector_failure("LoopDetector", session_id, exc)
 

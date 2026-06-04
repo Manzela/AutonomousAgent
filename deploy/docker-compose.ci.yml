@@ -64,9 +64,9 @@ services:
       - sh
       - -c
       - |
-        PY="$(head -1 /app/.venv/bin/hermes | sed 's/^#!//')"
-        echo "ci_hermes_api: deriving interpreter from hermes shebang -> ${PY:-<none>}" >&2
-        exec $PY /app/deploy/scripts/ci_hermes_api.py
+        PY="$$(head -1 /app/.venv/bin/hermes | sed 's/^#!//')"
+        echo "ci_hermes_api: deriving interpreter from hermes shebang -> $${PY:-<none>}" >&2
+        exec $$PY /app/deploy/scripts/ci_hermes_api.py
     working_dir: /app
     ports:
       - "127.0.0.1:7878:7878"
@@ -88,6 +88,8 @@ services:
     volumes:
       # Mount the full repo into /app so imports resolve.
       - ..:/app:ro
+      # Preserve the image's baked-in virtualenv
+      - /app/.venv
       # Writable override for /app/deploy/scripts (read_only:true + ro mount).
       - ../deploy/scripts:/app/deploy/scripts:ro
     networks: [internal, egress]

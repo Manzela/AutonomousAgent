@@ -1,0 +1,109 @@
+# Acceptance — SP-21 · Plane CE "local Linear" control plane
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-21: "Self-host Plane CE as the operator's mobile control surface:
+# AbstractBoard Plane adapter via REST (Work Item Comments) + first-party MCP;
+# board-comment→agent steering reuses the SP-17 contract unchanged + webhook
+# two-way GitHub sync, both origin-tagged (no ping-pong on either edge) — agent-
+# authored comments carry origin=agent and are dropped at SP-17 ingest; only human
+# comments become SteeringEvents. GitHub two-way sync is Plane-Pro-only → use the
+# free CE REST+webhooks+MCP (do not buy Pro). No hand-rolled UI."
+#
+# ORACLE MAP (19 oracles — 31 parametrized test cases, all hermetic):
+#
+#   Board structure:
+#   ①  PlaneBoard is a subclass of AbstractBoard (inherits C14 invariant).
+#   ②  create_card() → POST /api/v1/workspaces/{ws}/projects/{proj}/issues/
+#   ③  set_status() → PATCH .../issues/{plane_id}/ (updates existing issue).
+#   ④  project_plan() → 1 parent POST + N child POSTs (child carries parent= field).
+#
+#   Origin-tag round-trip (C15 no-ping-pong):
+#   ⑤  add_comment(origin="agent") embeds <!-- plane-origin: {"origin":"agent"} --> tag.
+#   ⑥  Webhook echoing an agent comment → normalise_plane_webhook returns None (dropped).
+#   ⑦  Webhook with human comment → normalise_plane_webhook returns a SteeringEvent.
+#   ⑧  Same webhook payload twice → second call returns None (SteeringEventBus dedup).
+#
+#   "Blocked on you" filter:
+#   ⑨  list_blocked_cards() returns only cards with status="blocked".
+#       (reuses the board's in-memory store — no new persistence layer; SP-17 query)
+#
+#   Structural:
+#   ⑩  get_card() returns the correct card; raises BoardError on missing card.
+#   ⑪  list_cards(thread_id=...) returns only cards for that thread.
+#
+#   C14 inherited invariant:
+#   ⑫  set_status(card_id, "done") raises BoardError.
+#   ⑬  mark_done(card_id, gate=AlwaysReadyGate()) succeeds.
+#
+#   Correctness:
+#   ⑭  Origin tag in comment body is valid JSON parseable by the normaliser.
+#   ⑮  normalise_plane_webhook with unknown event type → returns None.
+#   ⑯  add_comment on card with no Plane backing raises BoardError.
+#
+#   Security (C9 round-1 findings — all P1/P2, all fixed):
+#   ⑰  Invalid workspace_slug / project_id raises ValueError (path-traversal guard).
+#   ⑱  get_comments returns correct list on bare-list Plane response (no AttributeError).
+#   ⑲  Failed REST create rolls back _store (no orphan zombie card).
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-8
+#   Round 1: REQUEST_CHANGES — 2 P1 findings + 1 P2 (strongly recommended):
+#     P1 #1 FIXED: get_comments AttributeError on bare-list response — branch on
+#       isinstance before calling .get(); single parse call.
+#     P1 #2 FIXED: path traversal via workspace_slug/project_id — validated against
+#       ^[A-Za-z0-9_.\-]{1,256}\Z at construction time; rejects ../../admin, ws/evil,
+#       %2F-encoded slashes.
+#     P2 #5 FIXED: orphan card on failed REST create — rollback self._store.pop() in
+#       except block of _create_plane_issue.
+#     P2-1 (advisory, fixed): $ anchor admits trailing \n — changed to \Z.
+#   Round 2: APPROVED — all findings verified remediated; no new blockers.
+#     P2-2 noted (pre-existing, advisory): update path has symmetric local/remote
+#       divergence on failed PATCH; not introduced by this PR; low severity.
+
+id: SP-21
+title: Plane CE board adapter + webhook normaliser — 19 oracles
+prd_section: "§6 SP-21"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-8
+
+oracle_count: 19
+test_file: tests/unit/test_sp21_plane_adapter.py
+implementation:
+  - app/adapters/plane/__init__.py
+  - app/adapters/plane/board.py
+  - app/adapters/plane/webhook.py
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp21_plane_adapter.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    31 parametrized test cases (19 oracles) in tests/unit/test_sp21_plane_adapter.py.
+    All passing, hermetic (no live Plane CE, no network — httpx.Client injected as
+    MagicMock). app/adapters/plane/board.py: PlaneBoard implements AbstractBoard via
+    Plane CE REST API (POST/PATCH/GET issues + POST/GET comments); constructor
+    validates workspace_slug and project_id against ^[A-Za-z0-9_.\-]{1,256}\Z to
+    reject path-traversal slugs; add_comment embeds origin tag as HTML comment
+    <!-- plane-origin: {"origin":"..."} --> for C15 no-ping-pong enforcement;
+    list_blocked_cards() returns status=blocked cards (SP-17 criterion 6 / U-3
+    "blocked on you" filter — no new store); _create_plane_issue rolls back _store
+    on REST failure (no orphan cards). app/adapters/plane/webhook.py:
+    normalise_plane_webhook converts comment.created Plane webhooks to SteeringEvents,
+    extracts origin tag via _ORIGIN_RE, calls bus.put(origin=) so agent-authored
+    events are dropped at ingest by the SP-17 bus; dedup prevents duplicate
+    SteeringEvents on repeated webhook delivery. C9 2-round review:
+    REQUEST_CHANGES (P1 bare-list crash, P1 path traversal, P2 orphan card)
+    → fixed → APPROVED. 19 new oracles passing, 0 regressions (1135→1166 tests).
+
+deferred:
+  - GitHub two-way sync (Plane-Pro-only feature; not implemented in CE)
+  - Live state-name resolution (CardStatus → Plane project state UUID)
+  - First-party Plane MCP server integration
+  - Board poll / webhook subscription setup
+  - Update path local/remote divergence on failed PATCH (C9 P2-2, pre-existing)

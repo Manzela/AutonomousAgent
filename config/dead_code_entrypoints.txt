@@ -251,6 +251,19 @@ app.adapters.inmemory.file_checkpointer
 # Operator-reviewed 2026-06-03.
 app.core.reaper
 
+# SP-26 deployment rollback — Cloud Run revision traffic retargeting.
+# app/adapters/gcp/cloud_run_revisions.py:CloudRunRevisionRollback is the GCP production
+# concretion injected at runtime via SpineRunner(revision_rollback=CloudRunRevisionRollback(...)).
+# require_revision_rollback() references AbstractRevisionRollback (C4-reachable), but the static
+# callgraph cannot trace that the concrete GCP subclass is the injected type. The
+# app/adapters/inmemory/rollback.py:RecordingRevisionRollback is the hermetic test double;
+# it is instantiated only in tests, not at a static entrypoint. Both are legitimately-present
+# adapters following the CLAUDE.md builder-agent pattern (abstract in core/, GCP in adapters/gcp/,
+# in-memory in adapters/inmemory/). REMOVE each line once a static call site exists.
+# Operator-reviewed 2026-06-04.
+app.adapters.gcp.cloud_run_revisions:CloudRunRevisionRollback
+app.adapters.inmemory.rollback:RecordingRevisionRollback
+
 # SP-R4 checkpoint retention + judge_events TTL rotation.
 # app/core/checkpoint_retention.py: gc_checkpoints() + find_threads_older_than() are
 #   called from maintenance/teardown paths that are not yet wired to a runtime entrypoint

@@ -335,3 +335,8 @@ class TrajectoryShipper:
         data = json.loads(payload_bytes)
 
         return data.get("trajectory", [])
+
+    @classmethod
+    def delete_user_blobs(cls, user_id: str) -> dict[str, Any]:
+        """GDPR deletion stub for GCS trajectories."""
+        raise NotImplementedError("GDPR deletion stub for GCS trajectories")

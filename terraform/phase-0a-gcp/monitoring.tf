@@ -129,9 +129,15 @@ resource "google_storage_bucket" "forensic_log_archive" {
   storage_class = "COLDLINE"
   force_destroy = false
 
+  versioning { enabled = true }
+
   lifecycle_rule {
     action { type = "Delete" }
-    condition { age = 365 }
+    condition { age = 90 }
+  }
+
+  retention_policy {
+    retention_period = 86400 # 1-day minimum for tamper window
   }
 
   uniform_bucket_level_access = true

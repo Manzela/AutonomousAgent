@@ -251,6 +251,17 @@ app.adapters.inmemory.file_checkpointer
 # Operator-reviewed 2026-06-03.
 app.core.reaper
 
+# SP-12 autonomous CI/CD self-heal — SelfHealEvent is the repository_dispatch
+# ci-failure payload parser. It is consumed by the future self-heal agent handler
+# (a repository_dispatch listener — deferred SP-12-INT-3) and is imported from
+# tests only today. The AutoMergePolicy / CheckResult / AutoMergeDecision symbols
+# ARE reachable via scripts/ci/auto_merge_gate.py (__main__-guarded). SelfHealEvent
+# is the only un-wired symbol; listed here as a present-not-yet-wired sibling
+# (same pattern as app.adapters.gcp.decompose:VertexSpecDrafter). REMOVE once
+# a runtime listener (FastAPI webhook / Lambda / Cloud Run handler) imports it.
+# Operator-reviewed 2026-06-04.
+app.core.ci_self_heal:SelfHealEvent
+
 # SP-26 deployment rollback — Cloud Run revision traffic retargeting.
 # app/adapters/gcp/cloud_run_revisions.py:CloudRunRevisionRollback is the GCP production
 # concretion injected at runtime via SpineRunner(revision_rollback=CloudRunRevisionRollback(...)).

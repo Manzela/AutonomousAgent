@@ -1,0 +1,103 @@
+# SP-12 — Eval-gated auto-merge.
+#
+# Merges a PR ONLY when ALL required checks pass AND the SP-06 eval gate
+# specifically passes. A PR that is lint+unit GREEN but eval RED is BLOCKED
+# (never lint-only auto-merge — PRD §6 SP-12 negative path).
+#
+# Trigger: runs whenever the CI or eval-gate workflow completes on a PR branch,
+# so the auto-merge verdict is re-evaluated every time a check finishes.
+#
+# Security invariants:
+#   - Uses the SP-00f GitHub App token (not a PAT).
+#   - The App token CANNOT create/delete repos or write a protected branch
+#     directly; it merges only through the PR API which honours branch protection.
+#   - Deployment Environment "production" requires a human reviewer before
+#     the merge is applied to the release branch (separate deploy workflow).
+#   - No SA keys in Actions.
+#
+# Reusable workflows (DRY):
+#   The setup steps (checkout + uv) are repeated across the ~30 CI files.
+#   A follow-up PR will extract them into `.github/workflows/reusable-setup.yml`
+#   (tracked as SP-12-INT-1); the policy logic tested here is independent of
+#   that refactor.
+
+name: sp12-auto-merge
+
+on:
+  workflow_run:
+    workflows:
+      - "CI"
+      - "sp-06-eval-gate"
+      - "Blocking PRD-conformance eval gate"
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  checks: read
+
+jobs:
+  eval-gated-auto-merge:
+    name: Eval-gated auto-merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Only attempt auto-merge when the triggering workflow succeeded AND
+    # the run is associated with a pull_request event (not a push to main).
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Resolve PR number from run
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr_num=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}" \
+            --jq '.pull_requests[0].number // empty')
+          if [ -z "$pr_num" ]; then
+            echo "No PR associated with this run — skipping auto-merge"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pr_number=${pr_num}" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Evaluate auto-merge policy (SP-12)
+        id: policy
+        if: ${{ steps.pr.outputs.skip != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          uv run --no-project python scripts/ci/auto_merge_gate.py \
+            --pr-number "${{ steps.pr.outputs.pr_number }}" \
+            --repo "${{ github.repository }}"
+
+      - name: Generate GitHub App token for merge (SP-00f)
+        id: app-token
+        if: ${{ steps.policy.outcome == 'success' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Auto-merge PR (squash)
+        if: ${{ steps.policy.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh pr merge "${{ steps.pr.outputs.pr_number }}" \
+            --repo "${{ github.repository }}" \
+            --squash \
+            --auto

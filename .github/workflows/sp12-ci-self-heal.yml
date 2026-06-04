@@ -1,0 +1,64 @@
+# SP-12 — CI self-heal dispatch.
+#
+# When the CI workflow fails on a PR, this workflow dispatches a
+# `repository_dispatch` event with type `ci-failure` so the self-heal agent
+# can wake up and open a fix PR.
+#
+# Security invariants:
+#   - The dispatch token is the SP-00f GitHub App token (never a PAT).
+#   - The App token has no ability to create/delete repos or write protected
+#     branches (403 evidence reused from SP-00f acceptance).
+#   - No service-account keys in Actions (WIF, SP-00b).
+#
+# Depends: SP-00f GitHub App, SP-00b WIF, SP-06 eval gate (must be in the
+#          required_status_checks list that sp12-auto-merge reads back).
+
+name: sp12-ci-self-heal
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-self-heal:
+    name: Dispatch CI self-heal on failure
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only run when the triggering workflow actually failed.
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+
+    steps:
+      - name: Generate GitHub App token (SP-00f)
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+
+      - name: Fetch failed job names
+        id: failed-jobs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          failed=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}/jobs" \
+            --jq '[.jobs[] | select(.conclusion=="failure") | .name] | @json')
+          echo "names=${failed}" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch repository_dispatch ci-failure
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          gh api "repos/${{ github.repository }}/dispatches" \
+            --method POST \
+            -f event_type=ci-failure \
+            -f "client_payload[workflow_name]=${{ github.event.workflow_run.name }}" \
+            -f "client_payload[run_id]=${{ github.event.workflow_run.id }}" \
+            -f "client_payload[sha]=${{ github.event.workflow_run.head_sha }}" \
+            -f "client_payload[ref]=${{ github.event.workflow_run.head_branch }}" \
+            -f "client_payload[repository]=${{ github.repository }}" \
+            -f "client_payload[failed_jobs]=${{ steps.failed-jobs.outputs.names }}"

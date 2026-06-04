@@ -44,9 +44,17 @@ sibling, not a replacement.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+
+# SP-25: vendored Spec-Kit assets (docs/spec-kit/). These are static template
+# files loaded by the GCP Vertex drafter (deferred concretion) — never runtime
+# imports of a Spec Kit package. CONSTITUTION_PATH is the grounding reference
+# for applied_standards[] and C18 anti-sycophancy challenges.
+CONSTITUTION_PATH: Path = Path("docs/spec-kit/constitution.md")
+SPEC_KIT_DIR: Path = Path("docs/spec-kit")
 
 # ---------------------------------------------------------------------------
 # Typed value objects (Pydantic-constrained — mirrors the prod structured output)

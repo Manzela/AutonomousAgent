@@ -195,3 +195,17 @@ async def test_telegram_webhook_503_when_unconfigured(client):
     )
     assert resp.status_code == 503
     assert "TelegramAdapter not configured" in resp.json()["detail"]
+
+
+async def test_main_wires_cloud_sql_pgvector_store(monkeypatch):
+    monkeypatch.setenv("CLOUD_SQL_DSN", "postgresql://localhost:5432/dummy_db")
+    # Reset state to ensure fresh initialization
+    _state.runner = None
+    _state.kill_switch = None
+    _state.memory_store = None
+
+    async with lifespan(app):
+        assert _state.memory_store is not None
+        from app.adapters.gcp.memory import CloudSqlPgvectorStore
+
+        assert isinstance(_state.memory_store, CloudSqlPgvectorStore)

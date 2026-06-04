@@ -95,6 +95,18 @@ def _build_checkpointer() -> InMemoryCheckpointer:
     return InMemoryCheckpointer()
 
 
+def _build_memory_store() -> Optional[Any]:
+    """Build the production CloudSqlPgvectorStore if CLOUD_SQL_DSN is set."""
+    dsn = os.environ.get("CLOUD_SQL_DSN")
+    if dsn:
+        logger.info("spine: CLOUD_SQL_DSN detected — initializing CloudSqlPgvectorStore")
+        from app.adapters.gcp.memory import CloudSqlPgvectorStore
+
+        dim = int(os.environ.get("SPINE_MEMORY_DIM", "256"))
+        return CloudSqlPgvectorStore(dim=dim, dsn=dsn)
+    return None
+
+
 def _build_kill_switch(reaper: Optional[WorkspaceReaper] = None) -> KillSwitch:
     """Build the operator kill-switch (SP-IR1).
 
@@ -119,6 +131,7 @@ class _AppState:
 
     runner: Optional[SpineRunner] = None
     kill_switch: Optional[KillSwitch] = None
+    memory_store: Optional[Any] = None
 
 
 _state = _AppState()
@@ -134,6 +147,8 @@ async def lifespan(app: FastAPI):
 
     checkpointer = _build_checkpointer()
     await checkpointer.setup()
+
+    memory_store = _build_memory_store()
 
     board = InMemoryBoard()
     reaper = WorkspaceReaper()
@@ -152,6 +167,7 @@ async def lifespan(app: FastAPI):
 
     _state.runner = runner
     _state.kill_switch = kill_switch
+    _state.memory_store = memory_store
 
     logger.info("spine: lifespan startup complete — SpineRunner ready")
     yield
@@ -159,6 +175,13 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("spine: lifespan shutdown — releasing resources")
     await checkpointer.aclose()
+    if _state.memory_store is not None:
+        try:
+            from app.adapters.gcp.memory import _reset_pool_for_tests
+
+            await _reset_pool_for_tests()
+        except Exception as exc:
+            logger.warning("Failed to close memory_store pool: %s", exc)
     logger.info("spine: lifespan shutdown complete")
 
 

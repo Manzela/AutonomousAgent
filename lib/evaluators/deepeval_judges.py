@@ -16,7 +16,7 @@ Two judges + a factory:
   verdicts ⇒ score ``0.0`` ≤ 0.50 = PASS). Same determinism convention the repo already
   uses for CI adapters (``HashingEmbedder``, ``InMemoryDecomposer``).
 * ``LiteLLMVertexJudge`` — the LIVE/staging judge: a cross-vendor Gemini judge over the
-  LiteLLM proxy (``vertex_ai/gemini-3.1-pro-preview``, ``temperature=0``), mirroring
+  LiteLLM proxy (``vertex_ai/gemini-3-1-pro-preview``, ``temperature=0``), mirroring
   ``lib/evaluators/judge_panel.py``. Honors the C9 judge-class rule (Gemini judging a
   Claude-built agent). Selected only when ``DEEPEVAL_JUDGE=vertex``; needs real Vertex
   creds, so it runs in staging, never gated into the hermetic nightly.
@@ -139,7 +139,7 @@ class LiteLLMVertexJudge(DeepEvalBaseLLM):
     """Live cross-vendor (Gemini via Vertex/LiteLLM) judge. Needs real Vertex creds —
     staging only (DEEPEVAL_JUDGE=vertex), never the hermetic nightly."""
 
-    def __init__(self, model: str = "vertex_ai/gemini-3.1-pro-preview") -> None:
+    def __init__(self, model: str = "vertex_ai/gemini-3-1-pro-preview") -> None:
         self._model = model
 
     def load_model(self) -> "LiteLLMVertexJudge":

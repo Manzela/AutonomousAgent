@@ -2,9 +2,9 @@
 # Computed: June 4, 2026
 # Verified by app/main.py lifespan at startup to prevent prompt & model version tampering in production.
 
-454ab8495df5e4a2e2dbee90d7b66415631f6b19548e63148fbf6627559e9b28  config/hermes/AGENTS.md
-003d9fe5b2b0babb157021b7439fbcb29a74b83166cb2e74a316e4f3b6ab31fa  config/hermes/MEMORY.md
+c8f747152db8edeca810be34bccd166cd75178e83cf3206f2f4f240b9c50e1cd  config/hermes/AGENTS.md
+9aac507488201e16df4b119cea0dead37d3632fb1572441e723658455ffa7e9f  config/hermes/MEMORY.md
 c642f9ce5aa80e380086d8177af77d7422405ebadfc45c22b4c683c138fc7919  config/hermes/SOUL.md
 1afc3ffe3865e9a957d2e09456e74f8a5baf2d9937b4e836634ef025b55b6ebf  config/hermes/USER.md
 c907ede391e92516b420631edd59fc27ca9d323ba1d599ceda91aad7304e284d  config/hermes/cli-config.yaml
-14e7b0f3f513206d0eb477552966cca5f48e9e45870d67d3f93a55a6d4d9b759  config/hermes/model-tiers.yaml
+14f822e316fd950610db1199606273fd43a063f79d66edb3311cce00f4f7a84a  config/hermes/model-tiers.yaml

@@ -9,7 +9,7 @@ def test_resolve_model_valid_intents():
     assert spec.max_tokens == 8192
 
     spec = resolve_model("architect")
-    assert spec.model == "vertex_ai/claude-opus-4-7"
+    assert spec.model == "vertex_ai/gemini-3-1-pro-preview"
     assert spec.daily_cost_cap_usd == 150.0
 
 

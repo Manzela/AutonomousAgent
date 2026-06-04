@@ -41,6 +41,7 @@ from app.core.kill_switch import KillSwitch
 from app.core.orchestrator import OrchestratorConfig
 from app.core.reaper import WorkspaceReaper
 from app.core.sandbox import AbstractSandbox
+from app.core.spec_drafter import AbstractSpecDrafter
 from app.core.spine_runner import SpineRunner
 from app.core.steering import SteeringEventBus
 from app.middleware import setup_rate_limiting, LIMITS
@@ -144,6 +145,10 @@ def _build_sandbox() -> Optional[AbstractSandbox]:
     non-production sandboxes when SPINE_ENVIRONMENT=production.
     """
     kind = os.environ.get("SPINE_SANDBOX", "").lower()
+    spine_env = os.environ.get("SPINE_ENVIRONMENT", "development").lower()
+    if not kind and spine_env == "production":
+        kind = "cloudrun"
+
     if not kind or kind == "none":
         return None
     if kind == "inmemory" or kind == "local":
@@ -168,6 +173,30 @@ def _build_sandbox() -> Optional[AbstractSandbox]:
             job_name=job_name,
         )
     logger.warning("Unknown SPINE_SANDBOX=%r — running without sandbox", kind)
+    return None
+
+
+def _build_spec_drafter() -> Optional[AbstractSpecDrafter]:
+    """Select spec drafter based on SPINE_DRAFTER env var.
+
+    "vertex" -> VertexSpecDrafter (GCP Vertex concretion)
+    "inmemory" or "local" -> InMemorySpecDrafter
+    Unset / Empty -> None (falls back to InMemorySpecDrafter in build_spine)
+    """
+    kind = os.environ.get("SPINE_DRAFTER", "").lower()
+    if not kind:
+        return None
+    if kind == "inmemory" or kind == "local":
+        from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
+
+        return InMemorySpecDrafter()
+    if kind == "vertex":
+        from app.adapters.gcp.spec_drafter import VertexSpecDrafter
+
+        project_id = os.environ.get("GCP_PROJECT_ID", "autonomous-agent-2026")
+        region = os.environ.get("GCP_REGION", "us-central1")
+        return VertexSpecDrafter(project=project_id, location=region)
+    logger.warning("Unknown SPINE_DRAFTER=%r — falling back to default drafter", kind)
     return None
 
 
@@ -243,12 +272,15 @@ async def lifespan(app: FastAPI):
     # Constructed here so all adapters (Telegram, board webhook) share ONE bus.
     bus = SteeringEventBus()
 
+    drafter = _build_spec_drafter()
+
     runner = SpineRunner(
         checkpointer,
         board=board,
         bus=bus,
         kill_switch=kill_switch,
         sandbox=sandbox,
+        drafter=drafter,
     )
 
     _state.runner = runner

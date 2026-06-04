@@ -510,3 +510,62 @@ def test_spec_id_is_deterministic_for_idempotent_reseal():
     assert _spec_id_for("T", "ptid-1") == a  # deterministic: same (tid,ptid) -> same id
     assert _spec_id_for("T", "ptid-2") != a  # distinct ptid -> distinct id
     assert _spec_id_for("U", "ptid-1") != a  # distinct thread -> distinct id
+
+
+# ── F-2 gap fix: rehydrate workspaces on resume ──────────────────────────────
+async def test_resume_rehydrates_workspace_session():
+    """Verify that SpineRunner.resume() rehydrates workspace sessions from the checkpoint's
+    workspace_ref and workspace_refs and registers them in the reaper."""
+    from unittest.mock import MagicMock, patch, ANY
+    from app.core.spine_runner import SpineRunner
+    from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
+
+    runner = SpineRunner(InMemoryCheckpointer())
+
+    mock_values = {
+        "workspace_ref": {"kind": "branch", "ref": "refs/aa-snapshots/t1/n1", "digest": "d1"},
+        "workspace_refs": [
+            {"kind": "branch", "ref": "refs/aa-snapshots/t1/n1", "digest": "d1"},
+            {"kind": "branch", "ref": "refs/aa-snapshots/t1/n2", "digest": "d2"},
+        ],
+    }
+    mock_snapshot = MagicMock()
+    mock_snapshot.values = mock_values
+
+    with (
+        patch.object(runner, "get_state", return_value=mock_snapshot),
+        patch.object(runner._app, "ainvoke", return_value={}),
+        patch("app.core.workspace.WorkspaceSession.rehydrate") as mock_rehydrate,
+    ):
+        ws1 = MagicMock()
+        ws1.ok = True
+        ws1.snapshot_ref = "refs/aa-snapshots/t1/n1"
+
+        ws2 = MagicMock()
+        ws2.ok = True
+        ws2.snapshot_ref = "refs/aa-snapshots/t1/n2"
+
+        mock_rehydrate.side_effect = [ws1, ws2]
+
+        await runner.resume(
+            thread_id="t1",
+            interrupt_id="intr1",
+            decision={"verb": "APPROVE"},
+        )
+
+        # Verify call count is 2 (once for n1, once for n2)
+        assert mock_rehydrate.call_count == 2
+        mock_rehydrate.assert_any_call(
+            repo_dir=ANY,
+            ref="refs/aa-snapshots/t1/n1",
+            thread_id="t1",
+        )
+        mock_rehydrate.assert_any_call(
+            repo_dir=ANY,
+            ref="refs/aa-snapshots/t1/n2",
+            thread_id="t1",
+        )
+
+        # Verify they are tracked in reaper
+        assert runner._reaper.get_workspace_by_ref("refs/aa-snapshots/t1/n1") == ws1
+        assert runner._reaper.get_workspace_by_ref("refs/aa-snapshots/t1/n2") == ws2

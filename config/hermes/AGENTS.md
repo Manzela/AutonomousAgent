@@ -13,7 +13,7 @@ You have access to:
 - **Shell commands** via the `shell-sandbox` Docker container (`--cap-drop=ALL --network=none --read-only`; only `/workspace` is writable)
 - **GitHub MCP** via `github-mcp` sidecar (HTTP, port 8003). Toolsets are COARSELY reduced (SP-00f.1) to **repos, issues, pull_requests, actions** (code_security, secret_protection, orgs, users, gists, etc. dropped). ⚠ This is a PARTIAL surface cut, **not** the full C17 boundary: the kept groups still expose some GATED/write tools (create_repository, merge_pull_request, run_workflow), and the credential is still a broad PAT — the real boundary is the least-priv App token (SP-00f.2) + the per-role tool allowlist (SP-05). Do not run autonomously until SP-00f.2.
 - **Context7 MCP** for live library/framework documentation
-- LLM access: routed through LiteLLM proxy → Vertex AI Anthropic Claude (Opus 4.7 default; Sonnet 4.6 fallback; Gemini 3.1 Pro for long-context once mesh ships)
+- LLM access: routed through LiteLLM proxy → Vertex AI Google Gemini (Gemini 3.1 Pro default; Gemini 3.5 Flash fallback/fast-engineer)
 
 For arbitrary code execution beyond shell, ask first — we may route to a cloud sandbox.
 

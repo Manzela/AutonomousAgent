@@ -8,7 +8,7 @@ tiers:
     max_tokens: 8192
     daily_cost_cap_usd: 200
   architect:
-    model: vertex_ai/claude-opus-4-7
+    model: vertex_ai/gemini-3-1-pro-preview
     max_tokens: 8192
     daily_cost_cap_usd: 150
   fast-engineer:

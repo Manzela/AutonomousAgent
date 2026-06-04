@@ -20,10 +20,10 @@ logger = logging.getLogger(__name__)
 
 # read per-axis model from limits.yaml (not hardcoded).
 _DEFAULT_PER_AXIS_MODEL = {
-    "code-correctness": "vertex_ai/claude-sonnet-4-6",
-    "safety": "vertex_ai/claude-opus-4-7",
-    "scope-fit": "vertex_ai/claude-sonnet-4-6",
-    "completeness": "vertex_ai/gemini-3.1-pro-preview",
+    "code-correctness": "vertex_ai/gemini-3-5-flash",
+    "safety": "vertex_ai/gemini-3-1-pro-preview",
+    "scope-fit": "vertex_ai/gemini-3-5-flash",
+    "completeness": "vertex_ai/gemini-3-1-pro-preview",
 }
 
 

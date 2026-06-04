@@ -75,6 +75,17 @@ class WorkspaceReaper:
         with self._lock:
             self._workspaces.discard(ws)
 
+    def get_workspace_by_ref(self, ref: str) -> Optional["WorkspaceSession"]:
+        """Retrieve a registered workspace session by its snapshot reference.
+
+        Thread-safe. Returns None if no workspace with the specified snapshot_ref
+        is currently registered."""
+        with self._lock:
+            for ws in self._workspaces:
+                if ws.snapshot_ref == ref:
+                    return ws
+        return None
+
     def register_lease_dir(self, path: Path) -> None:
         """Track a lease directory for cleanup on sweep."""
         with self._lock:

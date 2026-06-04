@@ -1,4 +1,4 @@
-"""Classify TaskSpec intent into one of 7 categories via Sonnet 4.6.
+"""Classify TaskSpec intent into one of 7 categories via Gemini 3.5 Flash.
 
 Used by P1-4's REJECTED.md scoping to filter rejection entries to those
 relevant to the current task category, avoiding cross-domain noise.
@@ -12,7 +12,7 @@ from typing import Protocol
 logger = logging.getLogger(__name__)
 
 INTENT_CATEGORIES = ("coding", "audit", "research", "writing", "ops", "data", "unknown")
-DEFAULT_MODEL = "vertex_ai/claude-sonnet-4-6"
+DEFAULT_MODEL = "vertex_ai/gemini-3-5-flash"
 
 
 class LlmComplete(Protocol):
@@ -42,7 +42,7 @@ def build_classification_prompt(intent: str) -> str:
 
 
 def classify_intent(intent: str, *, llm: LlmComplete, model: str = DEFAULT_MODEL) -> str:
-    """Call Sonnet 4.6 to classify the intent. Returns category string.
+    """Call Gemini 3.5 Flash to classify the intent. Returns category string.
 
     Falls back to 'unknown' on:
     - LLM returning a category not in INTENT_CATEGORIES

@@ -73,12 +73,14 @@ class WorkspaceSession:
         repo_dir: Path,
         base_sha: str,
         ok: bool,
+        snapshot_ref: Optional[str] = None,
     ) -> None:
         self.ws_dir = ws_dir
         self._parent = parent
         self._repo_dir = repo_dir
         self.base_sha = base_sha
         self.ok = ok
+        self.snapshot_ref = snapshot_ref
 
     @classmethod
     def create(
@@ -212,6 +214,7 @@ class WorkspaceSession:
         except (subprocess.SubprocessError, OSError) as exc:
             logger.warning("WorkspaceSession.snapshot failed (fail-open): %s", exc)
             return None
+        self.snapshot_ref = ref
         return {"kind": "branch", "ref": ref, "digest": digest}
 
     @classmethod
@@ -226,7 +229,14 @@ class WorkspaceSession:
             parent = Path(tempfile.mkdtemp(prefix=f"aa-rehydrate-{_slug(thread_id)}-"))
             ws_dir = parent / "wt"
             _git(["worktree", "add", "--detach", str(ws_dir), snap_sha], cwd=repo_dir)
-            return cls(ws_dir=ws_dir, parent=parent, repo_dir=repo_dir, base_sha=snap_sha, ok=True)
+            return cls(
+                ws_dir=ws_dir,
+                parent=parent,
+                repo_dir=repo_dir,
+                base_sha=snap_sha,
+                ok=True,
+                snapshot_ref=ref,
+            )
         except (subprocess.SubprocessError, OSError) as exc:
             logger.warning("WorkspaceSession.rehydrate degraded (no worktree): %s", exc)
             return cls(ws_dir=None, parent=None, repo_dir=repo_dir, base_sha="", ok=False)

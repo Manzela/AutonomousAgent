@@ -232,3 +232,37 @@ async def test_main_checkpointer_postgres_fallback(monkeypatch, tmp_path):
         from app.adapters.inmemory.file_checkpointer import SqliteFileCheckpointer
 
         assert isinstance(_state.runner._provider, SqliteFileCheckpointer)
+
+
+# ── F-1 & F-3 gap fixes: sandbox production defaults & spec drafter routing ──
+def test_build_sandbox_production_default(monkeypatch):
+    """Verify that _build_sandbox defaults to cloudrun in production when unset."""
+    monkeypatch.setenv("SPINE_ENVIRONMENT", "production")
+    monkeypatch.delenv("SPINE_SANDBOX", raising=False)
+
+    from app.main import _build_sandbox
+    from app.adapters.gcp.cloud_run_sandbox import CloudRunJobSandbox
+
+    sb = _build_sandbox()
+    assert isinstance(sb, CloudRunJobSandbox)
+    assert sb._project_id == "autonomous-agent-2026"  # new project ID default
+
+
+def test_build_spec_drafter_routing(monkeypatch):
+    """Verify that _build_spec_drafter builds the correct spec drafter concretion."""
+    from app.main import _build_spec_drafter
+    from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
+
+    # 1. Unset env var -> None (falls back to InMemorySpecDrafter in build_spine)
+    monkeypatch.delenv("SPINE_DRAFTER", raising=False)
+    assert _build_spec_drafter() is None
+
+    # 2. "inmemory" -> InMemorySpecDrafter
+    monkeypatch.setenv("SPINE_DRAFTER", "inmemory")
+    assert isinstance(_build_spec_drafter(), InMemorySpecDrafter)
+
+    # 3. "vertex" -> VertexSpecDrafter (stub concretion, but constructor fails with NotImplementedError)
+    monkeypatch.setenv("SPINE_DRAFTER", "vertex")
+    with pytest.raises(NotImplementedError) as exc_info:
+        _build_spec_drafter()
+    assert "Vertex spec-drafter not yet implemented" in str(exc_info.value)

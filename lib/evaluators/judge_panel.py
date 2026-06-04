@@ -48,7 +48,7 @@ async def evaluate(worker_action: dict[str, Any]) -> ConsensusResult:
     # 2. Dispatch 4 judges in parallel
     tasks = []
     for axis in JUDGE_AXES:
-        model = models.get(axis, "vertex_ai/gemini-3.1-pro-preview")
+        model = models.get(axis, "vertex_ai/gemini-3-1-pro-preview")
         tasks.append(_call_judge(axis, taskspec_json, worker_output, model))
 
     judges: list[JudgeResult] = list(await asyncio.gather(*tasks))
@@ -65,12 +65,14 @@ async def evaluate(worker_action: dict[str, Any]) -> ConsensusResult:
         consensus_cfg = cfg.get("evaluators", {}).get("consensus", {})
         accept_threshold = float(consensus_cfg.get("accept_threshold", 0.75))
         reject_threshold = float(consensus_cfg.get("reject_threshold", 0.75))
-        fifth_judge_model = consensus_cfg.get("fifth_judge_model", "vertex_ai/claude-opus-4-7")
+        fifth_judge_model = consensus_cfg.get(
+            "fifth_judge_model", "vertex_ai/gemini-3-1-pro-preview"
+        )
         fifth_judge_axis = consensus_cfg.get("fifth_judge_axis", "completeness")
     except Exception:
         accept_threshold = 0.75
         reject_threshold = 0.75
-        fifth_judge_model = "vertex_ai/claude-opus-4-7"
+        fifth_judge_model = "vertex_ai/gemini-3-1-pro-preview"
         fifth_judge_axis = "completeness"
 
     result = decide_consensus(

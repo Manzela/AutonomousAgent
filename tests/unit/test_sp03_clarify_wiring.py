@@ -192,3 +192,45 @@ async def test_clarify_answers_are_scrubbed_before_persist():
     assert (
         secret not in blob
     ), "an operator-supplied secret leaked into the persisted clarifications"
+
+
+# ── F-3 gap fix: custom spec drafter injection ───────────────────────────────
+async def test_custom_spec_drafter_injection():
+    """Verify that a custom spec drafter is propagated and called during the clarify node execution."""
+    from app.core.spec_drafter import AbstractSpecDrafter, DraftResult
+    from app.core.spine_runner import SpineRunner
+    from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
+
+    mock_draft_result = DraftResult(
+        intent="test custom intent",
+        confidence=1.0,
+        ambiguities=[],
+        questions=[],
+        applied_standards=[],
+        assumptions=[],
+    )
+
+    class CustomSpecDrafter(AbstractSpecDrafter):
+        is_production_grade = True
+
+        def __init__(self):
+            self.draft_called = False
+
+        def draft(self, intent, *, answers=None, round_index=0):
+            self.draft_called = True
+            return mock_draft_result
+
+    custom_drafter = CustomSpecDrafter()
+    runner = SpineRunner(
+        InMemoryCheckpointer(),
+        capability=_stub_capability(),
+        drafter=custom_drafter,
+    )
+
+    assert runner._drafter is custom_drafter
+
+    # Start a run — this will trigger goal_intake then clarify node.
+    # Since clarify node invokes the drafter, our mock draft method will be called.
+    tid = "t-custom-drafter"
+    await runner.start(thread_id=tid, goal="hello world")
+    assert custom_drafter.draft_called is True

@@ -9,11 +9,11 @@ from lib.evaluators.orchestrator_hook import (
 
 
 def test_per_axis_model_routing():
-    """P1 routing: 2 Sonnet + 1 Opus + 1 Gemini."""
-    assert PER_AXIS_MODEL["code-correctness"] == "vertex_ai/claude-sonnet-4-6"
-    assert PER_AXIS_MODEL["safety"] == "vertex_ai/claude-opus-4-7"
-    assert PER_AXIS_MODEL["scope-fit"] == "vertex_ai/claude-sonnet-4-6"
-    assert PER_AXIS_MODEL["completeness"] == "vertex_ai/gemini-3.1-pro-preview"
+    """P1 routing: Gemini 3.5 Flash + Gemini 3.1 Pro Preview."""
+    assert PER_AXIS_MODEL["code-correctness"] == "vertex_ai/gemini-3-5-flash"
+    assert PER_AXIS_MODEL["safety"] == "vertex_ai/gemini-3-1-pro-preview"
+    assert PER_AXIS_MODEL["scope-fit"] == "vertex_ai/gemini-3-5-flash"
+    assert PER_AXIS_MODEL["completeness"] == "vertex_ai/gemini-3-1-pro-preview"
 
 
 def test_drain_returns_empty_for_unknown_session():

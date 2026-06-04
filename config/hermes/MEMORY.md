@@ -9,7 +9,7 @@
 ## Project context
 - GCP Project: `autonomous-agent-2026` (migrating from `i-for-ai`)
 - Deployment: Phase 1 (local Mac, docker-compose)
-- LLM: Anthropic Claude Opus 4.7 via Vertex AI (project autonomous-agent-2026) via LiteLLM proxy
+- LLM: Google Gemini 3.1 Pro Preview via Vertex AI (project autonomous-agent-2026) via LiteLLM proxy
 - Storage: SQLite + Chroma + Honcho
 
 (Memory grows from agent experience; this is the seed.)

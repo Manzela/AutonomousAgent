@@ -163,15 +163,15 @@ evaluators:
     accept_threshold: 0.75   # 75% (3 of 4 judges) — percentage per lib/evaluators/consensus.py
     reject_threshold: 0.75   # 75% (3 of 4 judges)
     on_split: escalate_to_5th_judge
-    fifth_judge_model: vertex_ai/claude-opus-4-7
+    fifth_judge_model: vertex_ai/gemini-3-1-pro-preview
   rejection_repeat_threshold: 3
   judge_timeout_s: 120
   parallel_judges_max: 4
   per_axis_model:
-    code-correctness: vertex_ai/claude-sonnet-4-6
-    safety: vertex_ai/claude-opus-4-7
-    scope-fit: vertex_ai/claude-sonnet-4-6
-    completeness: vertex_ai/gemini-3.1-pro-preview
+    code-correctness: vertex_ai/gemini-3-5-flash
+    safety: vertex_ai/gemini-3-1-pro-preview
+    scope-fit: vertex_ai/gemini-3-5-flash
+    completeness: vertex_ai/gemini-3-1-pro-preview
   judge_events:
     # J1 (Framing #2): one JSONL line per consensus decision. Downstream
     # RL trajectory shipper (J3) tails this file. Persistence is fail-open.
@@ -210,7 +210,7 @@ memory:
   rejected_default_ttl_days: 30
   rejected_max_inject_per_session: 10
   intent_categories: [coding, audit, research, writing, ops, data, unknown]
-  intent_classifier_model: vertex_ai/claude-sonnet-4-6
+  intent_classifier_model: vertex_ai/gemini-3-5-flash
 
 kanban:
   # Hermes resolves the kanban DB via Path.home() / ".hermes" / "kanban.db".

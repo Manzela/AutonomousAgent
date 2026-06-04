@@ -24,6 +24,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -260,12 +261,8 @@ async def rollback(req: RollbackRequest):
     runner = _require_runner()
     try:
         rb = runner.require_revision_rollback()
-        result = rb.rollback(
-            service=req.service,
-            revision=req.revision,
-            traffic_percent=req.traffic_percent,
-        )
-        return {"status": "rolled_back", "detail": result}
+        result = await rb.rollback_to(revision_name=req.revision)
+        return {"status": "rolled_back", "detail": dataclasses.asdict(result)}
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -280,7 +277,11 @@ async def telegram_webhook(request: Request):
     try:
         adapter = runner.require_telegram_adapter()
         body = await request.json()
-        await adapter.handle_update(body)
+        thread_id = str(
+            body.get("thread_id")
+            or (body.get("message") or {}).get("chat", {}).get("id", "telegram")
+        )
+        adapter.handle_update(body, thread_id=thread_id)
         return {"status": "ok"}
     except RuntimeError as exc:
         # TelegramAdapter not configured — expected in non-Telegram deployments

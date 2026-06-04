@@ -81,6 +81,13 @@ app.core.trust
 # this line once SP-05 wires FirecrackerSandbox (it becomes genuinely reachable then).
 app.adapters.gcp.sandbox:FirecrackerSandbox
 
+# app/adapters/gcp/cloud_run_sandbox.py:CloudRunJobSandbox is the SP-05c production sandbox
+# adapter. It is an AbstractSandbox subclass injected at runtime via SpineRunner(sandbox=
+# CloudRunJobSandbox(...)); the static AST callgraph cannot trace this injection. Listed here
+# as an operator-reviewed waiver — wired via runtime injection, not a static call site.
+# REMOVE once a static call site (e.g. SpineRunner.configure_cloud_run_sandbox()) is added.
+app.adapters.gcp.cloud_run_sandbox:CloudRunJobSandbox
+
 # lib.scrubber.ScrubFilter is installed on the ROOT logger via
 # lib/observability/otel_setup.py:310 (root.addFilter(ScrubFilter())); its
 # .filter() is invoked by the Python logging framework's per-record dispatch —

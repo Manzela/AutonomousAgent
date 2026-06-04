@@ -1,0 +1,123 @@
+# Acceptance — SP-04 · Durable HITL sign-off + fix INPUT_REQUIRED
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 EPIC-1 SP-04.
+#   "A LangGraph interrupt() gate after clarify; nothing builds before resume.
+#    Re-map A2A INPUT_REQUIRED (logic at app/core/orchestrator.py:356-369
+#    _map_a2a_status, branch at :356) to route to the interrupt, not FAILED."
+#   Acceptance: "graph paused at sign-off survives restart, resumes only on
+#    /approve; A2A INPUT_REQUIRED parks (red-green); the pre-existing
+#    tests/.../test_peer_dispatch.py:316 assertion (currently INPUT_REQUIRED→FAILED)
+#    is updated, and grep -rn INPUT_REQUIRED.*FAILED tests/ returns empty.
+#    Proof: red-green + grep + full-suite counts (C7)."
+#
+# Design note (hybrid adapter pattern — no Vertex/LLM in CI): SP-04 needs NO new
+# Vertex concretion. The parkable status is a pure enum extension on the existing
+# app/core/schemas.py:TaskStatus (a new NON-TERMINAL member INPUT_REQUIRED with an
+# is_terminal property); the durable interrupt is the SP-01 sign_off node + the
+# InMemoryCheckpointer provider. The GCP durability concretion is the deferred
+# AbstractCheckpointer subclass (out of scope here, unchanged by SP-04).
+
+task: SP-04
+title: "durable HITL sign-off survives restart + A2A INPUT_REQUIRED parks (non-terminal), not FAILED"
+driver: V
+phase: epic-1
+run_from: repo_root
+
+assertions:
+  - id: input-required-parks-not-fails
+    description: >
+      Red-green: _map_a2a_status("INPUT_REQUIRED") maps to the NON-TERMINAL,
+      parkable TaskStatus.INPUT_REQUIRED — never terminal FAILED. The peer asking
+      for a human decision is routable to the sign_off interrupt() gate, not killed.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        app/tests/test_peer_dispatch.py::test_a2a_status_mapping \
+        app/tests/test_peer_dispatch.py::test_input_required_is_non_terminal_and_parkable \
+        tests/unit/test_sp04_durable_signoff.py::test_input_required_parks_not_fails \
+        -q
+    expect_exit: 0
+
+  - id: signoff-durable-survives-restart-resumes-only-on-approve
+    description: >
+      Red-green: the graph paused at sign_off SURVIVES a fresh-runner restart
+      (process death over the same checkpointer provider), still parked at
+      sign_off with the same interrupt id; it advances ONLY on APPROVE (which
+      seals the spec), and REJECT halts with nothing built.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp04_durable_signoff.py::test_signoff_interrupt_pauses_and_nothing_builds_before_resume \
+        tests/unit/test_sp04_durable_signoff.py::test_signoff_paused_state_survives_fresh_runner_restart \
+        tests/unit/test_sp04_durable_signoff.py::test_signoff_resumes_only_on_approve_via_fresh_runner \
+        tests/unit/test_sp04_durable_signoff.py::test_signoff_reject_halts_nothing_built \
+        -q
+    expect_exit: 0
+
+  - id: grep-no-input-required-to-failed
+    description: >
+      The PRD-literal grep guard: `grep -rn INPUT_REQUIRED.*FAILED tests/ app/tests/`
+      returns EMPTY — no test asserts the old terminal-collapse behavior anywhere.
+      grep exits 1 (no match) on success, so we invert it.
+    cmd: |
+      if grep -rn 'INPUT_REQUIRED.*FAILED' tests/ app/tests/; then
+        echo "FAIL: a test still references INPUT_REQUIRED.*FAILED (the retired terminal-collapse)"
+        exit 1
+      fi
+      echo "OK: no INPUT_REQUIRED.*FAILED reference remains in tests/ or app/tests/"
+    expect_exit: 0
+
+  - id: orchestrator-maps-input-required-non-terminal
+    description: >
+      Source-of-truth check on the orchestrator branch (:356-369): the
+      _map_a2a_status mapping line for INPUT_REQUIRED targets the non-terminal
+      TaskStatus.INPUT_REQUIRED (NOT TaskStatus.FAILED), and the enum exposes a
+      non-terminal is_terminal for it.
+    cmd: |
+      uv run --extra dev python - <<'PY'
+      import sys
+      from app.core.orchestrator import _map_a2a_status
+      from app.core.schemas import TaskStatus
+      m = _map_a2a_status("INPUT_REQUIRED")
+      assert m is TaskStatus.INPUT_REQUIRED, f"expected INPUT_REQUIRED, got {m!r}"
+      assert m is not TaskStatus.FAILED, "INPUT_REQUIRED must not collapse to FAILED"
+      assert TaskStatus.INPUT_REQUIRED.is_terminal is False, "INPUT_REQUIRED must be non-terminal"
+      # the terminal set is unchanged for the real failures/successes
+      assert TaskStatus.FAILED.is_terminal is True
+      assert TaskStatus.COMPLETED.is_terminal is True
+      assert TaskStatus.CANCELED.is_terminal is True
+      print("OK: INPUT_REQUIRED is a non-terminal, parkable status (not FAILED)")
+      PY
+    expect_exit: 0
+
+  - id: orchestrator-contract-intact
+    description: >
+      Full-suite-count proof (C7) on the modules SP-04 touches: the peer-dispatch
+      and spine suites stay GREEN — execute()'s contract and the SP-01 spine are
+      unbroken by the enum extension + re-map.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        app/tests/test_peer_dispatch.py \
+        tests/unit/test_graph_spine.py \
+        tests/unit/test_sp04_durable_signoff.py \
+        -q
+    expect_exit: 0
+
+proof:
+  red_green: >
+    test_a2a_status_mapping (updated) + test_input_required_is_non_terminal_and_parkable
+    + tests/unit/test_sp04_durable_signoff.py (5 oracles). Before the fix
+    _map_a2a_status had no INPUT_REQUIRED member to map to (AttributeError == RED);
+    after, all park/durable oracles pass (GREEN).
+  grep_guard: "grep -rn 'INPUT_REQUIRED.*FAILED' tests/ app/tests/ returns empty."
+  full_suite_counts: >
+    Baseline (origin/main): 3 failed, 712 passed (the 3rd failure was the stale
+    test_a2a_status_mapping CANCELED→FAILED assertion). After SP-04: 2 failed,
+    719 passed — the stale mapping test now passes and 7 net-new SP-04 oracles are
+    green. The residual 2 fails (inmemory sandbox subprocess) + 11 errors
+    (cloud_sql_pgvector needs Postgres) are pre-existing and infra-bound, untouched
+    by this change.
+  deferred: >
+    The GCP/Vertex durability concretion (AbstractCheckpointer subclass) is
+    unchanged and out of SP-04 scope; CI runs the InMemoryCheckpointer provider.

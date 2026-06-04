@@ -1,0 +1,156 @@
+# Acceptance — SP-22 · Delete the over-engineering
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 EPIC 0 SP-22.
+#   "Tombstone seed MoE/PPO/reward as research (don't port); remove garak
+#    after SP-00 pins langgraph; collapse the duplicate checkpointer; prune
+#    INTEGRATION.md P-1..P-17 to traversed codes; drop hallucinated Phase 7/8.5/10."
+#   Acceptance: "`import langgraph` still works post-garak-removal; ONE checkpointer;
+#    no orphaned stub farm. Proof: import test + diff."
+#
+# Checkpointer finding (recorded here): as of SP-22, there is ONE concrete
+# checkpointer in use — lib/durability/checkpoint.py (JSON file snapshots for
+# the hermes agent loop). langgraph-checkpoint is pinned as a direct dep (SP-00)
+# but no LangGraph graph has been built yet (SP-01 pending). Collapsing the file
+# checkpointer into the LangGraph checkpointer is BLOCKED on SP-01 + SP-R3's
+# ≥1-release fallback window, per audit-plan.md §SP-22(c). This acceptance
+# verifies the single-checkpointer invariant by confirming only one concrete
+# implementation exists at `lib/durability/checkpoint.py`.
+#
+# Hallucinated Phase 7/8.5/10 finding: these phase labels were NEVER present
+# in INTEGRATION.md or any other committed doc. The PRD's SP-22 listed them
+# as a risk from a prior draft. Nothing was deleted; the tombstone notice
+# documents the absence.
+
+task: SP-22
+title: "delete the over-engineering — garak absent, spine intact, one checkpointer, stub farm pruned"
+driver: V
+phase: post-gate-0
+run_from: repo_root
+
+assertions:
+  - id: garak-absent-from-pyproject
+    description: >
+      garak is NOT present as a live (non-comment) dependency line in
+      pyproject.toml. The SP-22 removal must not be accidentally reverted.
+    cmd: |
+      python3 - <<'PY'
+      import re, sys
+      src = open("pyproject.toml").read()
+      if re.search(r'^[^#\n]*"garak', src, re.M):
+          sys.exit("FAIL: garak dependency line found in pyproject.toml -- removal was reverted")
+      print("OK: garak is absent from pyproject.toml")
+      PY
+    expect_exit: 0
+
+  - id: garak-absent-from-lock
+    description: >
+      garak is NOT present in uv.lock (lock was regenerated after removal).
+    cmd: |
+      if grep -Eq '^name = "garak"$' uv.lock; then
+        echo "FAIL: garak found in uv.lock -- lock not regenerated after removal"
+        exit 1
+      fi
+      echo "OK: garak is absent from uv.lock"
+    expect_exit: 0
+
+  - id: langgraph-direct-pin-survives
+    description: >
+      langgraph and langgraph-checkpoint are still DIRECT, version-pinned
+      deps in pyproject.toml (not merely transitive) after garak removal.
+      This is the core spine-survival proof.
+    cmd: |
+      grep -Eq '^[[:space:]]*"langgraph(==|>=)[0-9]' pyproject.toml || \
+        { echo "FAIL: langgraph not a direct dep after garak removal"; exit 1; }
+      grep -Eq '^[[:space:]]*"langgraph-checkpoint(==|>=)[0-9]' pyproject.toml || \
+        { echo "FAIL: langgraph-checkpoint not a direct dep after garak removal"; exit 1; }
+      grep -Eq '^name = "langgraph"$' uv.lock || \
+        { echo "FAIL: langgraph absent from lock"; exit 1; }
+      grep -Eq '^name = "langgraph-checkpoint"$' uv.lock || \
+        { echo "FAIL: langgraph-checkpoint absent from lock"; exit 1; }
+      echo "OK: langgraph + langgraph-checkpoint are direct-pinned deps and present in lock"
+    expect_exit: 0
+
+  - id: langgraph-import-works
+    description: >
+      `import langgraph; import langgraph.checkpoint` succeeds in the
+      frozen environment — the runtime spine is intact post-garak-removal.
+    cmd: |
+      uv run --frozen python -c "
+      import langgraph, langgraph.checkpoint
+      from importlib.metadata import version
+      lg = version('langgraph')
+      lgcp = version('langgraph-checkpoint')
+      print('OK: langgraph', lg, '+ langgraph.checkpoint', lgcp, 'importable post-garak-removal')
+      "
+    expect_exit: 0
+
+  - id: full-probe-passes
+    description: >
+      The repurposed sp00_garak_removal_probe.sh runs all 5 post-removal
+      assertions (pyproject absent, direct deps, lock present, lock absent
+      for garak) and exits 0 — the unified red-green gate for SP-00+SP-22.
+    cmd: |
+      bash scripts/ci/sp00_garak_removal_probe.sh
+    expect_exit: 0
+
+  - id: single-checkpointer-concrete
+    description: >
+      Only ONE concrete checkpointer implementation exists in the runtime
+      tree: lib/durability/checkpoint.py (Checkpoint class). No second
+      concrete class exists under app/ or lib/ that subclasses a LangGraph
+      checkpointer (SP-01 is not yet built; the collapse is blocked on SP-01
+      + SP-R3). Assertion: `app/` + `lib/` contain exactly one file with
+      the word "Checkpoint" as a class definition.
+    cmd: |
+      count=$(grep -rl '^class Checkpoint' app/ lib/ 2>/dev/null | wc -l | tr -d ' ')
+      if [ "$count" -ne 1 ]; then
+        echo "FAIL: expected exactly 1 file with 'class Checkpoint', found $count"
+        grep -rl '^class Checkpoint' app/ lib/ 2>/dev/null || true
+        exit 1
+      fi
+      echo "OK: single concrete Checkpoint class found ($count file)"
+    expect_exit: 0
+
+  - id: integration-md-traversal-annotated
+    description: >
+      INTEGRATION.md has been annotated with traversal status (TRAVERSED /
+      TOMBSTONED / not yet traversed) — the SP-22 tombstone notice is present
+      in the header, and P-2, P-3, P-9 are marked TRAVERSED.
+    cmd: |
+      f="docs/research/autonomous-agent-seed-orchestrator/INTEGRATION.md"
+      grep -q "SP-22 tombstone notice" "$f" || \
+        { echo "FAIL: SP-22 tombstone notice missing from INTEGRATION.md"; exit 1; }
+      grep -q "TRAVERSED.*P-2\|P-2.*TRAVERSED" "$f" || \
+        { echo "FAIL: P-2 not marked TRAVERSED in INTEGRATION.md"; exit 1; }
+      grep -q "TRAVERSED.*P-3\|P-3.*TRAVERSED" "$f" || \
+        { echo "FAIL: P-3 not marked TRAVERSED in INTEGRATION.md"; exit 1; }
+      grep -q "TRAVERSED.*P-9\|P-9.*TRAVERSED" "$f" || \
+        { echo "FAIL: P-9 not marked TRAVERSED in INTEGRATION.md"; exit 1; }
+      echo "OK: INTEGRATION.md contains SP-22 tombstone notice + P-2/P-3/P-9 TRAVERSED"
+    expect_exit: 0
+
+  - id: seed-files-preserved
+    description: >
+      The seed/ reference implementation files are NOT deleted — they are
+      provenance-only artefacts that must be preserved (tombstoned in docs,
+      not removed from the tree).
+    cmd: |
+      for f in seed/moe_router.py seed/reward_model.py seed/bootstrap.py seed/orchestrator.py; do
+        path="docs/research/autonomous-agent-seed-orchestrator/$f"
+        [ -f "$path" ] || { echo "FAIL: seed file $path missing -- was incorrectly deleted"; exit 1; }
+      done
+      echo "OK: all seed reference files preserved"
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/sp00-spine-pin.yml
+  related_acceptance: audit/acceptance/SP-00.yaml
+  checkpointer_note: >
+    As of SP-22 there is ONE concrete checkpointer: lib/durability/checkpoint.py.
+    Collapse into LangGraph checkpointer is blocked on SP-01 + SP-R3 (file-checkpointer
+    collapse requires SP-01 to build the first LangGraph graph, and SP-R3's ≥1-release
+    fallback window before the file writer is retired). Documented in audit-plan.md §SP-22(c).
+  hallucinated_phases_note: >
+    Phase 7/8.5/10 labels were never present in INTEGRATION.md or any committed doc.
+    The PRD's SP-22 reference was to a risk pattern from a prior draft. Nothing to delete;
+    the tombstone notice in INTEGRATION.md documents the absence.

@@ -276,7 +276,7 @@ async def verify_token(
     try:
         payload = jwt.decode(
             jwt_str,
-            public_key,
+            public_key,  # type: ignore[arg-type]
             algorithms=["RS256"],
             audience=our_sa,
             leeway=5,

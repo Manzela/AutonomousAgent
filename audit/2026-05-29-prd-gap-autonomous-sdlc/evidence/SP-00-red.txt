@@ -1,0 +1,104 @@
+== acceptance: SP-00 (audit/acceptance/SP-00.yaml) ==
+[FAIL] langgraph-direct-pin: exit=1 expected=0
+[FAIL] langgraph-checkpoint-direct-pin: exit=1 expected=0
+[FAIL] lock-clean: exit=1 expected=0
+    stderr: Using CPython 3.12.11
+    Resolved 382 packages in 118ms
+    warning: The package `redis==5.3.1` does not have an extra named `asyncio`
+    warning: The package `fakeredis==2.35.1` does not have an extra named `asyncio`
+    The lockfile at `uv.lock` needs to be updated, but `--locked` was provided. To update the lockfile, run `uv lock`.
+
+[FAIL] spine-survives-garak-removal: exit=1 expected=0
+    stdout: == re-resolving lock with garak removed (uv lock --offline) ==
+    FAIL: langgraph is ABSENT from the garak-free lock — the spine still
+          depends on the garak->langchain->langgraph path. Add langgraph as
+          a direct dependency in pyproject.toml [project.dependencies].
+
+    stderr: ggingface-hub v1.16.1
+    Added hyperframe v6.1.0
+    Added hypothesis v6.155.1
+    Added ijson v3.5.0
+    Added importlib-metadata v8.9.0
+    Added inspect-ai v0.3.231
+    Added isodate v0.7.2
+    Added jinja2 v3.1.6
+    Added jiter v0.15.0
+    Added jmespath v1.1.0
+    Added jsonlines v4.0.0
+    Added jsonpatch v1.33
+    Added jsonpath-ng v1.8.0
+    Added jsonpointer v3.1.1
+    Added jsonref v1.1.0
+    Added linkify-it-py v2.1.0
+    Added litellm v1.86.2
+    Added lxml v6.1.1
+    Added markdown-it-py v4.2.0
+    Added markupsafe v3.0.3
+    Added mdit-py-plugins v0.6.1
+    Added mdurl v0.1.2
+    Added mmh3 v5.2.1
+    Added msal v1.37.0
+    Added msal-extensions v1.3.1
+    Added multidict v6.7.1
+    Added multiprocess v0.70.16
+    Added nest-asyncio v1.6.0
+    Added nest-asyncio2 v1.7.2
+    Added openai v2.38.0
+    Added openpyxl v3.1.5
+    Added pandas v3.0.3
+    Added pathlib-abc v0.5.2
+    Added pillow v12.2.0
+    Added platformdirs v4.10.0
+    Added portalocker v3.2.0
+    Added posthog v7.16.2
+    Added propcache v0.5.2
+    Added psutil v7.2.2
+    Added pyarrow v24.0.0
+    Added pydantic-settings v2.14.1
+    Added pyfiglet v1.0.4
+    Added pyodbc v5.3.0
+    Added pypdf v6.12.2
+    Added pyrit v0.13.0
+    Added pytest-repeat v0.9.4
+    Added pytest-rerunfailures v16.3
+    Added pytest-vcr v1.0.2
+    Added pytest-xdist v3.8.0
+    Added python-docx v1.2.0
+    Added regex v2026.5.9
+    Added reportlab v4.5.1
+    Added rich v14.3.4
+    Added s3fs v2025.9.0
+    Added s3transfer v0.14.0
+    Added safetensors v0.7.0
+    Added scipy v1.17.1
+    Added segno v1.6.6
+    Added semver v3.0.4
+    Added sentry-sdk v2.61.0
+    Added setuptools v82.0.1
+    Added shellingham v1.5.4
+    Added shortuuid v1.0.13
+    Added soupsieve v2.8.4
+    Added sqlalchemy v2.0.50
+    Added tabulate v0.9.0
+    Added termcolor v3.3.0
+    Added textual v8.2.7
+    Added tiktoken v0.13.0
+    Added tinytag v2.2.1
+    Added tokenizers v0.22.2
+    Added tqdm v4.67.3
+    Added transformers v5.9.0
+    Added treelib v1.8.0
+    Added typer v0.26.4
+    Added tzdata v2026.2
+    Added uc-micro-py v2.0.0
+    Added universal-pathlib v0.3.10
+    Added vcrpy v8.1.1
+    Added wheel v0.47.0
+    Updated wrapt v2.2.1 -> v1.17.3
+    Added xxhash v3.7.0
+    Added yarl v1.24.2
+    Added zipfile-zstd v0.0.4
+    Added zipp v4.1.0
+    Added zstandard v0.25.0
+
+== overall: FAIL ==

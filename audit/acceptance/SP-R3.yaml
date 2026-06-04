@@ -1,0 +1,81 @@
+# Acceptance — SP-R3 · vendor-lock fallback: SqliteFileCheckpointer contract
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-R3: "file checkpointer retained + contract-tested for ≥1 release;
+#   checkpoint-schema contract test exists. Proof: contract-test run +
+#   `import langgraph` after fallback."
+#
+# MECHANISM (hermetic — no network/docker):
+#   app/adapters/inmemory/file_checkpointer.py:SqliteFileCheckpointer wraps
+#   AsyncSqliteSaver (langgraph-checkpoint-sqlite) with an explicit aiosqlite
+#   connection so the caller controls the connection lifecycle. setup()/aclose()
+#   manage the aiosqlite connection; build_saver() returns the saver after setup().
+#
+#   double-setup guard: setup() closes the prior connection before reconnecting
+#   (B4 C9 fix — otherwise a double-setup leaks the first connection, keeping
+#   the SQLite file locked on disk and preventing failover by another process).
+#
+#   event-loop constraint: AsyncSqliteSaver pins the running event loop at
+#   construction time; setup() must be called on the same event loop as aput/aget
+#   (documented in file_checkpointer.py; a process-restart scenario requires a
+#   fresh setup() call in the new event loop).
+#
+# HONEST BOUNDARY:
+#   ':memory:' loses state across connection teardown — NOT a valid failover config.
+#   The durable-failover guarantee (F4b) requires a real file path. The
+#   SpineState schema contract (F5) is the drift guard for the checkpoint payload.
+#
+# C9 REVIEW (Opus — different model class, 2026-06-04):
+#   B1 (HIGH, FIXED): ALL original 7 tests used ':memory:'; I proved ':memory:'
+#      loses state across aclose+setup — the headline failover claim was untested
+#      and broken. F4b added: a real file-path cross-provider round-trip proves
+#      durable failover (provider A writes, provider B on same file reads it back).
+#   B4 (MEDIUM, FIXED): double-setup without aclose() left the first aiosqlite
+#      connection open (leaked, SQLite file lock). setup() now closes prior conn
+#      first; F7 regression test verifies the prior conn is closed.
+#   B3 (MEDIUM, DOCUMENTED): AsyncSqliteSaver event-loop pinning — documented in
+#      file_checkpointer.py; B3 is an architectural constraint of AsyncSqliteSaver,
+#      not a bug in the wrapper.
+#   C2 (LOW, FIXED): unused `import asyncio` removed from test file.
+
+task: SP-R3
+title: "vendor-lock fallback — SqliteFileCheckpointer: import-path, setup/close, file-path durability (F4b), schema contract, double-setup guard (9 hermetic oracles)"
+driver: V
+phase: spine-risk
+run_from: repo_root
+
+assertions:
+  - id: spr3-file-checkpointer-contract
+    description: >
+      9 hermetic oracles (F1–F7b) proving the SqliteFileCheckpointer contract:
+      F1 langgraph + SQLite fallback modules importable;
+      F2 setup() creates a valid AsyncSqliteSaver;
+      F3 build_saver() raises before setup();
+      F4 same-connection checkpoint round-trip;
+      F4b FILE-PATH DURABILITY — provider A writes, provider B on same file reads
+          (the real SP-R3 durable-failover proof; ':memory:' does not satisfy this);
+      F5 SpineState schema contract — 30 fields exact-match (drift guard);
+      F6 aclose() releases the connection;
+      F7 double-setup without aclose() closes the prior connection (no file lock);
+      F7b reconnect cycle on a real file path.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_spr3_file_checkpointer.py \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    9 red-green oracles (tests/unit/test_spr3_file_checkpointer.py) over
+    app/adapters/inmemory/file_checkpointer.py:SqliteFileCheckpointer.
+    C9 review (Opus, 2026-06-04) found 2 real issues: B1 ALL 7 original tests
+    used ':memory:' which loses state on teardown (the failover claim was unproven
+    and broken — F4b cross-provider file-path round-trip added), B4 double-setup
+    without aclose() leaked the first aiosqlite connection (double-setup guard
+    added to setup(); F7 regression test). B3 event-loop pinning documented.
+    939 unit tests passing, 0 regressions.
+    DEFERRED: cross-event-loop usage (architectural constraint of AsyncSqliteSaver;
+    documented), Postgres→SQLite live failover test (requires running Postgres;
+    GCP operator run).

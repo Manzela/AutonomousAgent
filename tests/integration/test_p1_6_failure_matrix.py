@@ -1,25 +1,16 @@
-"""Integration test exercising 5 representative failure modes against the live stack.
+"""5 representative failure modes asserted against ``lib.durability.trichotomy.classify``.
 
-Marked skipif when the LiteLLM proxy is unreachable. The body tests are
-self-contained classifier checks; the live-stack gate is preserved per spec
-so this test joins the integration tier rather than running on every unit pass.
+These bodies are SELF-CONTAINED classifier checks — they build an exception and assert its
+``classify`` / ``trichotomy_class`` verdict. They make NO network call, so the previous
+``skipif(not _proxy_reachable())`` gate was spurious: it skipped 5 deterministic tests in the
+nightly whenever the LiteLLM proxy health-check didn't answer, for no reason (the bodies never
+touch the proxy). The gate is removed so the tests run unconditionally; the ``integration``
+marker keeps them in the integration tier (off the unit pass) per the original intent.
 """
 
-import os
 import pytest
-import httpx
 
-PROXY_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
-
-
-def _proxy_reachable():
-    try:
-        return httpx.get(f"{PROXY_URL}/health/readiness", timeout=2).status_code == 200
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _proxy_reachable(), reason="LiteLLM proxy not running")
+pytestmark = pytest.mark.integration
 
 
 def test_F1_rate_limit_classifies_as_self_heal():

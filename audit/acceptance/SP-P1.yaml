@@ -1,0 +1,89 @@
+# Acceptance — SP-P1 · §12 P1 Exit Acceptance Harness
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §12 "★ Production acceptance run" (the P1 milestone exit criterion):
+#   "Implemented as tests/integration/test_e2e_ship_acceptance.py. Proof: 2 green
+#    happy-path run links + 5 negative/edge-path links (a-e) with guard/arbitration
+#    verdicts. A single happy-path run does NOT satisfy §12. When all pass, R1-R11
+#    are met."
+#
+# ORACLE MAP (7 hermetic tests, no network / no docker / no real LLM):
+#   §12-A1  happy path, goal 1 — full spine topology (goal_intake→clarify→sign_off→
+#           seal_spec→decompose→fan_out→monitor→eval_gate→ship_gate→ship_effect);
+#           spec sealed, tasks dispatched, eval oracle passes, ledger records ship
+#           exactly once, workspace_ref set.
+#   §12-A2  happy path, goal 2 — two distinct goals produce distinct spec_sha and
+#           distinct workspace digests (non-flaky proof).
+#   §12-B   crash-resume exactly-once — fresh SpineRunner over same checkpointer reads
+#           interrupted state at ship_gate (pre-resume state assertion loads the swap
+#           is load-bearing), resumes, ship effect ledgered exactly once (DoD-1).
+#           NOTE: byte-equal FS rehydrate is proven at unit level by DoD-17
+#           (test_graph_spine.py::test_dod17_real_edit_snapshot_kill_rehydrate_byte_equal).
+#   §12-C   over-budget pre-empts (SP-R2) — SPINE_BUDGET_USD=0.001 + cost_usd=1.0
+#           capability halts fan_out before ship_gate; budget_verdict.preempt=True;
+#           no ship ledger receipt.
+#   §12-D   cross-channel steering dedup + C15 arbitration — duplicate telegram=APPROVE
+#           deduped by (channel, origin_id); board=REJECT survives; gs.arbitrate()
+#           returns REJECT; passing REJECT as the sign_off decision halts the spine.
+#           DEFERRED: SP-17 auto-wiring (spine does not yet auto-apply arbitrate() to
+#           determine the resume verb).
+#   §12-E   concurrent thread isolation (SP-R6) — asyncio.gather of two threads on
+#           same checkpointer; each ledger receipt stamped with the correct thread_id;
+#           decision-record interrupt_ids are disjoint between threads; each ship
+#           exactly once.
+#   §12-N   negative path — REJECT at sign_off halts; seal_spec/tasks/ship all absent.
+#
+# C9 REVIEW (Opus — different model class, 2026-06-04):
+#   H1 (HIGH, FIXED): §12-D original: only called gs.arbitrate() as dead-code helper
+#      while the resume verb was APPROVE (spine approved, ship proceeded). Fixed by
+#      computing arbitrate() first, then driving a fresh thread with the REJECT verdict,
+#      and asserting the spine halts (actionability proof, not pure-function tautology).
+#   H2 (HIGH, FIXED): §12-E original: spec_sha != spec_sha proved thread_id-seeded
+#      determinism, not content isolation. Fixed: assert every ledger receipt has the
+#      correct thread_id; assert decision-record interrupt_ids are disjoint between threads.
+#   M1 (MEDIUM, FIXED): §12-B original: runner swap was decorative — no assertion proved
+#      runner2 loaded state from cp before resuming. Fixed: assert
+#      runner2.get_state(tid).next == ("ship_gate",) before resume.
+#   M2 (MEDIUM, FIXED): §12-D events were missing the required `kind` field from
+#      SteeringEvent TypedDict. Fixed: added "kind": "approve"/"reject" to all events.
+
+task: SP-P1
+title: "§12 P1 exit acceptance harness — 7 hermetic oracles (A1/A2/B/C/D/E/N)"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp-p1-acceptance-harness
+    description: >
+      7 hermetic oracles (A1, A2, B, C, D, E, N) proving the PRD §12 P1 exit criterion:
+      A1  happy-path full topology with all nodes executed + eval oracle + exactly-once ship;
+      A2  second goal produces distinct spec_sha and workspace digest (non-flaky);
+      B   crash-resume: fresh runner reads interrupted state from checkpointer; ship ledgered once;
+      C   SP-R2 budget pre-emption: fan_out halts before ship_gate when budget exhausted;
+      D   C15 arbitration: duplicate events deduped; arbitrate() returns REJECT; passing REJECT halts;
+      E   SP-R6 isolation: two concurrent threads on same cp — ledger receipts thread-id-stamped,
+          decision interrupt_ids disjoint, each ship exactly once;
+      N   negative: REJECT at sign_off halts; seal_spec/tasks/ship all absent.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/integration/test_e2e_ship_acceptance.py \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    7 hermetic oracles (tests/integration/test_e2e_ship_acceptance.py) covering PRD §12 paths
+    A1/A2 (happy path × 2), B (crash-resume exactly-once with load-bearing runner swap proof),
+    C (SP-R2 budget pre-emption), D (C15 dedup + arbitration + actionability), E (SP-R6 thread
+    isolation via ledger thread_id stamping + disjoint interrupt_ids), N (negative REJECT halt).
+    C9 review (Opus, 2026-06-04) found 4 blocking issues all fixed: H1 §12-D was testing
+    arbitrate() as dead code (APPROVE resume → spine shipped anyway; fixed by driving a REJECT
+    resume with the arbitrated verdict), H2 §12-E proved determinism not isolation (fixed by
+    ledger thread_id + disjoint interrupt_id assertions), M1 §12-B runner swap was decorative
+    (fixed by asserting pre-resume state == ship_gate from checkpointer), M2 events missing
+    `kind` field (fixed). 957 unit tests passing, 0 regressions.
+    DEFERRED: SP-17 auto-wiring of arbitrate() into spine routing; byte-equal FS rehydrate
+    is unit-proven by DoD-17 in test_graph_spine.py::test_dod17_real_edit_snapshot_kill_rehydrate_byte_equal.

@@ -310,14 +310,36 @@ async def test_local_dispatch_bad_return_type():
 
 
 def test_a2a_status_mapping():
-    """Verify all A2A statuses map to the correct orchestrator TaskStatus."""
+    """Verify all A2A statuses map to the correct orchestrator TaskStatus.
+
+    SP-04: the peer-asking-for-input status is NO LONGER terminal — it maps to the
+    non-terminal, parkable TaskStatus.INPUT_REQUIRED so the spine can route the
+    task to its sign-off interrupt() (human gate) instead of hard-failing the run.
+    """
     assert _map_a2a_status("SUBMITTED") == TaskStatus.INFLIGHT
     assert _map_a2a_status("WORKING") == TaskStatus.INFLIGHT
-    assert _map_a2a_status("INPUT_REQUIRED") == TaskStatus.FAILED
+    # SP-04 (red-green): a peer asking for human input parks; it is not terminal.
+    parked = _map_a2a_status("INPUT_REQUIRED")
+    assert parked == TaskStatus.INPUT_REQUIRED
+    assert parked is not TaskStatus.FAILED
     assert _map_a2a_status("COMPLETED") == TaskStatus.COMPLETED
-    assert _map_a2a_status("CANCELED") == TaskStatus.FAILED
+    assert _map_a2a_status("CANCELED") == TaskStatus.CANCELED
     assert _map_a2a_status("FAILED") == TaskStatus.FAILED
     assert _map_a2a_status("UNKNOWN") == TaskStatus.FAILED  # Unknown → FAILED
+
+
+def test_input_required_is_non_terminal_and_parkable():
+    """SP-04 invariant: INPUT_REQUIRED is non-terminal (it is parkable to the
+    human gate), whereas FAILED/COMPLETED/CANCELED/REFUSED are terminal."""
+    assert TaskStatus.INPUT_REQUIRED.is_terminal is False
+    assert _map_a2a_status("INPUT_REQUIRED").is_terminal is False
+    for terminal in (
+        TaskStatus.FAILED,
+        TaskStatus.COMPLETED,
+        TaskStatus.CANCELED,
+        TaskStatus.REFUSED,
+    ):
+        assert terminal.is_terminal is True
 
 
 # ─────────────────────────────────────────────────────────────────────

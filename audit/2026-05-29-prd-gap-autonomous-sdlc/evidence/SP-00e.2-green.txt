@@ -1,0 +1,5 @@
+== SP-00e.2 GREEN: matching evidence + test-truth ==
+[PASS] evidence-present (C1): evidence present (1 fenced block(s))
+[PASS] test-truth (C7): test-truth matches the junitxml artifact: collected=2 passed=2 failed=0 skipped=0 errors=0
+== pr-meta-checks: PASS ==
+exit=0

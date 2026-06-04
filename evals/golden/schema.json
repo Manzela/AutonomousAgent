@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evals/golden/schema.json",
+  "title": "GoldenItem",
+  "description": "A single entry in the golden eval corpus (SP-G1, PRD L279). Each item pins an expected outcome for a goal that the autonomous-SDLC agent should be able to decompose and execute.",
+  "type": "object",
+  "required": ["goal", "expected_dag", "expected_criteria", "expected_trajectory", "version", "notes"],
+  "additionalProperties": false,
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The natural-language goal submitted to the agent."
+    },
+    "expected_dag": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The expected TaskGraph as a list of TaskNode objects (PRD L176). The graph must be acyclic and all depends_on ids must resolve within this list.",
+      "items": {
+        "$ref": "#/$defs/TaskNode"
+      }
+    },
+    "expected_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The flat list of acceptance criteria the agent's output must satisfy.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "expected_trajectory": {
+      "type": "array",
+      "description": "Coarse phase-list of expected execution steps. May be a placeholder list of phase descriptions when a full step-by-step trace is not yet available.",
+      "items": {
+        "$ref": "#/$defs/TrajectoryStep"
+      }
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Corpus version at which this item was authored (e.g. 'v0.1.0')."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Provenance, signoff status, and grounding notes. Items not yet operator-signed must contain 'needs-operator-signoff'."
+    }
+  },
+  "$defs": {
+    "TaskNode": {
+      "title": "TaskNode",
+      "description": "A single node in the decomposed TaskGraph (PRD L176). Faithful to the contract: {id, phase, summary, depends_on:[id], acceptance_ref, allowed_paths:[glob]}.",
+      "type": "object",
+      "required": ["id", "phase", "summary", "depends_on", "acceptance_ref", "allowed_paths"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique identifier for this node within the DAG."
+        },
+        "phase": {
+          "type": "string",
+          "enum": ["intake", "clarify", "plan", "build", "test", "review", "ship", "operate"],
+          "description": "The SDLC phase this node belongs to."
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable description of what this node does."
+        },
+        "depends_on": {
+          "type": "array",
+          "description": "List of node ids this node depends on (empty for root nodes).",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "acceptance_ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Reference to the TaskSpec acceptance criterion this node satisfies (e.g. 'SP-00e.5 / detects-dead-symbol')."
+        },
+        "allowed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Non-empty list of non-catch-all glob patterns restricting which file paths this node may modify. A catch-all glob (**,*,.,/) is FORBIDDEN (SP-02/2.6 — else SP-06 scope-root is unreachable).",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": {
+              "enum": ["**", "*", ".", "/", "**/*"]
+            },
+            "description": "A concrete file glob derived from this node's acceptance_ref."
+          }
+        }
+      }
+    },
+    "TrajectoryStep": {
+      "title": "TrajectoryStep",
+      "description": "One step in the expected execution trajectory (coarse phase-level placeholder).",
+      "type": "object",
+      "required": ["phase", "description"],
+      "additionalProperties": false,
+      "properties": {
+        "phase": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The SDLC phase this step belongs to."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the agent is expected to do in this step."
+        }
+      }
+    }
+  }
+}

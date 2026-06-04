@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Iterable
+from typing import Any, Iterable
 
 import numpy as np
 
@@ -27,6 +27,7 @@ _HAS_AIPLATFORM = not _MISSING_DEPS
 # import time — before any ``_HAS_AIPLATFORM`` guard can fire.
 # The no-op lambda preserves the decorated function unchanged so that
 # __init__ can raise ImportError on first instantiation attempt.
+_retry_decorator: Any
 if _HAS_AIPLATFORM:
     _retry_decorator = retry.Retry(
         predicate=retry.if_exception_type(

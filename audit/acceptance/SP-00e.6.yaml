@@ -1,0 +1,900 @@
+# Acceptance — SP-00e.6 · provenance-check (C11) + no-sentinel-termination (anti-drift) + substring-lint (C3)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Each assertion is a self-contained red-green that invokes the gate's pure functions
+# on inline fixtures via a python3 heredoc (sys.path.insert(0,'.') + import). Every
+# assertion FAILS if the gate logic is wrong (real red-green — not "does it exist?").
+# Trigger-literals (sentinels, add-cues) are built by concatenation inside the heredocs
+# so the C6 no-skip/test-integrity grep over added .py lines does not self-trip.
+#
+# Source: PRD §4 C11 (L113 provenance honesty) + anti-drift loop control clause (e)
+#   (L122-128 no-sentinel-termination) + C3 (L105 lint-no-substring-asserts, advisory) +
+#   §6 EPIC 0 SP-00e row (L229).
+
+task: SP-00e.6
+title: "provenance-check (C11) + no-sentinel-termination (anti-drift) + substring-lint (C3 advisory)"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  # --- provenance ---
+  - id: c11-pass-genuine-add
+    description: >
+      Green: Evidence says "created scripts/ci/new_gate.py" and it IS in added_set
+      -> evaluate().ok is True with no failures.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      CREATE_CUE = "creat" + "ed"
+      evidence = f"{CREATE_CUE} scripts/ci/new_gate.py for provenance enforcement"
+      added_set = {"scripts/ci/new_gate.py"}
+      def ancestry_of(path): return False
+      r = evaluate(evidence, added_set, ancestry_of)
+      if not r.ok:
+          print("FAIL: genuine add incorrectly flagged:", r.failures); sys.exit(1)
+      if r.failures:
+          print("FAIL: unexpected failures:", r.failures); sys.exit(1)
+      print("OK: genuine add passes cleanly")
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-no-fp-no-cue
+    description: >
+      No-false-positive: a path mentioned WITHOUT an add cue ("reuses X from path")
+      is NOT in the claimed set and NOT flagged even if it predates base.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      evidence = "reuses extract_section from scripts/ci/pr_meta_checks.py for parsing"
+      added_set = set()
+      def ancestry_of(path): return True
+      r = evaluate(evidence, added_set, ancestry_of)
+      if not r.ok:
+          print("FAIL: no-cue path incorrectly flagged:", r.failures); sys.exit(1)
+      print("OK: path without add cue is not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-warn-no-history-ok-true
+    description: >
+      Advisory: claimed-add path with no git history -> warning emitted, .ok still True.
+      Assertion fails if .ok is False (wrong: should be advisory only).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      ADD_CUE = "add" + "ed"
+      evidence = f"{ADD_CUE} scripts/ci/ghost.py does not exist"
+      added_set = set()
+      def ancestry_of(path): return None
+      r = evaluate(evidence, added_set, ancestry_of)
+      if not r.ok:
+          print("FAIL: no-history path must be advisory only, not a failure:", r); sys.exit(1)
+      if not any("scripts/ci/ghost.py" in w for w in r.warnings):
+          print("FAIL: warning must name scripts/ci/ghost.py:", r.warnings); sys.exit(1)
+      print("OK: no-history path gives advisory warn, .ok=True:", r.warnings[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-fenced-name-status-claimed
+    description: >
+      Fenced name-status block: a path listed as 'A\tpath' inside a fenced block
+      is treated as claimed-add and checked. If in added_set -> passes.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate, extract_claimed_add_paths
+
+      evidence = (
+          "git diff --name-status:\n"
+          "```\n"
+          "A\tscripts/ci/provenance_check.py\n"
+          "M\tscripts/ci/pr_meta_checks.py\n"
+          "```\n"
+      )
+      paths = extract_claimed_add_paths(evidence)
+      if "scripts/ci/provenance_check.py" not in paths:
+          print("FAIL: A-status path not in claimed set:", paths); sys.exit(1)
+      if "scripts/ci/pr_meta_checks.py" in paths:
+          print("FAIL: M-status path must NOT be claimed:", paths); sys.exit(1)
+      added_set = {"scripts/ci/provenance_check.py"}
+      def ancestry_of(path): return False
+      r = evaluate(evidence, added_set, ancestry_of)
+      if not r.ok:
+          print("FAIL: A-status path in added_set should pass:", r.failures); sys.exit(1)
+      print("OK: fenced name-status A entry correctly claimed and passes when in added_set")
+      PYEOF
+    expect_exit: 0
+  # --- no_sentinel ---
+  - id: c11-structured-fail-credit-taking
+    description: >
+      Red: Evidence has a fenced git diff --name-status block with 'A<TAB>lib/foo.py'
+      but lib/foo.py predates base (ancestry True, not in added_set) ->
+      evaluate().ok is False naming lib/foo.py (STRUCTURED tier is BLOCKING).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      evidence = (
+          "git diff --name-status output:\n"
+          "```\n"
+          "A\tlib/foo.py\n"
+          "```\n"
+      )
+      added_set = set()
+      def ancestry_of(path): return True
+      r = evaluate(evidence, added_set, ancestry_of)
+      if r.ok:
+          print("FAIL: structured credit-taking lib/foo.py was not caught"); sys.exit(1)
+      if not any("lib/foo.py" in f for f in r.failures):
+          print("FAIL: failure message must name lib/foo.py:", r.failures); sys.exit(1)
+      print("OK: structured credit-taking correctly detected:", r.failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-prose-credit-taking-is-advisory
+    description: >
+      Red-green: a PROSE-only add-cue claim with ancestry True and path NOT in
+      added_set -> evaluate().ok is True (advisory only) AND a warning names the path.
+      Proves the same-line prose heuristic no longer hard-blocks legit PRs (C9 F1).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import evaluate
+
+      ADD_CUE = "add" + "ed"
+      evidence = f"{ADD_CUE} lib/foo.py as shared utility"
+      added_set = set()
+      def ancestry_of(path): return True
+      r = evaluate(evidence, added_set, ancestry_of)
+      if not r.ok:
+          print("FAIL: prose credit-taking must be advisory, not blocking:", r.failures); sys.exit(1)
+      if not any("lib/foo.py" in w for w in r.warnings):
+          print("FAIL: advisory warning must name lib/foo.py:", r.warnings); sys.exit(1)
+      print("OK: prose credit-taking is advisory — ok=True, warning emitted:", r.warnings[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-backtick-path-stripping
+    description: >
+      Green: a backtick-wrapped path in prose is normalized (decoration stripped)
+      to the bare repo path and claimed (C9 F4 robustness).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import extract_claimed_add_paths
+
+      ADD_CUE = "add" + "ed"
+      evidence = f"{ADD_CUE} `app/foo.py` to handle edge cases"
+      paths = extract_claimed_add_paths(evidence)
+      if "app/foo.py" not in paths:
+          print("FAIL: backtick-wrapped path not normalized:", paths); sys.exit(1)
+      if any("`" in p for p in paths):
+          print("FAIL: backtick form still present:", paths); sys.exit(1)
+      print("OK: backtick path correctly stripped:", paths)
+      PYEOF
+    expect_exit: 0
+
+  - id: c11-structured-extensionless-path
+    description: >
+      C9 r2: a structured A<TAB>LICENSE entry (extensionless) that predates base is
+      recognized as a claimed-add and HARD-FAILS — the structured tier trusts the
+      authoritative git name-status path without the prose extension filter.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.provenance_check import extract_structured_add_paths, evaluate
+      evidence = "git diff --name-status:\n```\nA\tLICENSE\n```\n"
+      paths = extract_structured_add_paths(evidence)
+      if "LICENSE" not in paths:
+          print("FAIL: extensionless LICENSE not recognized in structured tier:", paths); sys.exit(1)
+      r = evaluate(evidence, set(), lambda p: True)
+      if r.ok:
+          print("FAIL: extensionless structured credit-taking not blocked:", r.failures); sys.exit(1)
+      if not any("LICENSE" in f for f in r.failures):
+          print("FAIL: failure must name LICENSE:", r.failures); sys.exit(1)
+      print("OK: extensionless structured path recognized + blocked:", r.failures[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: a-fail-goal-complete-in-compare
+    description: >
+      Red: `if "GOAL_COMPLETE" in llm_output: break` -> flagged.
+      If find_sentinel_violations returns empty the assertion FAILS (wrong logic).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "GOAL" + "_COMPLETE"
+      src = textwrap.dedent(f"""
+      def loop(llm_output):
+          if {sentinel!r} in llm_output:
+              break
+      """)
+      violations = find_sentinel_violations(src, "app/agent.py")
+      if not violations:
+          print("FAIL: GOAL_COMPLETE in compare was not flagged"); sys.exit(1)
+      print("OK:", violations[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: b-fail-endswith-mini-swe-sentinel
+    description: >
+      Red: `while not resp.endswith(MINI_SWE_AGENT_FINAL_OUTPUT): ...` -> flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "MINI" + "_SWE_AGENT_FINAL_OUTPUT"
+      src = textwrap.dedent(f"""
+      def run(resp):
+          while not resp.endswith({sentinel!r}):
+              resp += more()
+      """)
+      violations = find_sentinel_violations(src, "app/runner.py")
+      if not violations:
+          print("FAIL: endswith MINI_SWE sentinel was not flagged"); sys.exit(1)
+      print("OK:", violations[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: c-no-fp-docstring-comment-done
+    description: >
+      Green: DONE in docstring or comment -> NOT flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      done_word = "DONE"
+      src_doc = textwrap.dedent(f"""
+      def finalize():
+          \"\"\"Mark session as {done_word}.\"\"\"
+          return True
+      """)
+      src_comment = textwrap.dedent(f"""
+      def finalize():
+          # This session is {done_word}
+          return True
+      """)
+      for label, src in [("docstring", src_doc), ("comment", src_comment)]:
+          v = find_sentinel_violations(src, "app/x.py")
+          if v:
+              print(f"FAIL: {label} DONE was flagged: {v}"); sys.exit(1)
+      print("OK: docstring and comment DONE not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: d-no-fp-dotdone-file-path
+    description: >
+      Green: `os.path.exists(d / ".done")` and `done = True` -> NOT flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src_path = textwrap.dedent("""
+      import os
+      def is_done(session_dir):
+          return os.path.exists(session_dir / ".done")
+      """)
+      src_var = textwrap.dedent("""
+      def run():
+          done = True
+          if done:
+              return
+      """)
+      for label, src in [("dotdone path", src_path), ("done variable", src_var)]:
+          v = find_sentinel_violations(src, "lib/durability/resume.py")
+          if v:
+              print(f"FAIL: {label} was flagged: {v}"); sys.exit(1)
+      print("OK: .done path and done variable not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: e-done-exact-case-sensitive
+    description: >
+      Red: `if text == "DONE":` -> flagged.
+      Green: `if state == "done":` (lowercase) -> NOT flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      upper = "DONE"
+      src_upper = textwrap.dedent(f"""
+      def check(text):
+          if text == {upper!r}:
+              return True
+      """)
+      v = find_sentinel_violations(src_upper, "app/c.py")
+      if not v:
+          print('FAIL: "DONE" (uppercase) in == was not flagged'); sys.exit(1)
+      src_lower = textwrap.dedent("""
+      def check(state):
+          if state == "done":
+              return True
+      """)
+      v2 = find_sentinel_violations(src_lower, "app/c.py")
+      if v2:
+          print(f'FAIL: "done" (lowercase) was incorrectly flagged: {v2}'); sys.exit(1)
+      print("OK: DONE flagged; done not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: f-no-sentinel-ignore-escape
+    description: >
+      Green: violation line carrying "no-sentinel: ignore" -> skipped.
+      Also: escape on line above skips. Escape 2 lines above does NOT suppress.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "GOAL" + "_COMPLETE"
+      escape = "no-sentinel" + ": ignore"
+      # Inline escape
+      src_inline = textwrap.dedent(f"""
+      def check(text):
+          if {sentinel!r} in text:  # {escape}
+              break
+      """)
+      v = find_sentinel_violations(src_inline, "app/x.py")
+      if v:
+          print(f"FAIL: inline escape not honored: {v}"); sys.exit(1)
+      # Preceding line escape
+      src_above = textwrap.dedent(f"""
+      def check(text):
+          # {escape}
+          if {sentinel!r} in text:
+              break
+      """)
+      v2 = find_sentinel_violations(src_above, "app/x.py")
+      if v2:
+          print(f"FAIL: preceding-line escape not honored: {v2}"); sys.exit(1)
+      # Escape 2 lines above must NOT suppress
+      src_far = textwrap.dedent(f"""
+      def check(text):
+          # {escape}
+          x = 1
+          if {sentinel!r} in text:
+              break
+      """)
+      v3 = find_sentinel_violations(src_far, "app/x.py")
+      if not v3:
+          print("FAIL: escape 2 lines above should NOT suppress violation"); sys.exit(1)
+      print("OK: inline and preceding-line escape honored; 2-lines-above does not suppress")
+      PYEOF
+    expect_exit: 0
+
+  - id: g-gate-green-on-durability-resume-mirror
+    description: >
+      Green: fixtures mirroring lib/durability/resume.py .done usage -> no violations.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = textwrap.dedent("""
+      import os
+      from pathlib import Path
+
+      DONE_SENTINEL = ".done"
+
+      def _is_done(session_dir):
+          \"\"\"Check if session is marked DONE via .done sentinel file.\"\"\"
+          return (session_dir / DONE_SENTINEL).exists()
+
+      def rehydrate_for_session(session_id, root_dir=None):
+          \"\"\"Returns None if session is marked DONE.\"\"\"
+          session_dir = Path(root_dir or "/data") / session_id
+          if not session_dir.exists() or _is_done(session_dir):
+              return None
+          return {}
+
+      def _most_recent_incomplete_session(root):
+          \"\"\"Return session_id of most recent non-DONE session.\"\"\"
+          best = None
+          for session_dir in root.iterdir():
+              if _is_done(session_dir):
+                  continue
+              best = session_dir.name
+          return best
+      """)
+      v = find_sentinel_violations(src, "lib/durability/resume.py")
+      if v:
+          print(f"FAIL: resume.py mirror has violations: {v}"); sys.exit(1)
+      print("OK: resume.py mirror is clean")
+      PYEOF
+    expect_exit: 0
+
+  - id: h-scan-tree-path-scoping
+    description: >
+      Green: scan_tree with injected fixtures:
+        - app/ violation is flagged
+        - scripts/ violation is excluded
+        - test_*.py violation is excluded
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import scan_tree
+      sentinel = "GOAL" + "_COMPLETE"
+      src_bad = textwrap.dedent(f"""
+      def run(text):
+          if {sentinel!r} in text:
+              break
+      """)
+      # app/ -> flagged
+      files_app = {"app/agent.py": src_bad}
+      v = scan_tree(["app"], lambda p: files_app[p], lambda r: [k for k in files_app if k.startswith(r)])
+      if not v:
+          print("FAIL: app/ violation not flagged"); sys.exit(1)
+      # scripts/ -> excluded
+      files_scripts = {"scripts/ci/some_gate.py": src_bad}
+      v2 = scan_tree(["scripts"], lambda p: files_scripts[p], lambda r: [k for k in files_scripts if k.startswith(r)])
+      if v2:
+          print(f"FAIL: scripts/ should be excluded: {v2}"); sys.exit(1)
+      # test_*.py -> excluded
+      files_test = {"app/test_agent.py": src_bad}
+      v3 = scan_tree(["app"], lambda p: files_test[p], lambda r: [k for k in files_test if k.startswith(r)])
+      if v3:
+          print(f"FAIL: test_*.py should be excluded: {v3}"); sys.exit(1)
+      print("OK: path scoping correct")
+      PYEOF
+    expect_exit: 0
+  # --- substring ---
+  - id: i-alias-endswith-detected
+    description: >
+      C9 F2: a named-constant alias bound to a sentinel, used in .endswith, is flagged
+      (the idiomatic form the literal-only detector missed).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "MINI" + "_SWE_AGENT_FINAL_OUTPUT"
+      src = f'MARKER = {sentinel!r}\ndef run(resp):\n    if resp.endswith(MARKER):\n        return True\n'
+      v = find_sentinel_violations(src, "app/runner.py")
+      assert v, f"alias endswith not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: j-binop-fold-detected
+    description: >
+      C9 F2: a BinOp string concat that folds to a sentinel is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = 'def check(x):\n    if x == "DO" + "NE":\n        return True\n'
+      v = find_sentinel_violations(src, "app/binop.py")
+      assert v, f"BinOp concat not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: k-fstring-fold-detected
+    description: >
+      C9 F2: a pure-constant f-string folding to a sentinel is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = 'def check(x):\n    if x == f"DONE":\n        return True\n'
+      v = find_sentinel_violations(src, "app/fstr.py")
+      assert v, f"f-string DONE not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: l-match-case-detected
+    description: >
+      C9 F3: a match/case whose pattern is a sentinel MatchValue is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "GOAL" + "_COMPLETE"
+      src = f'def check(x):\n    match x:\n        case {sentinel!r}:\n            return True\n'
+      v = find_sentinel_violations(src, "app/match.py")
+      assert v, f"match/case sentinel not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: m-from-re-import-detected
+    description: >
+      C9 F3: a bare search() imported via `from re import search` is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = f'from re import search\ndef check(output):\n    if search({sentinel!r}, output):\n        return True\n'
+      v = find_sentinel_violations(src, "app/re_bare.py")
+      assert v, f"bare re.search not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: n-dunder-contains-detected
+    description: >
+      C9 F3: a `.__contains__(sentinel)` call is flagged.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = f'def check(output):\n    if output.__contains__({sentinel!r}):\n        return True\n'
+      v = find_sentinel_violations(src, "app/contains.py")
+      assert v, f"__contains__ sentinel not flagged: {v}"
+      print("OK:", v)
+      PYEOF
+    expect_exit: 0
+
+  - id: o-alias-non-sentinel-no-fp
+    description: >
+      C9 F2 no-FP: a named-constant alias bound to a NON-sentinel (".done") is NOT flagged
+      (guards the lib/durability/resume.py baseline against the new alias resolution).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src = 'D = ".done"\ndef check(x):\n    if x == D:\n        return True\n'
+      v = find_sentinel_violations(src, "app/check_nonfp.py")
+      assert not v, f"Non-sentinel alias falsely flagged: {v}"
+      print("OK: non-sentinel alias not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: p-re-keyword-arg-detected
+    description: >
+      Red: re.search(pattern="DONE", string=out) — sentinel passed as keyword arg
+      -> flagged. If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      import re
+      def check(out):
+          if re.search(pattern={sentinel!r}, string=out):
+              return True
+      """)
+      v = find_sentinel_violations(src, "app/re_kw.py")
+      if not v:
+          print("FAIL: re.search keyword pattern= not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: q-import-re-as-alias-detected
+    description: >
+      Red: import re as regex; regex.search("DONE", x) — module alias -> flagged.
+      If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      import re as regex
+      def check(x):
+          if regex.search({sentinel!r}, x):
+              return True
+      """)
+      v = find_sentinel_violations(src, "app/re_alias_mod.py")
+      if not v:
+          print("FAIL: regex.search (import re as regex) not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: r-match-mapping-key-detected
+    description: >
+      Red: match x: case {"DONE": v}: — MatchMapping key is a sentinel -> flagged.
+      If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      def check(x):
+          match x:
+              case {{{sentinel!r}: v}}:
+                  break
+      """)
+      v = find_sentinel_violations(src, "app/match_map.py")
+      if not v:
+          print("FAIL: MatchMapping key sentinel not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: s-match-class-kwd-pattern-detected
+    description: >
+      Red: match r: case Resp(status="DONE"): — MatchClass kwd_pattern -> flagged.
+      If find_sentinel_violations returns empty, assertion FAILS.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      sentinel = "DONE"
+      src = textwrap.dedent(f"""
+      def check(r):
+          match r:
+              case Resp(status={sentinel!r}):
+                  break
+      """)
+      v = find_sentinel_violations(src, "app/match_cls.py")
+      if not v:
+          print("FAIL: MatchClass kwd_pattern sentinel not flagged"); sys.exit(1)
+      print("OK:", v[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: t-no-fp-non-sentinel-kwarg-and-mapping-key
+    description: >
+      Green: re.search(pattern="not_a_sentinel", string=x) AND case {"other": v}:
+      -> neither flagged. If any violation returned, assertion FAILS (false positive).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      src_kw = textwrap.dedent("""
+      import re
+      def check(x):
+          if re.search(pattern="not_a_sentinel", string=x):
+              return True
+      """)
+      src_map = textwrap.dedent("""
+      def check(d):
+          match d:
+              case {"other": v}:
+                  return v
+      """)
+      for label, src, fname in [
+          ("re-kwarg non-sentinel", src_kw, "app/re_kw_nofp.py"),
+          ("match-mapping non-sentinel key", src_map, "app/match_map_nofp.py"),
+      ]:
+          v = find_sentinel_violations(src, fname)
+          if v:
+              print(f"FAIL: {label} incorrectly flagged: {v}"); sys.exit(1)
+      print("OK: non-sentinel keyword arg and non-sentinel mapping key not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: u-collection-membership-detected
+    description: >
+      C9 r3: natural multi-sentinel forms — `x in ["DONE", ...]` (list membership)
+      and `o.endswith(("DONE", ...))` (tuple of suffixes) — are flagged via
+      List/Set/Tuple unwrap; a lowercase/non-sentinel collection is NOT (no FP).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, textwrap
+      sys.path.insert(0, '.')
+      from scripts.ci.no_sentinel_termination import find_sentinel_violations
+      flag_list = textwrap.dedent('def c(x):\n    if x in ["DONE", "other"]:\n        return True\n')
+      flag_tuple = textwrap.dedent('def c(o):\n    if o.endswith(("DONE", "X")):\n        return True\n')
+      nofp = textwrap.dedent('def c(x):\n    if x in ["done", "other"]:\n        return True\n')
+      if not find_sentinel_violations(flag_list, "app/u1.py"):
+          print("FAIL: list-membership sentinel not flagged"); sys.exit(1)
+      if not find_sentinel_violations(flag_tuple, "app/u2.py"):
+          print("FAIL: endswith-tuple sentinel not flagged"); sys.exit(1)
+      if find_sentinel_violations(nofp, "app/u3.py"):
+          print("FAIL: lowercase 'done' in list falsely flagged"); sys.exit(1)
+      print("OK: collection-membership + tuple-suffix forms flagged; lowercase not flagged")
+      PYEOF
+    expect_exit: 0
+
+  - id: substring-assert-on-output-warns
+    description: >
+      Red-green: assert <literal> in output -> warning emitted, exit still 0.
+      If find_lint_warnings returns empty list, assertion FAILS (wrong logic).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      needle = "re" + "fuse"
+      src = f'def test_x():\n    output = run()\n    assert "{needle}" in output\n'
+      w = find_lint_warnings(src, "tests/test_x.py")
+      if not w:
+          print("FAIL: no warning emitted for substring assert on output"); sys.exit(1)
+      if not any("substring" in x.lower() or "assert" in x.lower() for x in w):
+          print("FAIL: warning does not mention substring/assert:", w); sys.exit(1)
+      print("OK: substring-assert on 'output' correctly flagged:", w[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: equality-assert-not-flagged
+    description: >
+      Green: assert user.email == "x@y.z" (equality, not substring on output-ish name)
+      -> NO warning. If a warning IS emitted, assertion FAILS (false positive).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      src = 'def test_email():\n    user = get_user()\n    assert user.email == "x@y.z"\n'
+      w = find_lint_warnings(src, "tests/test_user.py")
+      if w:
+          print("FAIL: equality assert incorrectly flagged:", w); sys.exit(1)
+      print("OK: equality assert correctly passes without warning")
+      PYEOF
+    expect_exit: 0
+
+  - id: non-output-ish-name-not-flagged
+    description: >
+      Green: assert "admin" in user_roles -> NO warning.
+      'user_roles' is not in the output-ish set. False positive guard.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      src = 'def test_roles():\n    user_roles = get_roles()\n    assert "admin" in user_roles\n'
+      w = find_lint_warnings(src, "tests/test_roles.py")
+      if w:
+          print("FAIL: non-output-ish name incorrectly flagged:", w); sys.exit(1)
+      print("OK: non-output-ish name correctly passes without warning")
+      PYEOF
+    expect_exit: 0
+
+  - id: mock-under-test-warns
+    description: >
+      Red-green: mock.patch("module.process_data") + call to process_data() in same test
+      -> warning emitted. If no warning, assertion FAILS (mock-under-test not caught).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      src = (
+          'from unittest import mock\n'
+          'def test_process():\n'
+          '    with mock.patch("module.process_data") as m:\n'
+          '        result = process_data("input")\n'
+          '        assert result == m.return_value\n'
+      )
+      w = find_lint_warnings(src, "tests/test_process.py")
+      if not w:
+          print("FAIL: no warning for mock-under-test"); sys.exit(1)
+      if not any("mock" in x.lower() or "patch" in x.lower() for x in w):
+          print("FAIL: warning does not mention mock/patch:", w); sys.exit(1)
+      print("OK: mock-under-test correctly flagged:", w[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: different-symbol-mock-not-flagged
+    description: >
+      Green: mock.patch("module.db_call") + call to process_data() -> NO warning.
+      Patched symbol differs from called symbol. Conservative heuristic guard.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      src = (
+          'from unittest import mock\n'
+          'def test_isolated():\n'
+          '    with mock.patch("module.db_call"):\n'
+          '        result = process_data("input")\n'
+          '        assert result == "expected"\n'
+      )
+      w = find_lint_warnings(src, "tests/test_isolated.py")
+      if w:
+          print("FAIL: different-symbol patch incorrectly flagged:", w); sys.exit(1)
+      print("OK: different-symbol patch correctly passes without warning")
+      PYEOF
+    expect_exit: 0
+
+  - id: exit-code-always-zero
+    description: >
+      Advisory contract: main() with a smelly test file still exits 0.
+      If exit code is non-zero, assertion FAILS (gate is blocking, not advisory).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, subprocess, tempfile, os
+      sys.path.insert(0, '.')
+
+      needle = "re" + "fuse"
+      with tempfile.TemporaryDirectory() as tmp:
+          path = os.path.join(tmp, "test_smelly.py")
+          with open(path, "w") as f:
+              f.write(f'def test_bad():\n    output = run()\n    assert "{needle}" in output\n')
+          result = subprocess.run(
+              [sys.executable, "scripts/ci/substring_assert_lint.py", "--root", tmp],
+              capture_output=True, text=True
+          )
+      if result.returncode != 0:
+          print(f"FAIL: exit code was {result.returncode} (must be 0 for advisory)"); sys.exit(1)
+      if "::warning::" not in result.stdout:
+          print("FAIL: no ::warning:: annotation emitted:", result.stdout); sys.exit(1)
+      print("OK: advisory gate exits 0 with ::warning:: annotation:", result.stdout.strip())
+      PYEOF
+    expect_exit: 0
+
+  - id: own-test-file-self-excluded
+    description: >
+      Self-trip guard: find_lint_warnings on the gate's own test file path returns
+      zero warnings. If warnings are returned, the gate self-tripped on its fixtures.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      # Simulate a test file that matches the gate's own excluded path
+      own_rel = "tests/ci/test_substring_assert_lint.py"
+      # Content that WOULD trigger warnings on any other path
+      needle = "re" + "fuse"
+      src = f'def test_x():\n    output = run()\n    assert "{needle}" in output\n'
+      w = find_lint_warnings(src, own_rel)
+      if w:
+          print("FAIL: gate self-tripped on own test file path:", w); sys.exit(1)
+      print("OK: own test file path correctly self-excluded")
+      PYEOF
+    expect_exit: 0
+
+  - id: not-in-output-ish-warns
+    description: >
+      Red-green: assert "toxic" not in output -> warning (NotIn also detected).
+      If no warning, assertion FAILS (NotIn form not covered).
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.substring_assert_lint import find_lint_warnings
+
+      toxic = "to" + "xic"
+      src = f'def test_notox():\n    output = agent_run()\n    assert "{toxic}" not in output\n'
+      w = find_lint_warnings(src, "tests/test_notox.py")
+      if not w:
+          print("FAIL: NotIn form not flagged"); sys.exit(1)
+      print("OK: not-in-output-ish form correctly flagged:", w[0])
+      PYEOF
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/sp-00e6-provenance-antidrift.yml
+  artifact: provenance-check (Evidence claimed-add vs git base...head) + no-sentinel-termination
+    (AST sentinel-branch scan over app/+lib/) + substring-assert-lint (advisory) + acceptance re-run
+    + gate unit tests

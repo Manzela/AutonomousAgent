@@ -1,8 +1,8 @@
-name: No pytest.mark.skip in remediation PRs
+name: No new skip/skipif/xfail/manual markers or bare pytest.skip() (C6)
 on:
   pull_request:
-    branches: [main]
-    paths: ['tests/**', 'lib/**', 'app/**']
+    branches: [main, "remediation/**"]
+    paths: ['tests/**', 'lib/**', 'app/**', 'scripts/**']
 permissions:
   contents: read
   pull-requests: read
@@ -14,16 +14,21 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
         with:
           fetch-depth: 0
-      - name: Block new pytest.mark.skip lines
+      - name: Block new skip/skipif/xfail/manual markers + bare pytest.skip() (C6)
         run: |
-          set -euo pipefail
+          set -uo pipefail
           BASE_SHA="${{ github.event.pull_request.base.sha }}"
           HEAD_SHA="${{ github.event.pull_request.head.sha }}"
-          ADDED=$(git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
-                  | grep -E '^\+[^+].*pytest\.mark\.skip' \
-                  | grep -v 'pytest.mark.skipif' || true)
-          if [ -n "$ADDED" ]; then
-            echo "::error::PR adds pytest.mark.skip lines:"
-            echo "$ADDED"
-            exit 1
-          fi
+          # C6: "a test that can't run in CI keeps its task OPEN." Block NEWLY-ADDED skip
+          # markers (skip/skipif/xfail), the forbidden @manual / pytest.mark.manual, AND
+          # bare runtime pytest.skip()/pytest.xfail() calls (OD-5 — the marker-only regex
+          # previously missed these). Forward-looking (added lines only) — the pre-existing
+          # markers are unaffected. Detection is single-sourced in the Python detector so
+          # it is unit-tested (tests/ci/test_no_skip_diff_check.py).
+          # The detector itself + its test fixtures legitimately CONTAIN the patterns
+          # (as detection logic / test data, not real skipped tests), so they are
+          # excluded from the scan to avoid the gate flagging its own implementation.
+          git diff "${BASE_SHA}...${HEAD_SHA}" --diff-filter=AM -- '*.py' \
+            ':(exclude)scripts/ci/no_skip_diff_check.py' \
+            ':(exclude)tests/ci/test_no_skip_diff_check.py' \
+            | python3 scripts/ci/no_skip_diff_check.py

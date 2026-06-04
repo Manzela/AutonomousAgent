@@ -1,0 +1,98 @@
+# Acceptance — SP-14 · Wire dormant F34 LoopDetector + F35 StallDetector + trajectory shipper
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-14: "Extend lib/durability post_tool_call to instantiate+call F34 LoopDetector +
+# F35 StallDetector (they currently have ZERO call sites); invoke TrajectoryShipper
+# ship_batch/ship_trajectory from on_session_end/judge_events."
+#
+# Coverage matrix: 4 positive + 3 negative controls + 1 marker round-trip.
+# Budget veto asserts the EXISTING pre_tool_call path (kanban + anchors) — NOT a
+# re-implementation. StallDetector periodic watchdog (timer-based) is DEFERRED to SP-27.
+#
+# NOTE: the orchestrator regenerates SHA256SUMS separately after this file is written.
+
+task: SP-14
+title: "wire F34 LoopDetector + F35 StallDetector into post_tool_call; ship trajectory from on_session_end"
+driver: V
+phase: post-gate-0
+run_from: repo_root
+
+assertions:
+  - id: sp14-f34-looping-session-trips
+    description: >
+      Positive: a session that repeats the same (tool_name, args) fingerprint N times
+      consecutively trips F34 via the durability post_tool_call hook wiring.
+      FAILS if F34 is NOT dispatched after threshold consecutive identical calls
+      (i.e. LoopDetector.record_tool_call is not called from the hook).
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestLoopDetectorWiring::test_looping_session_trips_f34 -q
+    expect_exit: 0
+
+  - id: sp14-f34-nonlooping-session-clean
+    description: >
+      Negative: a session that alternates tool calls never trips F34.
+      FAILS if F34 is dispatched for a non-looping session.
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestLoopDetectorWiring::test_non_looping_session_does_not_trip_f34 -q
+    expect_exit: 0
+
+  - id: sp14-f35-stalled-session-trips
+    description: >
+      Positive: a session idle past the StallDetector timeout trips F35 on the next
+      post_tool_call (event-driven check). FAILS if F35 is NOT dispatched after the
+      idle timeout is exceeded (i.e. StallDetector.check is not called from the hook).
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestStallDetectorWiring::test_stalled_session_trips_f35 -q
+    expect_exit: 0
+
+  - id: sp14-f35-healthy-session-clean
+    description: >
+      Negative: a session with regular activity (well within idle timeout) never trips F35.
+      FAILS if F35 is dispatched for a healthy/progressing session.
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestStallDetectorWiring::test_healthy_progressing_session_does_not_trip_f35 -q
+    expect_exit: 0
+
+  - id: sp14-budget-veto-over-budget
+    description: >
+      Positive: an over-budget session (HALT_F21 sentinel present) is vetoed by the
+      EXISTING kanban pre_tool_call hook (raises BudgetExhaustedError). DO NOT re-implement —
+      assert the existing path. FAILS if BudgetExhaustedError is not raised.
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestBudgetVeto::test_over_budget_raises_budget_exhausted_error -q
+    expect_exit: 0
+
+  - id: sp14-budget-veto-under-budget
+    description: >
+      Negative: an under-budget session (no HALT sentinel) is NOT vetoed.
+      FAILS if the kanban pre_tool_call hook blocks a session when the budget is fine.
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestBudgetVeto::test_under_budget_not_vetoed -q
+    expect_exit: 0
+
+  - id: sp14-trajectory-marker-roundtrip
+    description: >
+      Marker round-trip: a completed session ships a trajectory via on_session_end that
+      CONTAINS a planted unique marker event. Asserts on real shipped JSON bytes (not just
+      call counts). Uses real LoopDetector + StallDetector + TrajectoryShipper with
+      in-memory fake sanitize/GCS clients. FAILS if the marker string is absent from
+      the shipped trajectory or if ship_trajectory is never called.
+    cmd: |
+      uv run --no-project --with pytest \
+        python -m pytest tests/unit/test_sp14_wiring.py::TestTrajectoryMarkerRoundTrip::test_completed_session_ships_marker_event -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    8 red-green tests (4 positive + 3 negative controls + 1 marker round-trip) in
+    tests/unit/test_sp14_wiring.py. Wiring lives in lib/durability/__init__.py
+    _sp14_detect_on_tool_call (post_tool_call) and _sp14_ship_on_session_end
+    (on_session_end). StallDetector periodic-watchdog is DEFERRED to SP-27 (monitor loop);
+    only event-driven call site wired here.

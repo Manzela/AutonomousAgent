@@ -1,0 +1,135 @@
+# Acceptance — SP-05 (slice 1) · real per-node sandbox executor (no in-process exec)
+#
+# Source: PRD-autonomous-sdlc-agent.md §5.1 + §6 EPIC-2 SP-05 + §8 tier rule.
+#   §5.1 honest baseline (verified STILL TRUE on origin/main bd439acf): "no sandbox on
+#   the execution path; orchestrator._execute_local:295 runs capability.invoke() in the
+#   harness process; AbstractSandbox.run() has zero callers; the harness holds live
+#   secrets on an open-egress bridge (lethal trifecta)."
+#   SP-05 acceptance(1): "no-in-process-exec: planted os.getpid()/secret-read from agent
+#   code observes a different pid + empty secret env vs harness; AbstractSandbox.run()
+#   has a callgraph-reachable caller (C4)."
+#
+# Scope of THIS slice = acceptance(1) + the smallest (3) (no-secrets). DEFERRED to later
+# SP-05 slices / SP-05b/c/d: sentinel-control(2), workspace manifest+turn-0(4), per-role
+# tool allowlist(5), per-phase egress allowlist BUILD=SP-00g(6), full Hermes drive
+# (lib/hermes_bridge.py), worktree-per-node (SP-05b), CloudRunJobSandbox gVisor (SP-05c),
+# lifecycle reaper + /panic teardown (SP-05d).
+#
+# Design note (hybrid adapter rule — no Vertex/LLM, no docker in CI): the ABC
+# app/core/sandbox.py:AbstractSandbox is NOT collapsed; the wiring lives in
+# app/core/orchestrator.py (_execute_sandboxed + _scrubbed_sandbox_env) and
+# app/core/graph.py (sandbox threaded through build_spine/_build_nodes/execute leaf).
+# Oracles drive AbstractSandbox via faithful in-test doubles (a recorder + a real-child
+# subprocess double WITHOUT the POSIX rlimit preexec, which is unsettable on macOS) so
+# they are deterministic on every platform; the production LocalSubprocessSandbox's
+# rlimit/netns behavior is covered by app/tests/test_inmemory_adapters.py on Linux CI,
+# and its honest network hard-refusal is asserted here directly (raises pre-spawn).
+
+task: SP-05
+title: "real per-node sandbox executor — agent work runs in a child process (different PID, scrubbed env, no egress), not in-harness; AbstractSandbox.run() callgraph-reachable (acceptance 1)"
+driver: P/V
+phase: epic-2
+run_from: repo_root
+
+assertions:
+  - id: sandbox-run-callgraph-reachable
+    description: >
+      C4: orchestrator.execute and the spine execute node await AbstractSandbox.run()
+      exactly once and forward the node command — closing the "zero callers / dead
+      brick" gap (RED on origin/main where run() has no caller).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_executor_sandbox.py::test_execute_awaits_sandbox_run \
+        tests/unit/test_sp05_executor_sandbox.py::test_execute_forwards_cmd_and_disables_network \
+        tests/unit/test_sp05_executor_sandbox.py::test_spine_execute_node_runs_in_sandbox \
+        -q
+    expect_exit: 0
+
+  - id: no-in-process-exec-different-pid
+    description: >
+      PRD acceptance(1) pid oracle: agent code's os.getpid(), observed via
+      SandboxResult.stdout, differs from the harness PID — the capability no longer
+      runs in the harness process.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_executor_sandbox.py::test_sandboxed_exec_has_different_pid \
+        -q
+    expect_exit: 0
+
+  - id: no-secrets-scrubbed-env
+    description: >
+      PRD acceptance(3) (smallest form): a *KEY/*TOKEN/*SECRET planted in the harness
+      env is absent from the real sandbox child env AND from the explicit (never-None)
+      env the orchestrator passes to run() — default-deny, the lethal-trifecta guard.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_executor_sandbox.py::test_no_harness_secrets_reach_the_child_env \
+        tests/unit/test_sp05_executor_sandbox.py::test_scrubbed_env_passed_to_run_has_no_secret_keys \
+        -q
+    expect_exit: 0
+
+  - id: network-egress-denied-honestly
+    description: >
+      The execute path requests network_allowed=False, and the production
+      LocalSubprocessSandbox hard-refuses network_allowed=True (raises before spawning,
+      never silently lies about isolation).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_executor_sandbox.py::test_execute_forwards_cmd_and_disables_network \
+        tests/unit/test_sp05_executor_sandbox.py::test_real_sandbox_network_allowed_true_is_hard_refused \
+        -q
+    expect_exit: 0
+
+  - id: returncode-drives-status-no-sentinel
+    description: >
+      Anti-drift: the real subprocess exit code drives the status (0→COMPLETED,
+      nonzero→FAILED) — never a model-emitted sentinel; the sandboxed branch never
+      calls the in-process invoke, and sandbox=None preserves the legacy path.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp05_executor_sandbox.py::test_returncode_zero_maps_completed \
+        tests/unit/test_sp05_executor_sandbox.py::test_returncode_nonzero_maps_failed \
+        tests/unit/test_sp05_executor_sandbox.py::test_sandboxed_branch_does_not_call_invoke \
+        tests/unit/test_sp05_executor_sandbox.py::test_sandbox_none_preserves_legacy_invoke \
+        tests/unit/test_sp05_executor_sandbox.py::test_missing_sandbox_cmd_fails_cleanly \
+        -q
+    expect_exit: 0
+
+  - id: spine-back-compat-intact
+    description: >
+      C7 full-suite-count: the additive sandbox wiring (default None) leaves the merged
+      SP-01 spine, SP-04 sign-off, A2A peer-dispatch, and orchestrator-hook suites GREEN.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none \
+      uv run --extra dev python -m pytest \
+        tests/unit/test_graph_spine.py \
+        tests/unit/test_sp04_durable_signoff.py \
+        app/tests/test_peer_dispatch.py \
+        tests/unit/test_orchestrator_hook.py \
+        -q
+    expect_exit: 0
+
+proof:
+  red_green: >
+    On origin/main AbstractSandbox.run() has zero callers and capability.invoke() runs
+    in-harness, so sandbox-run-callgraph-reachable / no-in-process-exec-different-pid /
+    no-secrets / no-in-process-invoke are RED; after wiring orchestrator.execute(...,
+    sandbox=) -> _execute_sandboxed -> sandbox.run() and threading the sandbox through
+    the spine execute leaf, all 13 oracles in
+    tests/unit/test_sp05_executor_sandbox.py are GREEN.
+  hermetic: >
+    No docker / GCP / network. Oracles drive the AbstractSandbox ABC via in-test
+    doubles (a recorder + a real-child subprocess double without the macOS-unsettable
+    RLIMIT_AS preexec); the production LocalSubprocessSandbox rlimit/netns path is
+    covered by app/tests/test_inmemory_adapters.py on Linux CI, and its network
+    hard-refusal is asserted here directly.
+  deferred: >
+    sentinel-control(2), workspace manifest/turn-0(4), per-role tool allowlist(5),
+    per-phase BUILD egress allowlist SP-00g(6), Hermes drive (lib/hermes_bridge.py),
+    worktree-per-node (SP-05b), CloudRunJobSandbox gVisor (SP-05c), lifecycle reaper +
+    /panic teardown (SP-05d) — tracked as later SP-05 slices.

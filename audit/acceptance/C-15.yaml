@@ -1,0 +1,163 @@
+# Acceptance — C-15 · C16 untrusted-read trust primitive (ActionClass + UntrustedContent + guard)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §4.1 (lines 141–145): three action classes — Pre-authorized (standing), Gated
+# (per-instance approval), Forbidden.  C16 (line 118): untrusted-read content cannot
+# change the action class.  SP-01 Fork-3 (grounding doc line 235): monitor may only
+# ESCALATE, never downgrade.
+#
+# This task is the LIBRARY HALF only — SP-05 sandbox-wired enforcement correctly deferred.
+
+task: C-15
+title: "C16 untrusted-read trust primitive — ActionClass + UntrustedContent + guard"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+
+  - id: trust-module-exists
+    description: >
+      app/core/trust.py must exist (the primitive was absent — audit finding C-15).
+    cmd: |
+      test -f app/core/trust.py || { echo "FAIL: app/core/trust.py absent"; exit 1; }
+      echo "OK: app/core/trust.py present"
+    expect_exit: 0
+
+  - id: action-class-three-tiers
+    description: >
+      ActionClass enum has exactly three members matching PRD §4.1 lines 141–145:
+      PRE_AUTHORIZED, GATED, FORBIDDEN — no more, no less.
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" - <<'PYEOF'
+      from app.core.trust import ActionClass
+      members = {m.name for m in ActionClass}
+      expected = {"PRE_AUTHORIZED", "GATED", "FORBIDDEN"}
+      assert members == expected, f"FAIL: got {members}, expected {expected}"
+      # ordering: PRE_AUTHORIZED < GATED < FORBIDDEN
+      assert ActionClass.PRE_AUTHORIZED.value < ActionClass.GATED.value, "FAIL: order wrong"
+      assert ActionClass.GATED.value < ActionClass.FORBIDDEN.value, "FAIL: order wrong"
+      print("OK: ActionClass has exactly PRE_AUTHORIZED < GATED < FORBIDDEN")
+      PYEOF
+    expect_exit: 0
+
+  - id: planted-injection-guard-rejects
+    description: >
+      Guard raises UntrustedEscalationError when derived_from_untrusted=True (C16).
+      Planted injection: untrusted content attempts to set action_class — guard REJECTS.
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" - <<'PYEOF'
+      from app.core.trust import ActionClass, UntrustedEscalationError, guard_action_class
+      # Planted injection: untrusted issue body tries to set PRE_AUTHORIZED
+      try:
+          guard_action_class(
+              ActionClass.PRE_AUTHORIZED,
+              derived_from_untrusted=True,
+              untrusted_source="github_issue_body",
+          )
+          print("FAIL: guard did not raise UntrustedEscalationError")
+          raise SystemExit(1)
+      except UntrustedEscalationError as e:
+          assert e.source == "github_issue_body", f"FAIL: wrong source: {e.source}"
+          assert "C16" in str(e), f"FAIL: error message missing 'C16': {e}"
+          print("OK: planted-injection guard raised UntrustedEscalationError correctly")
+      # Planted injection: untrusted content tries to raise to GATED
+      try:
+          guard_action_class(
+              ActionClass.GATED,
+              derived_from_untrusted=True,
+              untrusted_source="telegram_message",
+          )
+          print("FAIL: guard did not raise UntrustedEscalationError for GATED")
+          raise SystemExit(1)
+      except UntrustedEscalationError:
+          print("OK: guard rejects untrusted→GATED escalation attempt")
+      PYEOF
+    expect_exit: 0
+
+  - id: untrusted-content-is-frozen
+    description: >
+      UntrustedContent is a frozen dataclass — attribute assignment raises an error.
+      Callers cannot accidentally mutate or overwrite the trust tag.
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" - <<'PYEOF'
+      from app.core.trust import UntrustedContent, TrustLevel
+      content = UntrustedContent(raw="malicious payload", source="github_issue_body")
+      # Attempt mutation — must fail
+      try:
+          content.raw = "overwritten"
+          print("FAIL: UntrustedContent is NOT frozen — mutation succeeded")
+          raise SystemExit(1)
+      except (AttributeError, TypeError):
+          pass
+      # Trust level must be UNTRUSTED
+      assert content.trust == TrustLevel.UNTRUSTED, f"FAIL: trust={content.trust}"
+      print("OK: UntrustedContent is frozen and defaults to UNTRUSTED")
+      PYEOF
+    expect_exit: 0
+
+  - id: escalation-only-downgrade-rejected
+    description: >
+      guard_action_class raises ActionClassDowngradeError when proposed is less
+      restrictive than current (SP-01 Fork-3: monitor may only ESCALATE, never downgrade).
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" - <<'PYEOF'
+      from app.core.trust import ActionClass, ActionClassDowngradeError, guard_action_class
+      # Downgrade GATED → PRE_AUTHORIZED must be rejected
+      try:
+          guard_action_class(
+              ActionClass.PRE_AUTHORIZED,
+              derived_from_untrusted=False,
+              current=ActionClass.GATED,
+          )
+          print("FAIL: downgrade not rejected")
+          raise SystemExit(1)
+      except ActionClassDowngradeError as e:
+          assert e.proposed == ActionClass.PRE_AUTHORIZED
+          assert e.current == ActionClass.GATED
+          print("OK: downgrade GATED→PRE_AUTHORIZED correctly rejected")
+      # Escalation PRE_AUTHORIZED → GATED must be accepted
+      result = guard_action_class(
+          ActionClass.GATED,
+          derived_from_untrusted=False,
+          current=ActionClass.PRE_AUTHORIZED,
+      )
+      assert result == ActionClass.GATED, f"FAIL: expected GATED, got {result}"
+      print("OK: escalation PRE_AUTHORIZED→GATED correctly accepted")
+      PYEOF
+    expect_exit: 0
+
+  - id: trusted-objective-case-accepted
+    description: >
+      guard_action_class returns the proposed class unchanged when
+      derived_from_untrusted=False and no downgrade (trusted/objective path).
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" - <<'PYEOF'
+      from app.core.trust import ActionClass, guard_action_class
+      for cls in ActionClass:
+          result = guard_action_class(cls, derived_from_untrusted=False)
+          assert result == cls, f"FAIL: expected {cls}, got {result}"
+      print("OK: all ActionClass members accepted on trusted/objective path")
+      PYEOF
+    expect_exit: 0
+
+  - id: lib-anchors-wired-imports-trust
+    description: >
+      lib/anchors/__init__.py imports from app.core.trust — verifying the first
+      consumer is wired (C4 reachability path for trust.py public symbols).
+    cmd: |
+      grep -n "from app.core.trust import" lib/anchors/__init__.py ||
+        { echo "FAIL: lib/anchors/__init__.py does not import from app.core.trust"; exit 1; }
+      echo "OK: lib/anchors/__init__.py imports from app.core.trust"
+    expect_exit: 0
+
+  - id: unit-tests-green
+    description: >
+      tests/unit/test_trust.py passes with zero failures (32 test cases).
+    cmd: |
+      "/Users/danielmanzela/RX-Research Project/AutonomousAgent/.venv/bin/python" -m pytest tests/unit/test_trust.py -q --tb=short
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/pr-meta-checks.yml
+  artifact: C-15 trust primitive — pytest + C4 gate + acceptance assertions

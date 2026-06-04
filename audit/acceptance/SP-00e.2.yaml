@@ -1,0 +1,72 @@
+# Acceptance — SP-00e.2 · PR-meta checks: evidence-present (C1) + test-truth (C7)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Assertions are stdlib + the script only (run_acceptance.py re-runs them, C1).
+# Each "reject-*" assertion is a self-contained red-green: it returns 0 ONLY IF the gate
+# correctly returned non-zero on the deliberately-broken input (C2/C12).
+#
+# Source: PRD §6 EPIC 0 SP-00e ("PR missing ## Evidence fails (red-green)") + C7 (test-truth
+# byte-matches the junitxml; the meta-audit "541" fabrication must FAIL).
+
+task: SP-00e.2
+title: "PR-meta checks — evidence-present (C1) + test-truth (C7)"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: accepts-valid-evidence-and-matching-test-truth
+    description: >
+      A PR body with a fenced ## Evidence block AND a ## Test Truth that byte-matches the
+      junitxml counts PASSES both checks (green control).
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0"/></testsuites>' > "$tmp/j.xml"
+      printf '## Evidence\n```\npytest -q\n```\n\n## Test Truth\ncollected=2 passed=2 failed=0 skipped=0 errors=0\n' > "$tmp/body.md"
+      python3 scripts/ci/pr_meta_checks.py --pr-body "$tmp/body.md" --junitxml "$tmp/j.xml"
+      rc=$?; rm -rf "$tmp"; exit $rc
+    expect_exit: 0
+
+  - id: rejects-fabricated-test-truth
+    description: >
+      The meta-audit "541" move: a ## Test Truth that does not match the junitxml FAILS (red).
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0"/></testsuites>' > "$tmp/j.xml"
+      printf '## Evidence\n```\npytest -q\n```\n\n## Test Truth\ncollected=541 passed=541 failed=0 skipped=0 errors=0\n' > "$tmp/body.md"
+      if python3 scripts/ci/pr_meta_checks.py --pr-body "$tmp/body.md" --junitxml "$tmp/j.xml" >/dev/null 2>&1; then
+        echo "FAIL: fabricated test-truth not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: fabricated test-truth rejected"
+    expect_exit: 0
+
+  - id: rejects-missing-evidence-section
+    description: >
+      A PR body with no ## Evidence section FAILS the evidence-present gate (red).
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0"/></testsuites>' > "$tmp/j.xml"
+      printf '## Summary\nno evidence here\n\n## Test Truth\ncollected=2 passed=2 failed=0 skipped=0 errors=0\n' > "$tmp/body.md"
+      if python3 scripts/ci/pr_meta_checks.py --pr-body "$tmp/body.md" --junitxml "$tmp/j.xml" >/dev/null 2>&1; then
+        echo "FAIL: missing ## Evidence not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: missing ## Evidence rejected"
+    expect_exit: 0
+
+  - id: rejects-evidence-without-fenced-command
+    description: >
+      A ## Evidence section that is prose-only (no fenced command) FAILS (C1: evidence = a
+      re-runnable command, not prose) (red).
+    cmd: |
+      tmp="$(mktemp -d)"
+      printf '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0"/></testsuites>' > "$tmp/j.xml"
+      printf '## Evidence\njust prose, no fenced block\n\n## Test Truth\ncollected=2 passed=2 failed=0 skipped=0 errors=0\n' > "$tmp/body.md"
+      if python3 scripts/ci/pr_meta_checks.py --pr-body "$tmp/body.md" --junitxml "$tmp/j.xml" >/dev/null 2>&1; then
+        echo "FAIL: prose-only evidence not caught"; rm -rf "$tmp"; exit 1
+      fi
+      rm -rf "$tmp"; echo "OK: prose-only evidence rejected"
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/pr-meta-checks.yml
+  artifact: pr-meta-checks (step summary + acceptance re-run)

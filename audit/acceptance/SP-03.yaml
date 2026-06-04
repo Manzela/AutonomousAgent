@@ -1,0 +1,159 @@
+# Acceptance — SP-03 · Clarification driver + question/PRD generator
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 EPIC-1 SP-03 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md):
+#   "Replace the lib/anchors/__init__.py:214-218 TODO stub block (ending at `return None`)
+#    with a driver calling decide_next_action + a Vertex structured-output spec-drafter
+#    (Pydantic-constrained) that emits TaskSpec fields + typed clarifying questions + an
+#    ambiguity report."
+#
+# Hybrid adapter pattern (CLAUDE.md / 04-gcp-native-adapter-plan.md):
+#   - app/core/spec_drafter.py            — AbstractSpecDrafter ABC + typed value objects.
+#   - app/adapters/inmemory/spec_drafter.py — InMemorySpecDrafter (deterministic; hermetic CI).
+#   - app/adapters/gcp/spec_drafter.py    — VertexSpecDrafter (DEFERRED stub).
+#   - lib/anchors/clarification_driver.py — run_clarification_round (decide_next_action + drafter).
+#
+# All oracles run against the deterministic in-memory drafter — NO live Vertex/LLM
+# (CI must be hermetic). The drafter is rule-based on planted tokens; the question
+# text references the planted token (PRD: "not a fixed string").
+#
+# DEFERRED (see 'deferred' in the PR body): the Vertex structured-output concretion
+# (VertexSpecDrafter raises NotImplementedError) and the session-aware Hermes
+# pre_tool_call ADAPTER that auto-enters the loop on an inbound user message.
+#
+# NOTE: the orchestrator regenerates SHA256SUMS separately after this file is written.
+
+task: SP-03
+title: "clarification driver + spec-drafter (typed questions + ambiguity report + applied_standards + assumptions + anti-sycophancy C18)"
+driver: U/P
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: sp03-planted-ambiguity-question-references-token
+    description: >
+      Core: a goal with a PLANTED ambiguity yields a clarifying question whose text
+      references the planted token (not a fixed string). FAILS if no question
+      references the token.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_planted_ambiguity_yields_question_referencing_token \
+        tests/unit/test_sp03_clarification_driver.py::test_distinct_planted_tokens_yield_distinct_questions -q
+    expect_exit: 0
+
+  - id: sp03-fully-specified-zero-questions
+    description: >
+      Core / false-positive control: a fully-specified goal yields ZERO questions
+      (and ZERO challenges, ZERO overrides). FAILS if any question/challenge fires.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_fully_specified_goal_yields_zero_questions \
+        tests/unit/test_sp03_clarification_driver.py::test_fully_specified_goal_yields_zero_challenges_and_overrides -q
+    expect_exit: 0
+
+  - id: sp03-confidence-monotonicity
+    description: >
+      Core: confidence is UNCHANGED on an irrelevant / non-answer and RISES ONLY
+      when a tracked ambiguity is resolved (PRD oracle). Red-green pair.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_confidence_unchanged_on_non_answer \
+        tests/unit/test_sp03_clarification_driver.py::test_confidence_rises_only_when_tracked_ambiguity_resolved -q
+    expect_exit: 0
+
+  - id: sp03-applied-standards-cited
+    description: >
+      (1.1) a known-standard-domain goal yields >=1 cited applied_standards entry
+      ({principle, source, why}, status=proposed = overridable DEFAULT); a generic
+      goal MAY yield zero (green control). Red-green pair.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_known_standard_domain_yields_cited_applied_standard \
+        tests/unit/test_sp03_clarification_driver.py::test_generic_goal_may_yield_zero_applied_standards -q
+    expect_exit: 0
+
+  - id: sp03-coverage-categories-and-cap
+    description: >
+      (1.2) under-specified in >=2 categories -> >=1 question tagged to EACH; the
+      <=5/round cap holds (six planted ambiguities -> at most five questions), and
+      the DraftResult type rejects a 6th question structurally. Red-green.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_two_undersized_categories_each_get_a_tagged_question \
+        tests/unit/test_sp03_clarification_driver.py::test_questions_capped_at_five_per_round \
+        tests/unit/test_sp03_clarification_driver.py::test_draftresult_rejects_more_than_five_questions -q
+    expect_exit: 0
+
+  - id: sp03-anti-over-clarification-assumptions
+    description: >
+      (1.3) a BELOW-threshold ambiguity -> ZERO questions + exactly one logged
+      assumptions[] entry referencing the resolved token; a threshold-crossing
+      ambiguity -> a question (and is NOT logged as an assumption). Red-green pair.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_below_threshold_ambiguity_logs_assumption_not_question \
+        tests/unit/test_sp03_clarification_driver.py::test_threshold_crossing_ambiguity_asks_a_question -q
+    expect_exit: 0
+
+  - id: sp03-anti-sycophancy-false-premise-and-override
+    description: >
+      (2.4 + C18, one oracle two arms): a PLANTED FALSE premise -> a kind=clarification
+      challenge citing the false token (NOT silently encoded into the TaskSpec); a
+      PLANTED real-but-deprecated choice -> exactly one kind=override item with a
+      recommended alternative + rationale + cite_unverified; the all-true CONTROL ->
+      NO challenge, ZERO overrides (false-positive control). Red-green.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_false_premise_yields_clarification_citing_token \
+        tests/unit/test_sp03_clarification_driver.py::test_deprecated_choice_yields_exactly_one_override \
+        tests/unit/test_sp03_clarification_driver.py::test_all_true_control_no_challenges_no_overrides -q
+    expect_exit: 0
+
+  - id: sp03-driver-wiring-decide-next-action
+    description: >
+      Driver: run_clarification_round wires the spec-drafter to decide_next_action —
+      an open ambiguity -> action=ask_next (questions surfaced); a fully-specified
+      goal -> action=lock (zero questions); the operator intent is tagged UNTRUSTED
+      (C16, intent_trust='untrusted'). Red-green + C16.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_driver_asks_next_when_ambiguity_open \
+        tests/unit/test_sp03_clarification_driver.py::test_driver_locks_when_fully_specified \
+        tests/unit/test_sp03_clarification_driver.py::test_driver_tags_intent_as_untrusted -q
+    expect_exit: 0
+
+  - id: sp03-abc-not-collapsed
+    description: >
+      CLAUDE.md builder-agent rule: the AbstractSpecDrafter ABC is NOT collapsed —
+      InMemorySpecDrafter is a subclass, and the ABC itself cannot be instantiated.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_sp03_clarification_driver.py::test_inmemory_drafter_is_abstract_subclass \
+        tests/unit/test_sp03_clarification_driver.py::test_abc_cannot_be_instantiated -q
+    expect_exit: 0
+
+  - id: sp03-no-regression-anchors
+    description: >
+      Guard: SP-03 does NOT break existing lib/anchors tests (plugin registration,
+      slash commands, clarification loop, task_spec, spec_store). All must stay green.
+    cmd: |
+      uv run --extra dev python -m pytest \
+        tests/unit/test_anchors_plugin.py \
+        tests/unit/test_anchors_cancel_dispatch.py \
+        tests/unit/test_clarification_loop.py \
+        tests/unit/test_task_spec.py \
+        tests/unit/test_spec_store.py -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    21 red-green oracles in tests/unit/test_sp03_clarification_driver.py (10 acceptance
+    assertions above) covering: planted-ambiguity token-reference, fully-specified
+    zero-question control, confidence monotonicity, applied_standards citation,
+    <=5/round coverage cap, anti-over-clarification assumptions, anti-sycophancy
+    false-premise (kind=clarification) + deprecated (kind=override) + all-true control,
+    decide_next_action driver wiring (ask_next/lock + C16 untrusted-tag), and ABC
+    integrity. Drafter is deterministic + hermetic (no Vertex). VertexSpecDrafter
+    (app/adapters/gcp/spec_drafter.py) and the session-aware Hermes pre_tool_call
+    adapter are DEFERRED stubs.

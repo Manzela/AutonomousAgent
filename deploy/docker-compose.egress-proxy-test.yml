@@ -1,0 +1,37 @@
+# SP-00g: Egress-proxy smoke-test compose project.
+#
+# Brings up a single Squid instance on a dedicated bridge network.
+# Used ONLY by tests/integration/test_egress_proxy.py — NOT the production stack.
+#
+# squid.conf is mounted as conf.d/00-allowlist.conf (NOT as /etc/squid/squid.conf).
+# This preserves Squid's built-in defaults (localnet ACL, memory cache, etc.)
+# while injecting our allowlist rules BEFORE debian.conf's "allow localnet" rule
+# (alphabetical order: 00-allowlist < debian.conf < rock.conf).
+#
+# Project name: egress-proxy-test  (set here so `docker compose -f this-file …`
+# always operates on a clean namespace that cannot collide with the prod stack).
+
+name: egress-proxy-test
+
+services:
+  egress-proxy:
+    # ubuntu/squid — pinned digest so CI is reproducible and the image cannot be
+    # silently swapped. Re-pin when the upstream tag is intentionally updated.
+    image: ubuntu/squid@sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c
+    volumes:
+      - ./squid/squid.conf:/etc/squid/conf.d/00-allowlist.conf:ro
+    ports:
+      - "3128"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "squid", "-k", "check"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: "no"
+
+networks:
+  default:
+    driver: bridge

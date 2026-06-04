@@ -1,0 +1,77 @@
+# SP-G1 — versioned golden eval corpus regression gate.
+#
+# Runs on every PR to main or remediation/**:
+#   1. Validates every corpus item against the schema (structural + non-catch-all paths).
+#   2. Checks corpus sha against the pinned SHA256SUMS manifest (drift -> fail).
+#   3. Runs the unit tests for the regression runner.
+#   4. Re-runs the SP-G1 acceptance assertions (C1 evidence = re-run).
+#
+# LLM-judge scoring (SP-06 DAGMetric) is NOT wired here yet — the judge leaf in
+# golden_regression.py is a documented TODO stub.  This gate enforces structural
+# validity + tamper-evidence; semantic scoring ships with SP-06.
+#
+# CODEOWNERS guards .github/ + evals/golden/, so this workflow and the manifest
+# are reviewed by the operator + a cross-vendor (Gemini) reviewer (C9/C10).
+name: sp-g1-golden
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  golden-corpus-regression:
+    name: golden eval corpus regression (SP-G1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Run golden regression runner (schema + sha validation)
+        run: |
+          set -uo pipefail
+          uv run --no-project --with pyyaml \
+            python scripts/evals/golden_regression.py \
+              --corpus evals/golden/corpus.yaml \
+              --sha-manifest evals/golden/SHA256SUMS \
+              --version-file evals/golden/VERSION \
+            | tee golden-regression-evidence.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Unit tests for the regression runner
+        run: |
+          set -uo pipefail
+          uv run --no-project --with pytest --with pyyaml \
+            python -m pytest tests/ci/test_golden_regression.py -q \
+            | tee -a golden-regression-evidence.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Re-run SP-G1 acceptance assertions (C1)
+        run: |
+          set -uo pipefail
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-G1.yaml \
+            | tee -a golden-regression-evidence.txt
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload golden-regression evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: golden-regression-evidence
+          path: golden-regression-evidence.txt
+          if-no-files-found: error

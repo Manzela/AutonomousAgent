@@ -1,0 +1,89 @@
+# Acceptance — SP-15 · Semantic-drift gate (V-3: context-drift blocked, RED+GREEN)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §13.3 V-3 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L450)
+# + §6 SP-15: a semantic-drift gate that BLOCKS an off-spec change (RED) yet PASSES a
+# semantically-equivalent refactor (GREEN), reporting a drift score per eval run. This is
+# ALSO the reuse anchor SP-27 names (PRD §6 SP-27 L278: "reuse SP-15 embedder, per-step"),
+# so it is the first, hermetic down-payment on the (structurally-blocked) SP-27 monitor.
+#
+# MECHANISM (hermetic, LLM-free): scripts/evals/trajectory_diff.py scores an agent trajectory
+# (list of step strings) against a golden one via the deterministic HashingEmbedder
+# (app/adapters/inmemory/embedder.py — SHA-256 token buckets, L2-normalised). Each step's
+# similarity is its BEST cosine match to any golden step (best-match, NOT positional, so a
+# step REORDER is not drift); the verdict FAILS iff ANY step's best-match drops below the
+# threshold (min drives the verdict, so a single injected off-spec step fails — mean would
+# average it out). DriftVerdict.to_json is sorted-key byte-stable (mirrors ScopeVerdict).
+#
+# DEFERRED (NOT built; named so the gap is tracked, not silently dropped):
+#   - The Vertex text-embedding judge + a DeepEval Faithfulness/GEval LLM leaf + C9
+#     cross-vendor judge-class inequality (staging tier; eval_gate.py documents the same
+#     SP-06 LLM-leaf deferral). The hermetic HashingEmbedder gate is the CI/nightly tier.
+#   - The SP-27 per-step monitor that CONSUMES this scorer over a live AgentNote stream
+#     (SP-27 is structurally blocked — the execute leaf is one-shot, no stream_mode).
+#   - Making the gate MERGE-BLOCKING: the locked threshold is an operator/eval-owner
+#     calibration against the sha-pinned golden corpus (the slice ships 0.75 as a documented
+#     default and records both witness scores). NOT wired into required_status_checks yet.
+
+task: SP-15
+title: "semantic-drift gate (V-3) — RED off-spec fails / GREEN equivalent-refactor passes (hermetic embedder)"
+driver: V
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp15-red-off-spec-fails-green-equivalent-passes
+    description: >
+      Core V-3 red-green: a trajectory with an injected off-spec step (novel tokens) FAILS
+      (min < threshold, the off-spec step in drifted_steps); a semantically-equivalent refactor
+      (step reorder + high-lexical-overlap rephrase) that is TEXTUALLY DIFFERENT from the golden
+      PASSES (min >= threshold) — proving the gate is semantic, not a string/length diff.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp15_drift_gate.py::test_red_off_spec_step_fails \
+        tests/unit/test_sp15_drift_gate.py::test_green_equivalent_refactor_passes -q
+    expect_exit: 0
+
+  - id: sp15-min-drives-verdict-and-order-invariance
+    description: >
+      A SINGLE off-spec step fails even when the mean stays above threshold (min, not mean,
+      drives the verdict — an off-spec step must fail per PRD); a PURE step reorder is not
+      drift (best-match alignment, min == 1.0) — distinguishes the gate from a positional or
+      mean-based one.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp15_drift_gate.py::test_single_off_spec_step_fails_despite_high_mean \
+        tests/unit/test_sp15_drift_gate.py::test_pure_reorder_is_not_drift -q
+    expect_exit: 0
+
+  - id: sp15-threshold-witness-and-serialization
+    description: >
+      Both scores straddle the committed threshold (RED min < threshold <= GREEN min; threshold
+      reported — PRD "Proof: both scores + the threshold"); DriftVerdict.to_json is sorted-key
+      byte-stable across two constructions (the machine-readable downstream contract SP-27 parses).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp15_drift_gate.py::test_threshold_witness_red_below_green_above \
+        tests/unit/test_sp15_drift_gate.py::test_drift_verdict_json_sorted_and_stable -q
+    expect_exit: 0
+
+  - id: sp15-cli-and-failsafe
+    description: >
+      The "drift score per eval run" CLI exits 0 (PASS) / 1 (FAIL) and prints the verdict JSON;
+      degenerate inputs (empty trajectory / empty golden) PASS safely (no crash).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp15_drift_gate.py::test_cli_exit_codes \
+        tests/unit/test_sp15_drift_gate.py::test_empty_trajectory_and_empty_golden_pass_safely -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    8 red-green oracles in tests/unit/test_sp15_drift_gate.py over scripts/evals/trajectory_diff.py:
+    RED off-spec fails, GREEN equivalent-refactor (reorder+rephrase, textually-different) passes,
+    min-drives-verdict (single off-spec fails despite high mean), pure-reorder is-not-drift
+    (best-match order-invariance), threshold-witness (both scores straddle), sorted-key byte-stable
+    DriftVerdict serialization, CLI exit-code, and degenerate-input fail-safe. Deterministic +
+    hermetic (HashingEmbedder, no Vertex/LLM). The Vertex/DeepEval LLM leaf and the SP-27 per-step
+    consumer are DEFERRED; the threshold is a documented 0.75 default pending corpus calibration.

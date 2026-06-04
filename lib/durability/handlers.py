@@ -188,7 +188,8 @@ def halt_alert_snapshot(
         try:
             from lib.kanban.telegram_bridge import update_card_status
 
-            update_card_status(session_id=session_id, status="blocked")
+            if session_id is not None:
+                update_card_status(session_id=session_id, status="blocked")
         except Exception as exc:  # noqa: BLE001 — fail-open
             logger.warning(
                 "handlers.halt_alert_snapshot card transition failed f_code=%s err=%s",
@@ -360,7 +361,7 @@ def interrupt_with_loop_feedback(
     # Persist a forensic record. We deliberately reuse fallback_local_log
     # rather than open a parallel file format so the on-disk schema stays
     # uniform across every FAIL_SOFT handler.
-    forensic_payload = {
+    forensic_payload: dict[str, Any] = {
         "session_id": session_id,
         "tool_name": tool_name,
         "repeat_count": repeat_count,
@@ -512,7 +513,7 @@ def escalate_context_pressure(
         )
 
     # Forensic JSONL record.
-    forensic_payload = {
+    forensic_payload: dict[str, Any] = {
         "session_id": session_id,
         "model": model,
         "prompt_tokens": prompt_tokens,

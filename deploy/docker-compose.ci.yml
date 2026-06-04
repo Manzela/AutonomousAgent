@@ -1,0 +1,156 @@
+# CI overlay — extends deploy/docker-compose.yml for live-stack integration tests.
+#
+# Usage:
+#   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.ci.yml up --wait
+#
+# What this overlay does
+# ----------------------
+# 1. Adds `hermes-api` — a minimal FastAPI stub (deploy/scripts/ci_hermes_api.py)
+#    exposing /health, /v1/turn, /v1/admin/limits on port 7878.  The production
+#    `hermes` service runs `hermes gateway run` (Telegram long-poll) and does NOT
+#    serve HTTP — this overlay adds the HTTP surface that integration tests need.
+#
+# 2. Disables cloud-sql-proxy and the services that hard-depend on it (hermes,
+#    escalation-watcher, snapshot-watchdog, budget-watchdog).  With CLOUD_SQL_DSN
+#    unset the store falls back to in-memory; no GCP credentials required.
+#
+# 3. Disables the heavy LiteLLM + langfuse stack (replaced by a prism mock in
+#    docker-compose.test.yml; CI may optionally layer that too).
+#
+# 4. Sets OTEL_TRACES_EXPORTER=none / OTEL_METRICS_EXPORTER=none so the collector
+#    is not required and no telemetry is emitted during the test run.
+#
+# 5. Keeps shell-sandbox with network_mode:none — no changes to sandbox isolation.
+#
+# Security note: all `cap_drop`/`security_opt` settings from the base compose
+# are inherited.  This overlay only adds/overrides what's strictly necessary
+# for a hermetic CI run.
+
+name: autonomous-agent-ci
+
+services:
+
+  # ---- CI hermes-api: HTTP stub replacing Telegram gateway ----------------
+  #
+  # The production `hermes` service command is `gateway run` (Telegram mode);
+  # it has no HTTP server.  We add `hermes-api` as a NEW service using the
+  # same image but running the minimal FastAPI CI stub instead.
+  #
+  # Port 7878 matches HERMES_AGENT_URL default in tests/integration/conftest.py.
+
+  hermes-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.hermes
+    image: autonomousagent/hermes:0.1.0
+    # Override the image ENTRYPOINT so `command:` runs the stub directly (the image
+    # ENTRYPOINT is ["hermes"]).
+    entrypoint: []
+    # Fix NEW-227-A/-C/-D (OD-2). fastapi + uvicorn[standard] live under pyproject
+    # [project.optional-dependencies].a2a (NOT main deps) and are baked into the builder
+    # venv at /app/.venv/lib/python*/site-packages (#243). The boot then failed on
+    # INTERPRETER RESOLUTION, not the deps — through four wrong guesses:
+    #   (A) runtime `pip install` → read_only rootfs → exit(1) (fixed by baking, #243);
+    #   (B) bare `python` → SYSTEM interpreter, no fastapi (ModuleNotFoundError);
+    #   (C) `/app/.venv/bin/python` → "stat: no such file";
+    #   (D) system python + PYTHONPATH → pydantic_core ABI mismatch; and
+    #       `ls /app/.venv/bin/python3*` → none found.
+    # GROUND TRUTH (from `docker run … hermes`): the image ENTRYPOINT `hermes` is a WORKING
+    # console script in the venv, so its shebang names the venv's REAL interpreter. Derive
+    # it from hermes itself instead of guessing a python binary name. Unquoted `$(...)` so a
+    # `#!/usr/bin/env pythonX` shebang word-splits correctly too. read_only-safe; the SP-00h
+    # license/dep gate is unaffected (deps stay off pyproject main).
+    command:
+      - sh
+      - -c
+      - |
+        PY="$$(head -1 /app/.venv/bin/hermes | sed 's/^#!//')"
+        echo "ci_hermes_api: deriving interpreter from hermes shebang -> $${PY:-<none>}" >&2
+        exec $$PY /app/deploy/scripts/ci_hermes_api.py
+    working_dir: /app
+    ports:
+      - "127.0.0.1:7878:7878"
+    environment:
+      CI_API_HOST: "0.0.0.0"
+      CI_API_PORT: "7878"
+      CLOUD_SQL_DSN: ""
+      OTEL_TRACES_EXPORTER: "none"
+      OTEL_METRICS_EXPORTER: "none"
+      PYTHONPATH: /app
+    # No GCP credentials, no Telegram token, no LiteLLM key needed.
+    # The stub is fully in-memory.
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    volumes:
+      # Mount the full repo into /app so imports resolve.
+      - ..:/app:ro
+      # Preserve the image's baked-in virtualenv
+      - /app/.venv
+      # Writable override for /app/deploy/scripts (read_only:true + ro mount).
+      - ../deploy/scripts:/app/deploy/scripts:ro
+    networks: [internal, egress]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          python -c "import urllib.request,sys; r=urllib.request.urlopen('http://localhost:7878/health',timeout=3); sys.exit(0 if r.status==200 else 1)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    # No dependency on cloud-sql-proxy or litellm-proxy — fully self-contained.
+    depends_on:
+      volume-init: {condition: service_completed_successfully}
+
+  # ---- Disable production services not needed in CI -----------------------
+
+  # hermes (Telegram gateway) — not needed; hermes-api above serves HTTP.
+  hermes:
+    profiles: ["disabled"]
+
+  # cloud-sql-proxy — CI uses in-memory store (CLOUD_SQL_DSN unset).
+  cloud-sql-proxy:
+    profiles: ["disabled"]
+
+  # escalation-watcher hard-depends on hermes (disabled above).
+  escalation-watcher:
+    profiles: ["disabled"]
+
+  # snapshot-watchdog hard-depends on hermes and GCS credentials.
+  snapshot-watchdog:
+    profiles: ["disabled"]
+
+  # budget-watchdog hard-depends on hermes + litellm-db.
+  budget-watchdog:
+    profiles: ["disabled"]
+
+  # litellm-proxy + litellm-db — not needed for integration tests
+  # (tests probe hermes-api directly, not the LLM proxy).
+  litellm-proxy:
+    profiles: ["disabled"]
+
+  litellm-db:
+    profiles: ["disabled"]
+
+  # langfuse hard-depends on litellm-db.
+  langfuse:
+    profiles: ["disabled"]
+
+  # otel-collector — disabled; OTEL exporters set to none.
+  otel-collector:
+    profiles: ["disabled"]
+
+  # phoenix — observability UI not needed in CI.
+  phoenix:
+    profiles: ["disabled"]
+
+  # github-mcp — not needed; integration tests do not test GitHub tool calls.
+  github-mcp:
+    profiles: ["disabled"]
+
+  # shell-sandbox — KEEP (network_mode:none isolation tests depend on it).
+  # No override: inherits base compose settings unchanged.

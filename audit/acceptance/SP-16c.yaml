@@ -1,0 +1,82 @@
+# Acceptance — SP-16 (slice 3) · the ship-gate `done` transition (C14 mark_done consult-site wired live)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-16 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L271):
+#   "card `done` is gate-derived (reads `gh pr checks --required`), refuses agent-initiated `done`."
+# Also closes the SP-B1 (L272) "the GoalManager 'done' verdict closes the root card" requirement.
+# Builds on slice-1 (SP-16.yaml: AbstractBoard + C14 + mark_done) + slice-2 (SP-16b.yaml: the board
+# WIRED — decompose projects cards, fan_out transitions them). Slice-3 INVOKES C14 mark_done from the
+# live spine (only TESTED before); the live default stub auto-closes — see the HONEST LIMIT below.
+#
+# MECHANISM (hermetic — InMemoryBoard + a mock GateReader, no DB/docker/LLM/net/gh):
+#   _build_nodes/build_spine/SpineRunner gain a `gate: GateReader`. The ship_effect node, INSIDE its
+#   exactly-once `if "ledger" in delta` (effect-ran) branch, closes the root goal card via
+#   board.mark_done(parent_card_id, gate=...). C14: the agent NEVER self-marks `done` — mark_done
+#   consults the injected gate, so the root closes ONLY if the required checks are green; a failing
+#   or unavailable gate (GateNotPassedError/BoardError) leaves the root OPEN (fail-safe) and never
+#   crashes the ship. SpineRunner injects an AlwaysReadyGate CI stub (the spine reaches ship_effect
+#   only AFTER the SP-06 eval_gate passed + the operator approved the ship gate — gate-derived
+#   signals the agent cannot fake). HONEST LIMIT: AlwaysReadyGate is a NULL stub (always green), so
+#   under the live default the root closes UNCONDITIONALLY — what went live is the CONSULT-SITE +
+#   the withhold MECHANISM (a refusing gate raises, proven by the RED oracle), NOT an enforcing gate.
+#   gate=None / board=None / no root card => no-op (byte-identical to pre-slice-3).
+#
+# DEFERRED (named, NOT silently dropped):
+#   - the REAL external-CI-derived `done`: this slice closes the root at SHIP (a proxy), but ship_effect
+#     runs BEFORE the shipped PR + its CI exist, and the parent card's gate_ref is None (project_plan
+#     never sets it). The PRD semantics (close when the shipped PR's `gh pr checks --required` pass) need
+#     the call site to MOVE to a post-PR webhook AND gate_ref populated with the real PR — both SP-12,
+#     DEFERRED. AlwaysReadyGate is the CI stub for the (then) binding reader;
+#   - CHILD node cards reaching `done` per-node (this slice closes only the parent root card at
+#     ship); per-card cost (4.1, non-hermetic Cloud-Monitoring) + milestone comments (4.2).
+
+task: SP-16c
+title: "ship-gate done transition — wire the C14 mark_done CONSULT-SITE into the live ship path (root closes at ship via the GateReader); the live DEFAULT stub auto-closes unconditionally, a withholding gate + the external-CI-derived semantics are DEFERRED; passing gate closes / failing gate is consulted-and-refused; ledger-guarded + idempotent; gate=None byte-identical"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp16c-root-done-gate-derived
+    description: >
+      C14 mark_done is now INVOKED by the live spine at ship_effect (only tested before): a PASSING
+      gate closes the root goal card (status done,
+      and the gate was consulted on the root card); a FAILING gate is CONSULTED-and-REFUSED — the gate was
+      called on the root card and the root is left EXACTLY at todo (not merely != done; fail-safe RED); gate=None (the default, every existing direct caller) performs
+      NO done transition (byte-identical to pre-slice-3); and the transition is LEDGER-guarded +
+      idempotent. The ledger-guard is tested DISTINCTLY from idempotency (post-audit I-2): the skip
+      oracle alone passes even if mark_done is moved OUT of the `if "ledger"` branch (the already-done
+      root short-circuits), so a separate oracle REFUSES on the first run (root stays todo) and proves
+      the gate is NOT re-consulted on the skipped replay — bites only because of the ledger guard.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_marks_root_done_on_passing_gate \
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_failing_gate_leaves_root_open \
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_gate_none_no_done_transition \
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_done_not_redone_on_skip \
+        tests/unit/test_sp16_ship_done.py::test_ship_effect_ledger_guard_skips_mark_done -q
+    expect_exit: 0
+
+  - id: sp16c-live-and-default-gate
+    description: >
+      LIVE end-to-end: a full SpineRunner run (start -> sign_off APPROVE -> ship_gate APPROVE ->
+      ship_effect) closes the shipped goal's root card (status done) via the injected stub gate; and
+      the SpineRunner default gate IS an AlwaysReadyGate (so the live entrypoint can close roots
+      without an explicit injection — the real gh-pr-checks reader is the deferred prod sibling).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp16_ship_done.py::test_live_spine_closes_root_card_on_ship \
+        tests/unit/test_sp16_ship_done.py::test_spine_runner_defaults_to_always_ready_gate -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    6 red-green oracles (tests/unit/test_sp16_ship_done.py) over app/core/graph.py (ship_effect
+    mark_done in the exactly-once branch), app/core/spine_runner.py (AlwaysReadyGate injection), and
+    app/adapters/inmemory/board.py (AlwaysReadyGate stub). Proven: the root card closes gate-derived
+    on a passing gate (C14 mark_done now INVOKED live, not just tested; the live default stub auto-closes), is consulted-and-refused on a failing gate (root exactly todo), gate=None is byte-identical, the transition is ledger-guarded + idempotent (a
+    skipped re-entry never re-consults the gate), the live SpineRunner run closes the shipped root,
+    and the default gate is the AlwaysReadyGate stub. DEFERRED (named in header): the real gh-pr-
+    checks GateReader (external-CI/webhook trigger, SP-12), per-node child-card done, cost 4.1,
+    comments 4.2.

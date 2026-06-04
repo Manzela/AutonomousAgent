@@ -1,0 +1,36 @@
+{
+  "app_id": "3920713",
+  "installation_id": "136939619",
+  "token_expires_at": "2026-05-31T10:52:02Z",
+  "token_ttl_seconds": 3599,
+  "granted_permissions": {
+    "actions": "read",
+    "agent_tasks": "write",
+    "artifact_metadata": "read",
+    "checks": "read",
+    "code_quality": "read",
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pages": "read",
+    "pull_requests": "write",
+    "repository_advisories": "read",
+    "repository_projects": "write",
+    "secret_scanning_alerts": "read",
+    "security_events": "read",
+    "statuses": "read",
+    "vulnerability_alerts": "read"
+  },
+  "tests": [
+    {"name": "create-repo", "method": "POST /user/repos", "status": 403, "expect": ">=400 denied", "pass": true},
+    {"name": "actions-secret-write", "method": "PUT actions/secrets/SP00F_PROOF", "status": 403, "expect": ">=400 denied", "pass": true},
+    {"name": "force-push-protected-main", "method": "PATCH git/refs/heads/main force=true (no-op self-sha)", "status": 422, "expect": ">=400 denied", "pass": true},
+    {"name": "branch-create", "method": "POST git/refs", "status": 201, "expect": "201", "pass": true},
+    {"name": "contents-write", "method": "PUT contents/.sp00f-proof.txt (branch only)", "status": 201, "expect": "201", "pass": true},
+    {"name": "pr-open", "method": "POST pulls (draft)", "status": 201, "expect": "201", "pass": true, "pr": 169},
+    {"name": "issue-comment", "method": "POST issues/{n}/comments", "status": 201, "expect": "201", "pass": true}
+  ],
+  "contents_read_main": {"status": 200, "sha": "d9edf0254160…"},
+  "cleanup": {"pr_closed": 169, "branch_deleted": "sp00f-app-proof"},
+  "summary": {"red_all_denied": true, "green_all_2xx": true, "ttl_under_2h": true}
+}

@@ -1,0 +1,167 @@
+# Acceptance — SP-00e.7 · coverage-floor check (C6) in test-integrity-gate
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# Extends SP-00e.4: the coverage-floor check is PART OF test-integrity-gate (additive),
+# not a separate CI job. A PR whose coverage drops below config/coverage-baseline.json
+# without an approved `## Test Changes` block FAILS the gate.
+#
+# Assertions are self-contained red-green — each calls evaluate_coverage_floor() or
+# the helper parsers directly via python3 -c; no CI infrastructure needed.
+#
+# Source: PRD §6 EPIC 0 SP-00e (C6) — "ci-coverage-gate: coverage-floor semantics
+# of test-integrity-gate, NOT a parallel check" (PRD line 108).
+
+task: SP-00e.7
+title: "coverage-floor check (C6) — blocks coverage drop without approved ## Test Changes block"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: coverage-floor-blocks-drop
+    description: >
+      Red: a coverage.xml below baseline (line AND branch) with no ## Test Changes block
+      MUST fail the gate. Exits 0 only if evaluate_coverage_floor() correctly returns ok=False.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.test_integrity_gate import evaluate_coverage_floor
+
+      # Clearly below baseline
+      ok, reasons = evaluate_coverage_floor(
+          line_rate=0.20,
+          branch_rate=0.25,
+          baseline_line_rate=0.37,
+          baseline_branch_rate=0.45,
+          pr_body="## Summary\nno test changes block\n",
+      )
+      if ok:
+          print("FAIL: coverage drop not caught"); sys.exit(1)
+      if not any("line coverage" in r for r in reasons):
+          print("FAIL: failure does not mention line coverage:", reasons); sys.exit(1)
+      if not any("branch coverage" in r for r in reasons):
+          print("FAIL: failure does not mention branch coverage:", reasons); sys.exit(1)
+      if not all("## Test Changes" in r for r in reasons):
+          print("FAIL: failure does not mention ## Test Changes block:", reasons); sys.exit(1)
+      print("OK: coverage drop correctly blocked:", reasons[0])
+      PYEOF
+    expect_exit: 0
+
+  - id: coverage-floor-allows-at-baseline
+    description: >
+      Green: coverage at or above baseline passes with no block needed. Exits 0 only if
+      evaluate_coverage_floor() correctly returns ok=True.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.test_integrity_gate import evaluate_coverage_floor
+
+      # Exactly at baseline
+      ok, reasons = evaluate_coverage_floor(
+          line_rate=0.37,
+          branch_rate=0.45,
+          baseline_line_rate=0.37,
+          baseline_branch_rate=0.45,
+          pr_body="## Summary\nno block needed\n",
+      )
+      if not ok:
+          print("FAIL: at-baseline coverage was incorrectly rejected:", reasons); sys.exit(1)
+      if reasons:
+          print("FAIL: unexpected reasons:", reasons); sys.exit(1)
+
+      # Clearly above baseline
+      ok2, reasons2 = evaluate_coverage_floor(
+          line_rate=0.60,
+          branch_rate=0.70,
+          baseline_line_rate=0.37,
+          baseline_branch_rate=0.45,
+          pr_body="## Summary\nno block needed\n",
+      )
+      if not ok2:
+          print("FAIL: above-baseline coverage was incorrectly rejected:", reasons2); sys.exit(1)
+      print("OK: at-baseline and above-baseline both pass cleanly")
+      PYEOF
+    expect_exit: 0
+
+  - id: coverage-floor-honors-approved-block
+    description: >
+      Green: coverage below baseline WITH an approved ## Test Changes block PASSES.
+      Exits 0 only if evaluate_coverage_floor() correctly returns ok=True.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.test_integrity_gate import evaluate_coverage_floor
+
+      ok, reasons = evaluate_coverage_floor(
+          line_rate=0.20,
+          branch_rate=0.25,
+          baseline_line_rate=0.37,
+          baseline_branch_rate=0.45,
+          pr_body="## Test Changes\nDeleted obsolete tests; coverage drop is intentional.\n",
+      )
+      if not ok:
+          print("FAIL: approved ## Test Changes block was not honoured:", reasons); sys.exit(1)
+      if reasons:
+          print("FAIL: unexpected reasons with block present:", reasons); sys.exit(1)
+      print("OK: approved ## Test Changes block allows coverage drop")
+      PYEOF
+    expect_exit: 0
+
+  - id: baseline-exists-and-valid-json
+    description: >
+      config/coverage-baseline.json must exist, parse as JSON, and contain
+      numeric line_rate and branch_rate keys in [0, 1].
+    cmd: |
+      python3 - <<'PYEOF'
+      import json, sys, os
+      path = "config/coverage-baseline.json"
+      if not os.path.isfile(path):
+          print(f"FAIL: {path} not found"); sys.exit(1)
+      with open(path) as fh:
+          data = json.load(fh)
+      for key in ("line_rate", "branch_rate"):
+          if key not in data:
+              print(f"FAIL: missing key {key!r} in {path}"); sys.exit(1)
+          v = data[key]
+          if not isinstance(v, (int, float)):
+              print(f"FAIL: {key} must be numeric, got {type(v).__name__}"); sys.exit(1)
+          if not (0.0 <= v <= 1.0):
+              print(f"FAIL: {key}={v} out of range [0, 1]"); sys.exit(1)
+      print(f"OK: {path} is valid JSON with line_rate={data['line_rate']}, branch_rate={data['branch_rate']}")
+      PYEOF
+    expect_exit: 0
+
+  - id: coverage-floor-epsilon-tolerance
+    description: >
+      Green: a coverage drop within _COVERAGE_EPSILON (0.005) of baseline is treated as
+      at-baseline and passes without a block. Boundary condition guard.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+      sys.path.insert(0, '.')
+      from scripts.ci.test_integrity_gate import evaluate_coverage_floor, _COVERAGE_EPSILON
+
+      # Drop by exactly (epsilon - 0.001): within tolerance
+      within_line = 0.37 - _COVERAGE_EPSILON + 0.001
+      within_branch = 0.45 - _COVERAGE_EPSILON + 0.001
+      ok, reasons = evaluate_coverage_floor(
+          line_rate=within_line,
+          branch_rate=within_branch,
+          baseline_line_rate=0.37,
+          baseline_branch_rate=0.45,
+          pr_body="## Summary\nno block\n",
+      )
+      if not ok:
+          print(f"FAIL: drop within epsilon should pass (epsilon={_COVERAGE_EPSILON}); reasons={reasons}"); sys.exit(1)
+      print(f"OK: drop within epsilon ({_COVERAGE_EPSILON}) correctly passes")
+      PYEOF
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/test-integrity-gate.yml
+  artifact: >-
+    coverage-floor check (evaluate_coverage_floor + parse_coverage_xml + load_coverage_baseline)
+    wired into test-integrity-gate; config/coverage-baseline.json CODEOWNERS-guarded

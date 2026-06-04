@@ -1,0 +1,131 @@
+# Acceptance — SP-00b · SA-key→WIF migration (no-SA-key invariant)
+#
+# Source: PRD §6 EPIC 0 SP-00b — "Migrate CI from long-lived SA JSON keys to
+#   Workload Identity Federation (WIF / OIDC)."
+# Scope: executor-closable arm.  Three invariants must hold simultaneously:
+#   1. Terraform defines the OIDC pool + provider (WIF infrastructure exists).
+#   2. encrypt_secrets.sh deletes plaintext on success (key material auto-rotated).
+#   3. No GitHub Actions workflow authenticates with a long-lived SA JSON key
+#      (no credentials_json / GCP_SA_KEY / key-file reference in .github/workflows/).
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+
+task: SP-00b
+title: "SA-key→WIF migration — no-long-lived-SA-key invariant in CI"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: wif-tf-oidc-pool-defined
+    description: >
+      terraform/phase-0a-gcp/wif.tf MUST define a
+      google_iam_workload_identity_pool resource named "autonomousagent-github"
+      AND a google_iam_workload_identity_pool_provider named "autonomousagent-actions"
+      with an OIDC issuer of https://token.actions.githubusercontent.com.
+      This proves the WIF infrastructure (OIDC pool + provider) is declared
+      in Terraform and is not just a workflow-level comment.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys
+
+      wif_path = "terraform/phase-0a-gcp/wif.tf"
+      try:
+          with open(wif_path) as f:
+              content = f.read()
+      except FileNotFoundError:
+          print(f"FAIL: {wif_path} not found")
+          sys.exit(1)
+
+      required = [
+          ('google_iam_workload_identity_pool', 'OIDC pool resource'),
+          ('"autonomousagent-github"', 'pool id autonomousagent-github'),
+          ('google_iam_workload_identity_pool_provider', 'OIDC provider resource'),
+          ('"autonomousagent-actions"', 'provider id autonomousagent-actions'),
+          ('https://token.actions.githubusercontent.com', 'GitHub Actions OIDC issuer'),
+      ]
+      failures = []
+      for token, label in required:
+          if token not in content:
+              failures.append(f"  missing: {label} ({token!r})")
+
+      if failures:
+          print(f"FAIL: {wif_path} is missing required WIF declarations:")
+          for f in failures:
+              print(f)
+          sys.exit(1)
+
+      print(f"OK: {wif_path} defines OIDC pool (autonomousagent-github), "
+            "provider (autonomousagent-actions), and GitHub Actions issuer")
+      PYEOF
+    expect_exit: 0
+
+  - id: encrypt-secrets-rm-on-success
+    description: >
+      scripts/encrypt_secrets.sh MUST contain an `rm -f` command that deletes
+      the plaintext source file after successful SOPS encryption.  This is the
+      auto-delete arm that ensures plaintext credentials are not left on disk
+      after encryption (SP-00b C9).  The file MUST also use `set -euo pipefail`
+      so that the rm only runs if sops --encrypt exited 0.
+    cmd: |
+      python3 - <<'PYEOF'
+      import sys, re
+
+      script_path = "scripts/encrypt_secrets.sh"
+      try:
+          with open(script_path) as f:
+              content = f.read()
+      except FileNotFoundError:
+          print(f"FAIL: {script_path} not found")
+          sys.exit(1)
+
+      failures = []
+      if 'set -euo pipefail' not in content:
+          failures.append("missing 'set -euo pipefail' (required: rm must be unreachable on encrypt failure)")
+      if not re.search(r'rm\s+-f\s', content):
+          failures.append("missing 'rm -f' (plaintext auto-delete arm not found)")
+      # Must reference the plaintext input variable
+      if 'INPUT_PLAINTEXT' not in content and 'hermes-provider.env' not in content:
+          failures.append("missing reference to plaintext file path (INPUT_PLAINTEXT or hermes-provider.env)")
+
+      if failures:
+          print(f"FAIL: {script_path} missing required SP-00b auto-delete invariants:")
+          for f in failures:
+              print(f"  {f}")
+          sys.exit(1)
+
+      print(f"OK: {script_path} has set -euo pipefail + rm -f plaintext auto-delete arm")
+      PYEOF
+    expect_exit: 0
+
+  - id: no-sa-key-in-workflows
+    description: >
+      No GitHub Actions workflow in .github/workflows/ may authenticate with a
+      long-lived SA JSON key.  Specifically: no step may use credentials_json:
+      with a non-empty value, reference the secrets.GCP_SA_KEY /
+      secrets.GOOGLE_SA_KEY / secrets.GCP_SERVICE_ACCOUNT_KEY etc. secrets, or
+      pass a *.json key file via key_file: / --key-file= patterns.
+      The WIF-legitimate pattern create_credentials_file: (a short-lived OIDC
+      ADC output) MUST NOT be flagged.
+      Verified by scripts/ci/no_sa_key_gate.py (stdlib-only).
+    cmd: |
+      python scripts/ci/no_sa_key_gate.py
+    expect_exit: 0
+
+  - id: no-sa-key-gate-unit-tests-green
+    description: >
+      The gate's own TDD unit tests (tests/ci/test_no_sa_key_gate.py) MUST
+      pass green with no skips.  These tests are the committed red-green proof:
+      a workflow snippet with credentials_json: ${{ secrets.GCP_SA_KEY }} →
+      FAIL; a WIF workload_identity_provider snippet → PASS;
+      create_credentials_file: true → PASS (false-positive guard).
+    cmd: |
+      python -m pytest tests/ci/test_no_sa_key_gate.py -q --tb=short
+    expect_exit: 0
+
+proof:
+  terraform: terraform/phase-0a-gcp/wif.tf
+  encrypt_script: scripts/encrypt_secrets.sh
+  gate: scripts/ci/no_sa_key_gate.py
+  gate_tests: tests/ci/test_no_sa_key_gate.py
+  ci_workflow: .github/workflows/no-sa-key-gate.yml

@@ -1,0 +1,103 @@
+# Acceptance — SP-16 (slice 1) · AbstractBoard kanban projection + C14 gate-derived `done`
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+# PRD §6 SP-16 (audit/2026-05-29-prd-gap-autonomous-sdlc/PRD-autonomous-sdlc-agent.md L271):
+#   "Wrap the SQLite kanban behind AbstractBoard; project DAG nodes as cards ... Implements C14:
+#    card `done` is gate-derived (reads `gh pr checks --required`), refuses agent-initiated `done`.
+#    Board cards/comments are an OUTBOUND projection by default; any human board comment is inbound
+#    ONLY via the SP-17 SteeringEventBus (never read directly by a graph node)."
+#
+# MECHANISM (hermetic — in-memory store + a mock gate, no DB/docker/LLM/net/Hermes):
+#   app/core/board.py — AbstractBoard ABC + the frozen Card value object + project_plan (DAG->cards,
+#   returning a typed BoardProjection). C14 is enforced at the PUBLIC API (the surface the agent
+#   uses): create_card/set_status reject `done` AND any value outside the CardStatus vocabulary
+#   (so "Done"/" done" case/whitespace look-alikes cannot smuggle a ~done status past an exact-match
+#   guard); `done` is reachable ONLY via mark_done(card_id, gate=GateReader) when the injected gate
+#   confirms required checks green (idempotent: an already-done card returns without re-gating).
+#   app/adapters/inmemory/board.py — InMemoryBoard implements ONLY the storage primitives
+#   (_put/get_card/list_cards/_new_id); it does NOT override the C14 methods.
+#
+# HONEST BOUNDARY (the C14 threat model is the AGENT calling the PUBLIC API): _put/_new_id are
+# protected primitives BELOW the contract — Python cannot sandbox same-process code, so a caller
+# that deliberately reaches past the facade into _put (or a hostile subclass that overrides the
+# concrete methods) can forge a `done` card. That is the adapter author's trust boundary, NOT the
+# C14 adversary; sp16-c14 only claims the PUBLIC API refuses agent-initiated `done`, and the meta-
+# test pins the shipped adapter against the override path. The GateReader is caller-injected this
+# slice — a binding control only once slice-2 binds the trusted gh-pr-checks concretion out of the
+# agent's reach.
+#
+# DEFERRED (named, NOT silently dropped):
+#   - The spine->cards PROJECTION wiring (decompose -> parent+child cards, node status transitions)
+#     is SP-16 slice-2: this slice ships the AbstractBoard + C14 invariant + project_plan, listed in
+#     config/dead_code_entrypoints.txt as legitimately-present-not-yet-wired (same pattern SP-R6's
+#     branch_lease used before SP-11 wired it). The spine does NOT render live cards yet.
+#   - The Hermes `kanban_db` adapter (which owes a translation to Hermes' own lifecycle) + the real
+#     `gh pr checks --required` GateReader concretion.
+#   - (4.1) per-card live cost = SP-O1 `llm.call.cost` scoped to (thread_id,node_id): its proof is a
+#     Cloud-Monitoring query (NOT hermetic) -> lands with the cost-render path.
+#   - (4.2) U-4 milestone comments + SP-27 SteerCommand projections (need SP-21 origin-tag dedup);
+#     the Plane CE adapter (SP-21) and the Telegram bridge listener.
+
+task: SP-16
+title: "AbstractBoard kanban seam + C14 gate-derived `done` (the public API refuses agent-initiated done incl. look-alike variants; done only via mark_done(gate=); DAG->cards; outbound-only) — InMemory, hermetic; spine wiring slice-2"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp16-c14-gate-derived-done
+    description: >
+      C14 (load-bearing safety) at the PUBLIC board API: the agent CANNOT self-mark a card `done` —
+      set_status(.., "done") is refused, AND the case/whitespace look-alikes "Done"/"DONE"/" done"/
+      "done\n" are refused too (they are not CardStatus members, so they cannot slip past the
+      exact-match guard via model_copy), status unchanged after every refusal (RED: a board allowing
+      any of these lets the agent self-certify); a card cannot be CREATED `done`/"Done" either.
+      `done` is reachable ONLY via mark_done(card_id, gate=...): a passing gate -> done, a failing
+      gate raises GateNotPassedError leaving status unchanged (RED control), and the gate receives
+      the real Card (gate_ref). mark_done is IDEMPOTENT (an already-done card returns WITHOUT
+      re-gating — a now-failing gate is never consulted; resume-safe). The C14 methods are CONCRETE
+      on AbstractBoard and NOT overridden by InMemoryBoard (the shipped adapter cannot bypass).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp16_board.py::test_c14_refuses_agent_initiated_done \
+        tests/unit/test_sp16_board.py::test_c14_mark_done_is_gate_derived \
+        tests/unit/test_sp16_board.py::test_mark_done_idempotent \
+        tests/unit/test_sp16_board.py::test_c14_invariant_is_in_the_abstract_base -q
+    expect_exit: 0
+
+  - id: sp16-board-crud-projection-outbound
+    description: >
+      The board seam: create -> get round-trips (unknown id is a BoardError, not a silent None);
+      non-done transitions (todo -> ready -> running -> blocked, Hermes vocab) are allowed; a
+      TaskGraph projects to a typed BoardProjection (ONE parent goal card + one child card per node;
+      child.parent_id linked, child.node_id preserved, thread-scoped listing); project_plan VALIDATES
+      its untyped input — a node literally named "__root__" no longer clobbers the parent (distinct
+      cards), a duplicate node id raises BoardError (no silent orphan), and a node missing 'id' raises
+      BoardError (not a bare KeyError); and the OUTBOUND-ONLY invariant holds — app/core/graph.py
+      references NO board symbol (a graph node never reads board state; inbound is SP-17-only, C15).
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp16_board.py::test_create_and_get_card \
+        tests/unit/test_sp16_board.py::test_set_status_non_done_transitions \
+        tests/unit/test_sp16_board.py::test_project_plan_to_cards \
+        tests/unit/test_sp16_board.py::test_project_plan_rejects_malformed_plan \
+        tests/unit/test_sp16_board.py::test_graph_nodes_do_not_read_board_state -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    9 red-green oracles (tests/unit/test_sp16_board.py) over app/core/board.py (AbstractBoard +
+    Card + BoardProjection + project_plan; C14 in the ABC's concrete create_card/set_status/
+    mark_done) and app/adapters/inmemory/board.py (InMemoryBoard storage primitives). Proven: C14
+    gate-derived `done` at the public API (agent self-mark refused at set_status AND create,
+    INCLUDING case/whitespace look-alikes; mark_done passes only on a green gate, failing gate
+    leaves status unchanged, gate receives the real card; mark_done idempotent; the invariant is
+    concrete on the ABC and not overridden by the adapter), CRUD round-trip + unknown-id error,
+    non-done transitions, DAG->parent+child card projection, project_plan input validation
+    (no `__root__` clobber, duplicate/missing-id -> BoardError), and the outbound-only invariant
+    (graph.py references no board symbol). C4: app.core.board + app.adapters.inmemory.board listed
+    in dead_code_entrypoints.txt as legitimately-present-not-yet-wired (spine projection = slice-2).
+    DEFERRED (named in header): spine->cards wiring, Hermes kanban_db adapter (owes a vocab
+    translation), real gh-pr-checks GateReader, per-card cost (4.1, non-hermetic), milestone
+    comments (4.2), Plane (SP-21), Telegram listener.

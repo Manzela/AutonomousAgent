@@ -1,0 +1,76 @@
+# SP-00e — PR-meta checks: evidence-present (C1) + test-truth (C7).
+#
+# - Runs the gate's own unit tests (committed red-green for the C1/C7 machinery).
+# - HARD-gates evidence-present (C1): the PR's `## Evidence` must carry >=1 fenced command.
+# - Emits the AUTHORITATIVE test-truth counts (C7) from a CI-produced junitxml as a bot
+#   comment / step summary — executor-pasted numbers are advisory. The HARD test-truth
+#   byte-match against the FULL suite activates once SP-00c gives a CI-green suite to match.
+#
+# CODEOWNERS guards .github/, so this gate-config is reviewed by the operator + the
+# cross-vendor (Gemini) reviewer (C9). acceptance-frozen (SP-00e.1) pins SP-00e.2.yaml.
+name: pr-meta-checks
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pr-meta:
+    name: evidence-present (C1) + test-truth (C7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_pr_meta_checks.py -q
+
+      - name: Re-run SP-00e.2 acceptance (C1)
+        run: |
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00e.2.yaml
+
+      - name: Produce a CI junitxml (deterministic gate-test scope)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/ --junitxml=junit-ci.xml -q || true
+
+      - name: Write PR body to a file (env-passed, not interpolated)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf -- '%s' "$PR_BODY" > pr_body.md
+
+      - name: Emit authoritative test-truth (C7, advisory until SP-00c)
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          TT="$(python3 scripts/ci/pr_meta_checks.py --pr-body pr_body.md --junitxml junit-ci.xml --emit-test-truth)"
+          {
+            echo "### Authoritative test-truth (C7)"
+            echo "CI-produced counts (tests/ci scope): \`$TT\`"
+            echo "_Executor-pasted \`## Test Truth\` is advisory; the CI junitxml is source of truth._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Evidence-present gate (C1) — HARD (bot PRs exempt)
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: python3 scripts/ci/pr_meta_checks.py --pr-body pr_body.md --junitxml junit-ci.xml --check evidence

@@ -1,0 +1,128 @@
+# SP-00e.6 — provenance honesty (C11) + no-sentinel-termination (anti-drift) + substring-lint (C3).
+#
+# Three checks (PRD §4):
+#   * provenance-check (C11, BLOCKING): every path the PR `## Evidence` claims to ADD must be a
+#     genuine addition in `git diff base...head`; a claimed-add path whose introducing commit
+#     PREDATES the PR base FAILS (credit-taking F-B.1/3/7).
+#   * no-sentinel-termination (anti-drift loop-control clause e, BLOCKING): AST scan of the runtime
+#     spine (app/ + lib/) — fail any loop/graph code that branches on a MODEL-EMITTED text sentinel
+#     (MINI_SWE_AGENT_FINAL_OUTPUT, GOAL_COMPLETE, "DONE", "<!--") as a termination/pass condition.
+#     Loop exit must read a real subprocess exit code, never a sentinel string.
+#   * substring-assert-lint (C3, ADVISORY): warns on `assert '...' in output` + mock-under-test
+#     smells in tests; never blocks (a grep cannot distinguish behavioral from legitimate checks).
+#
+# Gate machinery is stdlib-only (ast / git). CODEOWNERS guards .github/, so this gate-config is
+# reviewed by the operator + the cross-vendor (Gemini) reviewer (C9). acceptance-frozen pins SP-00e.6.yaml.
+name: sp-00e6-provenance-antidrift
+
+on:
+  pull_request:
+    branches: [main, "remediation/**"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  provenance-check:
+    name: provenance honesty (C11)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_provenance_check.py -q
+
+      - name: Re-run SP-00e.6 acceptance (C1 evidence = re-run; covers all 3 checks)
+        run: |
+          uv run --no-project --with pyyaml \
+            python scripts/ci/run_acceptance.py audit/acceptance/SP-00e.6.yaml
+
+      - name: Write PR body to a file (env-passed, not interpolated)
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf -- '%s' "$PR_BODY" > pr_body.md
+
+      - name: Provenance gate (C11) — HARD
+        # claimed-add paths in `## Evidence` must be genuine additions in base...head;
+        # a path whose introducing commit predates the base FAILS (credit-taking).
+        run: |
+          python3 scripts/ci/provenance_check.py \
+            --pr-body pr_body.md \
+            --base origin/${{ github.base_ref }} \
+            --head HEAD
+
+  no-sentinel-termination:
+    name: no-sentinel-termination (anti-drift)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_no_sentinel_termination.py -q
+
+      - name: No-sentinel-termination gate (anti-drift) — HARD
+        # AST scan of the runtime spine: fail any sentinel string used as a termination/pass branch.
+        run: |
+          python3 scripts/ci/no_sentinel_termination.py --root app --root lib
+
+  substring-assert-lint:
+    name: substring-assert-lint (C3, advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Advisory only — the lint never blocks the PR (continue-on-error AND the script always exits 0).
+    continue-on-error: true
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Gate machinery unit tests (committed red-green)
+        run: |
+          uv run --no-project --with pytest \
+            python -m pytest tests/ci/test_substring_assert_lint.py -q
+
+      - name: Substring-assert + mock-under-test lint (C3) — ADVISORY
+        run: |
+          python3 scripts/ci/substring_assert_lint.py --root tests | tee substring-lint.out
+          {
+            echo "### substring-assert-lint (C3 — advisory)"
+            echo "_Advisory only: a grep cannot distinguish behavioral checks from theatre (C3). Never blocks._"
+            echo '```'
+            cat substring-lint.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

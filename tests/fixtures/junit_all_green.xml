@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+  <testsuite name="pytest" errors="0" failures="0" skipped="0" tests="3" time="0.080">
+    <testcase classname="tests.unit.test_example" name="test_alpha" time="0.010"/>
+    <testcase classname="tests.unit.test_example" name="test_beta" time="0.010"/>
+    <testcase classname="tests.integration.test_full_turn" name="test_health_endpoint_responds" time="0.020"/>
+  </testsuite>
+</testsuites>

@@ -1,0 +1,94 @@
+# Acceptance — SP-05d · lifecycle reaper + panic teardown (WorkspaceReaper)
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# MECHANISM (hermetic — no docker/LLM/network):
+#   app/core/reaper.py:WorkspaceReaper provides per-runner lifecycle management.
+#   It tracks active WorkspaceSessions and BranchLease dirs; registers an atexit
+#   handler so that SIGTERM / unhandled exception triggers cleanup even when the
+#   node finally-block doesn't run. reap_orphaned_worktrees() is the next-run
+#   sweep for aa-ws-* entries left behind by SIGKILL (atexit does not survive
+#   SIGKILL — the orphan sweep runs at SpineRunner.__init__ time).
+#
+#   SpineRunner integration: self._reaper = WorkspaceReaper(); it registers the
+#   BranchLease dir + calls reap_orphaned_worktrees() at startup; build_spine()
+#   receives reaper as a closure arg (NEVER in SpineState); _run_node calls
+#   reaper.register_workspace(ws) after create() and deregister_workspace(ws) in
+#   the finally block so normal-exit sessions are not double-closed.
+#
+# HONEST BOUNDARY:
+#   SIGKILL kills atexit handlers — no Python-level hook survives SIGKILL. The
+#   orphan reaper is designed for NEXT-RUN cleanup: it runs once at SpineRunner
+#   startup. In-run protection is best-effort (atexit fires on SIGTERM/exception).
+#   git worktree prune is unconditional: it prunes ALL stale worktrees, not only
+#   aa-ws-* ones. The count returned reflects only aa-ws-* detections. This blast
+#   radius is pinned by the R2b oracle.
+#
+# C9 REVIEW (Opus — different model class, 2026-06-03):
+#   B1 (HIGH, FIXED): R2 originally asserted count==1 but never checked the prune
+#      side-effect; a no-op git worktree prune would pass. Fixed: post-call
+#      git worktree list asserts the stale record is gone.
+#   B2 (HIGH, FIXED+DOCUMENTED): git worktree prune is unconditional — also prunes
+#      non-aa-ws stale entries. R2b test pins this blast-radius behavior explicitly.
+#   B3 (HIGH, FIXED): FAIL-OPEN sweep (a close() exception must not abort cleanup
+#      of remaining sessions) had zero coverage; impl self-tagged # pragma: no cover.
+#      R8/R8b added; # pragma: no cover annotations removed.
+#   B4 (MEDIUM, FIXED): atexit handler was registered but never invoked in tests;
+#      R4c added to directly call _atexit_sweep() and verify sweep.
+#   B5 (MEDIUM, FIXED): thread-safety claimed but untested; R9 added (8-thread
+#      barrier stress of concurrent register/deregister/sweep).
+#   C1 (LOW, FIXED): _make_bare_repo renamed to _make_repo (not a bare repo).
+
+task: SP-05d
+title: "lifecycle reaper — WorkspaceReaper: sweep/prune/fail-open/atexit/thread-safety (14 hermetic oracles)"
+driver: U/P
+phase: P1
+run_from: repo_root
+
+assertions:
+  - id: sp05d-reaper-contract
+    description: >
+      14 hermetic oracles (R1–R9) proving the WorkspaceReaper primitive contract:
+      R1 sweep_all() calls close() on every registered session + returns correct count;
+      R2 reap_orphaned_worktrees() prunes stale aa-ws-* entries (not just counts);
+      R2b blast-radius: git worktree prune also removes non-aa-ws stale entries;
+      R2c returns 0 when no stale aa-ws-* entries;
+      R3 deregister_workspace() prevents double-close in atexit sweep;
+      R4 register_atexit=True registers exactly one handler; False registers none;
+      R4b _atexit_sweep() actually calls sweep_all() (not just registered);
+      R5 sweep_all() removes all registered lease dirs;
+      R6 sweep_all() is idempotent (second call returns 0, no double-close);
+      R7 register_workspace() no-ops for degraded (ok=False) sessions;
+      R8 FAIL-OPEN: a close() exception doesn't abort sweep of remaining sessions;
+      R8b FAIL-OPEN: a lease dir removal error doesn't abort cleanup of others;
+      R9 thread-safety: concurrent register/deregister/sweep doesn't corrupt registry.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp05d_reaper.py \
+        -v -q
+    expect_exit: 0
+
+  - id: sp05d-integration-via-spine-runner
+    description: >
+      SpineRunner integration: WorkspaceReaper constructed and wired in
+      spine_runner.py; passed as closure arg to build_spine(). Regression
+      guard via the existing SP-11 fan-out test suite.
+    cmd: |
+      OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+        tests/unit/test_sp11_fanout.py \
+        -v -q
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    14 red-green oracles (tests/unit/test_sp05d_reaper.py) over
+    app/core/reaper.py:WorkspaceReaper + reap_orphaned_worktrees.
+    C9 review (Opus, 2026-06-03) found 5 real issues: B1 R2 proved detection
+    not pruning (post-call listing check added), B2 unconditional git worktree
+    prune blast-radius undocumented (R2b pins it), B3 FAIL-OPEN had zero coverage
+    (R8/R8b added, # pragma: no cover removed), B4 atexit handler never invoked
+    (R4c added), B5 thread-safety untested (R9 added). All 5 fixed.
+    DEFERRED (named): SIGKILL survival (OS-level, not Python-level), selective
+    per-aa-ws pruning (current impl uses unconditional git worktree prune —
+    documented in R2b and honest-boundary comment).

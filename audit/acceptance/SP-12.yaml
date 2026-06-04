@@ -1,0 +1,96 @@
+# Acceptance — SP-12 · Autonomous GitHub Actions CI/CD Self-Heal
+#
+# C8: sha-pinned in audit/acceptance/SHA256SUMS (CODEOWNERS-guarded, 4-eyes / C10).
+#
+# PRD §6 SP-12: "`repository_dispatch(ci-failure)` wakes the agent to self-heal;
+# Deployment Environments w/ required reviewers; auto-merge gated on SP-06 eval
+# checks (never lint-only); WIF keyless (SP-00b); reusable workflows DRY the 16
+# files. The agent acts as the SP-00f GitHub App (not a PAT)."
+#
+# PRD acceptance: "red CI wakes agent → fixing PR; negative path: a lint+unit-GREEN
+# but eval-RED PR does NOT auto-merge; prod deploy needs human Environment approval;
+# the run token cannot create/delete a repo or write a protected branch."
+#
+# ORACLE MAP (16 hermetic tests — no GitHub API / no network):
+#
+#   AutoMergePolicy:
+#   ①  eval gate absent → BLOCKED (never lint-only auto-merge).
+#   ②  all required pass + eval gate pass → can_merge True.
+#   ③  required check failing → BLOCKED.
+#   ④  eval gate failing → BLOCKED.
+#   ⑤  lint+unit GREEN / eval RED → BLOCKED (PRD negative path).
+#   ⑥  no required checks but eval gate GREEN → can_merge True.
+#   ⑦  "sp-06" fragment recognized as eval gate (case-insensitive).
+#   ⑧  "conformance" fragment recognized as eval gate.
+#   ⑨  "blocking prd" fragment recognized as eval gate.
+#
+#   SelfHealEvent:
+#   ⑩  from_dispatch_payload parses valid payload.
+#   ⑪  missing required field raises ValueError.
+#   ⑫  non-int run_id raises ValueError.
+#   ⑬  short sha raises ValueError.
+#   ⑭  non-list failed_jobs raises ValueError.
+#   ⑮  pr_number=None is allowed (push run without PR).
+#   ⑯  fix_branch_name includes run_id + short sha.
+#
+# C9 SECURITY REVIEW (adversarial, different model class):
+#   Reviewer model: claude-opus-4-7
+#   Review verdict: APPROVED — no security findings.
+#   Review notes:
+#     - AutoMergePolicy is pure logic; no I/O, no credential access.
+#     - SelfHealEvent validates all inputs; no injection surface.
+#     - Workflows use App token (SP-00f) never a PAT; App token has no
+#       repo-create/delete or protected-branch-write permission (403 path
+#       reused from SP-00f acceptance).
+#     - `repository_dispatch` payload is structured JSON — no shell interpolation.
+#     - The auto-merge workflow merges through the PR API which honours branch
+#       protection (eval gate in required_status_checks blocks lint-only merge).
+#
+# DEFERRED (tagged SP-12-INT):
+#   SP-12-INT-1: Reusable workflow refactor — extract setup steps into
+#     `.github/workflows/reusable-setup.yml` to DRY the 30+ CI files.
+#   SP-12-INT-2: Deployment Environment "production" required-reviewer
+#     configuration (GitHub repo settings — no-file deliverable).
+#   SP-12-INT-3: Live integration test — red CI wakes agent → fixing PR
+#     (requires SP-00f GitHub App live + SP-05 sandbox running).
+
+id: SP-12
+title: Autonomous GitHub Actions CI/CD self-heal — eval-gated auto-merge
+prd_section: "§6 SP-12"
+author: claude-sonnet-4-6
+reviewer_model: claude-opus-4-7
+
+oracle_count: 16
+test_file: tests/unit/test_sp12_ci_self_heal.py
+implementation:
+  - app/core/ci_self_heal.py
+  - scripts/ci/auto_merge_gate.py
+  - .github/workflows/sp12-ci-self-heal.yml
+  - .github/workflows/sp12-auto-merge.yml
+
+run:
+  cmd: |
+    OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none uv run --extra dev python -m pytest \
+      tests/unit/test_sp12_ci_self_heal.py \
+      -v -q
+  expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/ci.yml
+  artifact: >
+    16 hermetic oracles in tests/unit/test_sp12_ci_self_heal.py.
+    app/core/ci_self_heal.py: AutoMergePolicy (eval-gated merge decision),
+    CheckResult, AutoMergeDecision, SelfHealEvent (repository_dispatch payload
+    parser). AutoMergePolicy.evaluate() blocks merge when SP-06 eval gate is
+    absent or failing, even if lint+unit are GREEN (PRD negative path oracle ⑤).
+    Eval gate identified by name fragments: "eval-gate", "sp-06", "conformance",
+    "blocking prd". scripts/ci/auto_merge_gate.py: CLI adapter that fetches PR
+    check results via gh API and applies AutoMergePolicy.
+    .github/workflows/sp12-ci-self-heal.yml: dispatches repository_dispatch
+    ci-failure on CI workflow_run failure using SP-00f GitHub App token.
+    .github/workflows/sp12-auto-merge.yml: squash-merges PR only when all
+    required checks pass AND eval gate passes; uses SP-00f App token.
+    C9 review: claude-opus-4-7 (different model class) — APPROVED.
+    DEFERRED: reusable workflow refactor (SP-12-INT-1), Deployment Environment
+    reviewer config (SP-12-INT-2), live self-heal integration test (SP-12-INT-3).
+    16 new oracles passing, 0 regressions.

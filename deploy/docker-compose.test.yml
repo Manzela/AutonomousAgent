@@ -5,17 +5,34 @@ services:
     # Pinned by digest (audit C3 follow-up — the floating `:5` tag was missed
     # in PR #60's original "all images pinned" claim). Resolved 2026-05-19.
     image: stoplight/prism:5@sha256:3f6d29e31bfe0b99587f0f6f79c423858dd6a2ea7e1e4658273ed930a78a9acf
-    command: ["mock", "-h", "0.0.0.0", "-p", "4000", "/specs/openai-mock.yaml"]
+    entrypoint: ["/sbin/tini", "--", "node", "dist/index.js"]
+    command: ["mock", "-h", "0.0.0.0", "-p", "4000", "/specs/openai-mock.yaml", "--no-multiprocess"]
     volumes:
       - ../tests/fixtures/openai-mock.yaml:/specs/openai-mock.yaml:ro
     networks: [internal]
     depends_on: []
     secrets: []
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:4000/v1/models"]
-      interval: 10s
-      timeout: 3s
-      retries: 5
+      disable: true
+
+  langfuse:
+    profiles: ["disabled"]
+
+  otel-collector:
+    volumes:
+      - ./otel/collector.dev.yaml:/etc/otelcol-contrib/config.yaml:ro
+    healthcheck:
+      disable: true
+
+  phoenix:
+    environment:
+      PHOENIX_SECRET: "local_dev_phoenix_secret_key_at_least_32_chars"  # pragma: allowlist secret
+    healthcheck:
+      disable: true
+
+  cloud-sql-proxy:
+    healthcheck:
+      disable: true
 
   # chroma in tests inherits the base `chroma-data:/chroma/chroma` volume
   # (CI tears down with `docker compose down -v`). Same compose-v2 limitation
@@ -43,9 +60,3 @@ services:
   # `docker compose ... config` from failing on the missing depends_on target.
   snapshot-watchdog:
     profiles: ["disabled"]
-
-  # Note: hermes-agent in tests inherits the base compose's `hermes-data:/data`
-  # named volume. CI tears it down with `docker compose down -v` between runs,
-  # so it is effectively ephemeral. (We previously tried `tmpfs: /data` here
-  # but compose v2 cannot un-mount a base volume from an override — both
-  # stack and the union fails to render.)

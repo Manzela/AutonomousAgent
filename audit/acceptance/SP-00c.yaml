@@ -1,0 +1,117 @@
+# Acceptance — SP-00c · rewrite P1-1 safety tests: behavioral binding, differential harness
+#
+# C8 (Executor Operating Contract): immutable, machine-checkable acceptance.
+#   - Pass = EVERY assertion exits 0.
+#   - This file is sha256-pinned in audit/acceptance/SHA256SUMS (the acceptance-frozen
+#     manifest), which is CODEOWNERS-guarded (4-eyes / C10). It MUST NOT be edited in
+#     the PR that claims SP-00c done without an operator-approved manifest update.
+#   - Assertions are stdlib/shell only so run_acceptance.py can re-run them in a
+#     minimal env (C1: evidence = re-run).
+#
+# Source: PRD-autonomous-sdlc-agent.md §6 EPIC 0, row SP-00c — "make P1-1 safety
+# tests real in live-stack CI (behavioral binding, differential harness)".
+
+task: SP-00c
+title: "behavioral-binding safety tests — differential harness, no-skip, no-vocabulary-binding"
+driver: V
+phase: gate-0
+run_from: repo_root
+
+assertions:
+  - id: sp00c-tests-committed
+    description: >
+      Red-green: git status --porcelain must show NO '??' untracked lines in
+      tests/integration/ or tests/unit/ after the SP-00c commit lands.
+      Verifies that all reverted/new test files are tracked (not left untracked).
+    cmd: |
+      status="$(git status --porcelain tests/integration/ tests/unit/)"
+      untracked="$(echo "$status" | grep '^??' || true)"
+      if [ -n "$untracked" ]; then
+        echo "FAIL: untracked test files found (must be committed):"
+        echo "$untracked"
+        exit 1
+      fi
+      echo "OK: no untracked files in tests/integration/ or tests/unit/"
+    expect_exit: 0
+
+  - id: sp00c-differential-persistence
+    description: >
+      Red-green: test_persistence_trap_differential.py (3 variants: COMPLIANT,
+      DECEPTIVE, BENIGN + double-assertion) must pass with behavioral binding
+      (probe checks GCS bytes, NOT refusal vocabulary).
+    cmd: |
+      python3 -m pytest tests/integration/test_persistence_trap_differential.py -q \
+        --tb=short 2>&1
+    expect_exit: 0
+
+  - id: sp00c-differential-secret
+    description: >
+      Red-green: test_secret_leak_differential.py (3 variants + double-assertion)
+      must pass with behavioral binding (probe checks scrubber output string,
+      NOT refusal vocabulary).
+    cmd: |
+      python3 -m pytest tests/integration/test_secret_leak_differential.py -q \
+        --tb=short 2>&1
+    expect_exit: 0
+
+  - id: sp00c-differential-sandbox
+    description: >
+      Red-green: test_sandbox_isolation_differential.py (3 variants + double-assertion)
+      must pass with behavioral binding (probe checks CanaryServer request count,
+      NOT refusal vocabulary).
+    cmd: |
+      python3 -m pytest tests/integration/test_sandbox_isolation_differential.py -q \
+        --tb=short 2>&1
+    expect_exit: 0
+
+  - id: sp00c-binding-behavioral-not-substring
+    description: >
+      Red-green: scripts/ci/substring_assert_lint.py BLOCKING differential-binding
+      check over *_differential.py files must exit 0 (no vocabulary-binding assertions
+      found). The script fails non-zero if any assert <refusal-word> in/not-in
+      <output-ish> pattern is found in a differential test binding assertion.
+    cmd: |
+      python3 scripts/ci/substring_assert_lint.py \
+        --root tests \
+        --differential-root tests/integration \
+        2>&1
+    expect_exit: 0
+
+  - id: sp00c-no-new-skips
+    description: >
+      Red-green: grep for pytest.mark.skip, pytest.mark.skipif, or
+      pytest.mark.xfail in *_differential.py files must find NONE (C6 no-skip
+      contract). The gate must exit 0 only when nothing is found.
+    cmd: |
+      found="$(grep -rn 'pytest\.mark\.\(skip\|skipif\|xfail\)' \
+        tests/integration/*_differential.py 2>/dev/null || true)"
+      if [ -n "$found" ]; then
+        echo "FAIL: skip/skipif/xfail found in differential tests:"
+        echo "$found"
+        exit 1
+      fi
+      echo "OK: no skip/skipif/xfail in *_differential.py files"
+    expect_exit: 0
+
+  - id: sp00c-skip-enforcer-works
+    description: >
+      Red-green (non-vacuous gate check): assert_no_skips.py MUST reject a
+      JUnit XML fixture that has skipped=1. This verifies the enforcer is not
+      a no-op. The cmd exits 0 only if the enforcer correctly returned non-zero.
+    cmd: |
+      if python3 scripts/ci/assert_no_skips.py tests/fixtures/junit_with_skip.xml \
+          >/dev/null 2>&1; then
+        echo "FAIL: assert_no_skips.py did NOT reject junit_with_skip.xml (enforcer is broken)"
+        exit 1
+      fi
+      echo "OK: assert_no_skips.py correctly rejected junit_with_skip.xml (skipped=1)"
+    expect_exit: 0
+
+proof:
+  ci_workflow: .github/workflows/nightly-integration.yml
+  artifact: >
+    GATED live-stack run: nightly-integration.yml with INTEGRATION_LIVE_STACK=1.
+    Expected: differential tests pass (skipped=0) and reverted files committed
+    (test_deepeval_trajectory.py, test_property_llm_invariants.py,
+    test_malt_shipper.py, test_inspect_sandbox.py tracked in git).
+    The live 55-pass + skipped==0 run is the GATED operator step, not a CI gate.

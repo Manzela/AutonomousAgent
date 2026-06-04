@@ -54,49 +54,37 @@ RUN uv pip install --no-cache "/build/hermes-agent[all]" || true   # best-effort
 # Non-editable (-e is not used here) so the source tree is NOT required in the
 # runtime stage — only the installed package is copied via the venv.
 COPY hermes-agent /build/hermes-agent
-RUN uv pip install --no-cache "/build/hermes-agent[all]"
-
-# OTel SDK: initializes the OTel SDK (env vars alone aren't enough; Hermes
-# ships an uninitialized ProxyTracerProvider by default) and emits app-level
-# spans the Phase 1 acceptance runbook step 4 expects.
+# Single RUN layer for all pip installs (consolidates DL3059):
+#   hermes-agent[all]            — agent runtime
+#   opentelemetry-{api,sdk,...}  — OTel SDK (Hermes ships uninitialized ProxyTracerProvider;
+#                                  env vars alone are not enough for span emission)
+#   psycopg[binary]>=3.1         — budget-watchdog: queries LiteLLM_SpendLogs directly
+#                                  (the /spend/total endpoint returns 404)
+#   google-cloud-storage>=2.10   — snapshot-watchdog: daily tarballs to GCS
+#   fastapi>=0.115, uvicorn      — CI hermes-api stub baked into image so docker-compose.ci.yml
+#                                  read_only:true containers don't pip-install at start
+#                                  (root cause of nightly NEW-227-A / OD-2)
+# Security patches (CVE-2026-23949 jaraco.context<6.1.0 path-traversal,
+#                   CVE-2026-24049 wheel<0.46.2 priv-esc): uninstall seed copies,
+# reinstall patched versions, purge stale dotted dist-info left by uv.
+# NOTE: python3.* glob fires correctly on any Python base bump (hardcoding python3.11
+# caused a silent NO-OP after the 3.13 upgrade).
 RUN uv pip install --no-cache \
+      "/build/hermes-agent[all]" \
       "opentelemetry-api>=1.27" \
       "opentelemetry-sdk>=1.27" \
       "opentelemetry-exporter-otlp>=1.27" \
       "opentelemetry-instrumentation-httpx>=0.48" \
-      "opentelemetry-instrumentation-sqlite3>=0.48"
-
-# Postgres client for the budget-watchdog sidecar: queries LiteLLM_SpendLogs
-# directly because the /spend/total endpoint returns 404.
-# psycopg[binary] avoids the libpq build dependency.
-RUN uv pip install --no-cache "psycopg[binary]>=3.1"
-
-# GCS client for the snapshot-watchdog sidecar: uploads daily tarballs.
-# No-op when GCS_SNAPSHOT_BUCKET is unset.
-RUN uv pip install --no-cache "google-cloud-storage>=2.10"
-
-# CI hermes-api HTTP stub (deploy/scripts/ci_hermes_api.py) deps — fastapi + uvicorn.
-# Declared under pyproject [project.optional-dependencies].a2a (NOT main deps, so the
-# SP-00h license/dep-allowlist gate over pyproject is unaffected). BAKED INTO THE IMAGE
-# here so the CI overlay does NOT pip-install at container start: docker-compose.ci.yml
-# runs hermes-api with read_only:true, where a runtime `pip install` cannot write
-# site-packages and the container exits(1) — the root cause of the nightly's
-# "Stack did not become healthy" + httpx ConnectError cascade (NEW-227-A / OD-2).
-RUN uv pip install --no-cache "fastapi>=0.115" "uvicorn[standard]>=0.30"
-
-# Security: the `python -m venv` seed + setuptools ship build-only tooling (jaraco.context,
-# wheel) with fixable CRITICAL/HIGH CVEs that the trivy image scan flags — CVE-2026-23949
-# (jaraco.context <6.1.0, path traversal) and CVE-2026-24049 (wheel <0.46.2, priv-esc).
-# uv installs the normalized hyphenated name but can leave the old DOTTED dist-info behind,
-# so explicitly uninstall first, reinstall the patched versions, then purge any stale <6 /
-# <0.46 dist-info directories. Build-only tooling, unused at agent runtime.
-# NOTE: python3.* glob (not a hardcoded minor version) so this fires correctly on any
-# Python base bump — hardcoding python3.11 caused a silent NO-OP after the 3.13 upgrade.
-RUN uv pip uninstall jaraco.context wheel 2>/dev/null || true; \
-    uv pip install --no-cache "jaraco.context>=6.1.0" "wheel>=0.46.2"; \
-    rm -rf /app/.venv/lib/python3.*/site-packages/jaraco.context-5*.dist-info \
-           /app/.venv/lib/python3.*/site-packages/jaraco_context-5*.dist-info \
-           /app/.venv/lib/python3.*/site-packages/wheel-0.4[0-5]*.dist-info 2>/dev/null || true
+      "opentelemetry-instrumentation-sqlite3>=0.48" \
+      "psycopg[binary]>=3.1" \
+      "google-cloud-storage>=2.10" \
+      "fastapi>=0.115" \
+      "uvicorn[standard]>=0.30" \
+    && uv pip uninstall jaraco.context wheel 2>/dev/null || true \
+    && uv pip install --no-cache "jaraco.context>=6.1.0" "wheel>=0.46.2" \
+    && rm -rf /app/.venv/lib/python3.*/site-packages/jaraco.context-5*.dist-info \
+              /app/.venv/lib/python3.*/site-packages/jaraco_context-5*.dist-info \
+              /app/.venv/lib/python3.*/site-packages/wheel-0.4[0-5]*.dist-info 2>/dev/null || true
 
 # ============================================================
 # Stage 2: runtime

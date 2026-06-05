@@ -82,6 +82,7 @@ jobs:
     permissions:
       contents: read
       id-token: write   # required by google-github-actions/auth for WIF OIDC
+      attestations: write
 
     outputs:
       image_tag: ${{ steps.meta.outputs.tag }}
@@ -198,6 +199,20 @@ jobs:
         run: |
           cosign sign --yes \
             "${{ env.AR_REPO }}/shell-sandbox@${{ steps.build_sandbox.outputs.digest }}"
+
+      - name: Attest hermes image
+        uses: actions/attest@2da0b136720d14f01f4dbeeafd1d5a4d76cbe21d  # v1.4.0
+        with:
+          subject-name: ${{ env.AR_REPO }}/hermes
+          subject-digest: ${{ steps.build_hermes.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest shell-sandbox image
+        uses: actions/attest@2da0b136720d14f01f4dbeeafd1d5a4d76cbe21d  # v1.4.0
+        with:
+          subject-name: ${{ env.AR_REPO }}/shell-sandbox
+          subject-digest: ${{ steps.build_sandbox.outputs.digest }}
+          push-to-registry: true
 
       - name: Build summary
         run: |

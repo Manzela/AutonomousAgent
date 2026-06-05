@@ -85,6 +85,7 @@ tiers:
     provisioning: spot
     status: pending-infra  # W1.J: main.tf + LiteLLM config ready; activate after terraform apply
     fallback_tier: orchestrator
+    daily_cost_cap_usd: 100
     agentic_coding:
       tool_call_format: qwen3_coder
       enable_thinking: true

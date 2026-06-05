@@ -142,7 +142,13 @@ what enforces immutability of the version actually executed.
     "google-github-actions/auth@*",
     "docker/setup-buildx-action@*",
     "docker/login-action@*",
-    "docker/build-push-action@*"
+    "docker/build-push-action@*",
+    "google-github-actions/setup-gcloud@*",
+    "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@*",
+    "google/osv-scanner-action@*",
+    "ossf/scorecard-action@*",
+    "returntocorp/semgrep-action@*",
+    "hashicorp/setup-terraform@*"
   ]
 }
 ```

@@ -128,6 +128,8 @@ jobs:
           # Also sign the blob for the release asset
           cosign sign-blob \
             --yes \
+            --use-signing-config=false \
+            --new-bundle-format=false \
             --output-signature "sbom-hermes-${{ github.ref_name }}.spdx.json.sig" \
             --output-certificate "sbom-hermes-${{ github.ref_name }}.spdx.json.pem" \
             "sbom-hermes-${{ github.ref_name }}.spdx.json"

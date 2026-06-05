@@ -12,10 +12,18 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SMOKE_LOG="$(mktemp)"
 trap 'rm -f "$SMOKE_LOG"' EXIT
 
+# Resolve secrets directory: default to $ROOT/secrets in local dev,
+# or $ROOT/../secrets if that exists (e.g. GCE VM environment).
+if [ -d "$ROOT/../secrets" ]; then
+  SECRETS_DIR="${SECRETS_DIR:-$ROOT/../secrets}"
+else
+  SECRETS_DIR="${SECRETS_DIR:-$ROOT/secrets}"
+fi
+
 # Auto-decrypt secrets if any plaintext is missing — smoke tests need
 # the Telegram bot token + LiteLLM master key to run their probes.
 # Idempotent: decrypt-secrets.sh re-runs cleanly even if files already exist.
-if [ ! -f "$ROOT/secrets/telegram.env" ] || [ ! -f "$ROOT/secrets/litellm-master-key" ]; then
+if [ ! -f "$SECRETS_DIR/telegram.env" ] || [ ! -f "$SECRETS_DIR/litellm-master-key" ]; then
   echo "→ Decrypting secrets (plaintext missing)..."
   "$ROOT/scripts/decrypt-secrets.sh" >/dev/null 2>&1 || {
     echo "✗ decrypt-secrets.sh failed; check sops + age key at ~/.config/sops/age/keys.txt"
@@ -60,7 +68,7 @@ echo "Smoke test 3/8: real LLM round-trip via litellm → Vertex AI"
 # not "Opus is unthrottled at this exact second". Opus is still wired and
 # will be used by default by the agent for actual user turns.
 check "real LLM call (vertex_ai/claude-sonnet-4-6)" bash -c '
-  master_key=$(cat "'"$ROOT"'/secrets/litellm-master-key" 2>/dev/null)
+  master_key=$(cat "'"$SECRETS_DIR"'/litellm-master-key" 2>/dev/null)
   resp=$(curl -fsS -X POST http://localhost:4000/v1/chat/completions \
     -H "Authorization: Bearer ${master_key}" \
     -H "Content-Type: application/json" \
@@ -70,7 +78,7 @@ check "real LLM call (vertex_ai/claude-sonnet-4-6)" bash -c '
 
 echo "Smoke test 4/8: Telegram bot reachable from gateway"
 check "egress allowed (TG getMe)" bash -c '
-  TG_TOKEN=$(grep -E "^TELEGRAM_BOT_TOKEN=" "'"$ROOT"'/secrets/telegram.env" | cut -d= -f2)
+  TG_TOKEN=$(grep -E "^TELEGRAM_BOT_TOKEN=" "'"$SECRETS_DIR"'/telegram.env" | cut -d= -f2)
   curl -fsS "https://api.telegram.org/bot${TG_TOKEN}/getMe" | grep -q ok
 '
 
@@ -97,7 +105,7 @@ echo "Smoke test 8/8: Gemini 3.1 Pro Preview round-trip via litellm → Vertex A
 # Gemini 3.1 Pro Preview is a thinking model — give it a generous max_tokens budget
 # (thoughts + 1 token of answer typically takes 100+ tokens internally).
 check "real LLM call (vertex_ai/gemini-3.1-pro-preview)" bash -c '
-  master_key=$(cat "'"$ROOT"'/secrets/litellm-master-key" 2>/dev/null)
+  master_key=$(cat "'"$SECRETS_DIR"'/litellm-master-key" 2>/dev/null)
   resp=$(curl -fsS -X POST http://localhost:4000/v1/chat/completions \
     -H "Authorization: Bearer ${master_key}" \
     -H "Content-Type: application/json" \

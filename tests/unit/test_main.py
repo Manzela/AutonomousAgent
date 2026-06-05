@@ -339,3 +339,115 @@ async def test_lifespan_startup_recovery(monkeypatch):
     mock_runner._app.ainvoke.assert_called_once_with(
         None, {"configurable": {"thread_id": "test-recover-tid"}}
     )
+
+
+async def test_telegram_webhook_configured(monkeypatch, client):
+    """Verify that when TELEGRAM_BOT_TOKEN is set, /webhook/telegram correctly routes to adapter and resumes the thread."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.main import _state, lifespan, app
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:mock_token")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+
+    # Reset state to force lifespan re-initialization
+    _state.runner = None
+    _state.kill_switch = None
+
+    # Mock route_to_interrupt in SteeringEventBus
+    mock_route = AsyncMock()
+
+    with patch("app.main.SpineRunner") as MockRunner:
+        mock_runner = MockRunner.return_value
+        # Mock methods that would be called
+        mock_adapter = MagicMock()
+        mock_adapter.handle_update.return_value = True
+        mock_runner.require_telegram_adapter.return_value = mock_adapter
+
+        mock_bus = MagicMock()
+        mock_bus.route_to_interrupt = mock_route
+        mock_runner.require_bus.return_value = mock_bus
+
+        async with lifespan(app):
+            # Send a webhook request
+            resp = await client.post(
+                "/webhook/telegram",
+                json={
+                    "update_id": 1001,
+                    "callback_query": {
+                        "id": "cq-1001",
+                        "data": "approve:iid1",
+                        "from": {"id": 999},
+                    },
+                },
+            )
+            assert resp.status_code == 200
+            assert resp.json() == {"status": "ok"}
+
+            # Let the background task run
+            await asyncio.sleep(0.05)
+
+        # Assert that the adapter was called and routing occurred
+        mock_adapter.handle_update.assert_called_once()
+        mock_route.assert_called_once_with(mock_runner, thread_id="telegram", interrupt_id="iid1")
+
+
+async def test_graph_wires_notifier_calls(monkeypatch, client):
+    """Verify that execution nodes call notifier.notify and notifier.notify_gate at appropriate lifecycle points."""
+    from unittest.mock import MagicMock
+    from app.main import _state, lifespan, app
+    from app.core.spine_runner import SpineRunner
+    from app.core.graph import build_spine
+
+    # Force Telegram enablement
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:mock_token")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+
+    # Reset state
+    _state.runner = None
+    _state.kill_switch = None
+
+    # Mock notifier calls
+    mock_notify = MagicMock()
+    mock_notify_gate = MagicMock()
+
+    original_init = SpineRunner.__init__
+
+    def custom_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        # Replace the instantiated notifier with a mock
+        self._notifier = MagicMock()
+        self._notifier.notify = mock_notify
+        self._notifier.notify_gate = mock_notify_gate
+        # Update the app with the mock notifier
+        self._app = build_spine(
+            self._provider.build_saver(),
+            capability=self._capability,
+            sandbox=self._sandbox,
+            drafter=self._drafter,
+            cap=self._cap,
+            lease=self._lease,
+            budget_usd=self._budget,
+            board=self._board,
+            gate=self._gate,
+            reaper=self._reaper,
+            decomposer=self._decomposer,
+            notifier=self._notifier,
+        )
+
+    monkeypatch.setattr(SpineRunner, "__init__", custom_init)
+
+    async with lifespan(app):
+        # 1. Start a goal. This will hit goal_intake -> clarify -> sign_off (interrupt)
+        resp = await client.post(
+            "/goal",
+            json={"thread_id": "t-notify-test", "goal": "build hello world"},
+        )
+        assert resp.status_code == 200
+
+        # 2. Verify notify_gate was called for sign_off_gate
+        assert mock_notify_gate.call_count == 1
+        call_kwargs = mock_notify_gate.call_args[1]
+        assert call_kwargs["thread_id"] == "t-notify-test"
+        assert call_kwargs["event_key"].startswith("sign_off_gate:")
+        assert call_kwargs["interrupt_id"] is not None

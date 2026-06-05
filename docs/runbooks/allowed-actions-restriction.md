@@ -149,6 +149,7 @@ what enforces immutability of the version actually executed.
     "google/osv-scanner-action/*",
     "ossf/scorecard-action@*",
     "returntocorp/semgrep-action@*",
+    "semgrep/semgrep-action@*",
     "hashicorp/setup-terraform@*"
   ]
 }

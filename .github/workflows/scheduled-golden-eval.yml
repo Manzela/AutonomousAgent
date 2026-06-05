@@ -37,15 +37,15 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v4.2.2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v5.3.0
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: Authenticate to GCP (WIF)
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@71f986410dfbc7added4569d411d040a91dc6935  # v2.1.8
         with:
           workload_identity_provider: "projects/${{ env.GCP_PROJECT_ID }}/locations/global/workloadIdentityPools/github-pool/providers/github-provider"
           service_account: "github-actions@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com"
@@ -110,7 +110,7 @@ jobs:
 
       - name: Create drift alert issue
         if: steps.drift.outputs.drifted == 'true'
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7.0.1
         with:
           script: |
             const passRate = '${{ steps.drift.outputs.pass_rate }}';
@@ -127,7 +127,7 @@ jobs:
 
       - name: Upload eval results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4.6.0
         with:
           name: golden-eval-results-${{ github.run_number }}
           path: |

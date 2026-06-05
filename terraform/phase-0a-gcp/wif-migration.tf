@@ -53,7 +53,9 @@ resource "google_cloud_run_v2_service" "hermes_service" {
     service_account = google_service_account.hermes_agent.email
 
     containers {
-      image = "${var.ar_repo}/hermes:${var.image_tag}"
+      image   = "${var.ar_repo}/hermes:${var.image_tag}"
+      command = ["uvicorn"]
+      args    = ["app.main:app", "--host", "0.0.0.0", "--port", "8080"]
 
       # Liveness: restart if the health endpoint stops responding.
       liveness_probe {

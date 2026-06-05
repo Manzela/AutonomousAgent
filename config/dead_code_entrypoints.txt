@@ -309,3 +309,8 @@ lib.evaluators.judge_calibration:JudgeCalibrationMonitor.score
 lib.evaluators.judge_calibration:JudgeQuarantineRegistry.quarantine
 lib.evaluators.judge_calibration:JudgeQuarantineRegistry.is_quarantined
 lib.evaluators.judge_calibration:JudgeQuarantineRegistry.quarantined_ids
+
+# lib/evaluators/dag_metric.py:DAGMetric is the evaluators metric for DAG conformance.
+# It is used in eval tests and evaluation gates (C14 / C15) and is not called from
+# the main FastAPI runtime entrypoints directly.
+lib.evaluators.dag_metric:DAGMetric

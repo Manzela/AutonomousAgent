@@ -345,6 +345,7 @@ def _build_nodes(
     gate: Optional[GateReader] = None,
     reaper: Optional[WorkspaceReaper] = None,
     decomposer: Optional[AbstractDecomposer] = None,
+    notifier: Optional[Any] = None,
 ):
     # SP-16 (slice 3): the C14 GateReader the ship_effect node consults to close the root goal card
     # (`done` is gate-derived — the agent never self-marks it). gate=None (default) => the root card
@@ -462,6 +463,13 @@ def _build_nodes(
         )
 
         if outcome.action.kind == "ask_next" and outcome.questions:
+            if notifier is not None:
+                q_text = "\n".join(f"- {q.text}" for q in outcome.questions)
+                notifier.notify(
+                    thread_id=state["thread_id"],
+                    event_key=f"questions:{round_index}",
+                    text=f"Clarification needed for thread {state['thread_id']}:\n{q_text}",
+                )
             resume = interrupt(
                 {
                     "gate": "clarify",
@@ -534,6 +542,15 @@ def _build_nodes(
         SP-03/SP-04: the operator approves the DRAFTED PRD (spec_draft) the clarify
         loop produced — the ambiguity report + applied_standards (overridable
         defaults, R5/C18) are surfaced here — NOT the raw goal."""
+        tid = state["thread_id"]
+        ptid = config["configurable"].get("__pregel_task_id", "sign_off")
+        if notifier is not None:
+            notifier.notify_gate(
+                thread_id=tid,
+                event_key=f"sign_off_gate:{ptid}",
+                text=f"Please approve the PRD draft for thread {tid}:\n{state.get('goal', '')}",
+                interrupt_id=ptid,
+            )
         decision = interrupt(
             {
                 "gate": "sign_off",
@@ -542,6 +559,12 @@ def _build_nodes(
                 "goal": state.get("goal", ""),
             }
         )
+        if notifier is not None:
+            notifier.notify(
+                thread_id=tid,
+                event_key=f"prd_signed:{ptid}",
+                text=f"PRD signed off for thread {tid}.",
+            )
         return _record_decision("sign_off", decision)
 
     async def seal_spec(state: SpineState, config) -> dict:
@@ -611,6 +634,12 @@ def _build_nodes(
                 "must be retrievable; refusing to build an empty plan"
             )
         plan = decomposer.decompose(spec)
+        if notifier is not None:
+            notifier.notify(
+                thread_id=state["thread_id"],
+                event_key="decompose",
+                text=f"Task DAG created for thread {state['thread_id']}: {len(plan['nodes'])} node(s), {len(plan['edges'])} edge(s).",
+            )
         # SP-R1 (C9): scrub before persist — the plan node summaries derive from the
         # operator's acceptance_criteria text, which can carry PII.
         delta = _scrub_persisted(
@@ -756,6 +785,13 @@ def _build_nodes(
                     "workspace_ref": None,
                 }
 
+        if notifier is not None:
+            tasks_list = "\n".join(f"- {r.task_id}: {r.summary}" for r in reqs)
+            notifier.notify(
+                thread_id=tid,
+                event_key=f"sub_agents:{len(reqs)}",
+                text=f"Dispatched wave of sub-agents for thread {tid}:\n{tasks_list}",
+            )
         outcomes = await asyncio.gather(*[_one(r) for r in reqs])  # gather IS the super-step join
 
         # SP-16 (slice 2): reflect this wave's execution on the board (OUTBOUND) — a COMPLETED
@@ -843,6 +879,14 @@ def _build_nodes(
             spec_sha=state.get("spec_sha") or "",
             symlink_paths=tuple(state.get("symlink_paths") or ()),
         )
+        if notifier is not None:
+            notifier.notify(
+                thread_id=state["thread_id"],
+                event_key="test_results",
+                text=f"Eval gate verdict for thread {state['thread_id']}:\n"
+                f"Passed: {verdict.passed}\n"
+                f"Violations: {len(verdict.violations)}",
+            )
         delta = {
             "eval_verdict": asdict(verdict),
             "audit": [
@@ -854,6 +898,15 @@ def _build_nodes(
 
     async def ship_gate(state: SpineState, config) -> dict:
         """PURE interrupt node — prod-approval."""
+        tid = state["thread_id"]
+        ptid = config["configurable"].get("__pregel_task_id", "ship_gate")
+        if notifier is not None:
+            notifier.notify_gate(
+                thread_id=tid,
+                event_key=f"ship_gate:{ptid}",
+                text=f"Please approve the ship to prod for thread {tid}:\n{state.get('goal', '')}",
+                interrupt_id=ptid,
+            )
         decision = interrupt(
             {"gate": "ship", "question": "Ship to prod?", "spec_sha": state.get("spec_sha")}
         )
@@ -884,6 +937,12 @@ def _build_nodes(
             state, tid=tid, ptid=ptid, kind="ship", node_label="ship_effect", effect=_effect
         )
         if "ledger" in delta:  # effect ran (not skipped) -> stamp the workspace ref
+            if notifier is not None:
+                notifier.notify(
+                    thread_id=tid,
+                    event_key="deploy",
+                    text=f"Deployment completed successfully for thread {tid}!",
+                )
             # SP-R7: prefer the REAL content-addressed ref the execute node snapshotted; the
             # synthetic sha256(goal+spec_sha) below is now a DEGRADED-ONLY fallback (no
             # sandbox / snapshot failed) — kept so the sandbox=None skeleton path still ships.
@@ -1136,6 +1195,7 @@ def build_spine(
     gate: Optional[GateReader] = None,
     reaper: Optional[WorkspaceReaper] = None,
     decomposer: Optional[AbstractDecomposer] = None,
+    notifier: Optional[Any] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -1148,7 +1208,17 @@ def build_spine(
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
     nodes = _build_nodes(
-        capability, sandbox, drafter, cap, lease, budget_usd, board, gate, reaper, decomposer
+        capability,
+        sandbox,
+        drafter,
+        cap,
+        lease,
+        budget_usd,
+        board,
+        gate,
+        reaper,
+        decomposer,
+        notifier,
     )
     g = StateGraph(SpineState)
     for name, fn in nodes.items():

@@ -27,7 +27,7 @@ class GcsWorkspaceSnapshotter:
         self.kms_key_name = kms_key_name or os.environ.get("SPINE_SNAPSHOT_KMS_KEY")
 
     def _gcs_client(self) -> Any:
-        from google.cloud import storage
+        from google.cloud import storage  # type: ignore[attr-defined]
 
         return storage.Client()
 

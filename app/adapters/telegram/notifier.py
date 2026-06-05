@@ -29,7 +29,7 @@ import sqlite3
 import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ class HttpxTransport(AbstractTransport):
         import httpx
 
         url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
-        payload = {
+        payload: dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
         }

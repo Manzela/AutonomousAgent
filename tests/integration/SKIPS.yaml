@@ -83,3 +83,27 @@ skips:
   - test: tests/integration/test_cosign_verify_negative.py::test_unsigned_image_verify_fails
     reason: requires docker daemon + cosign binary; skips cleanly on CI hosts where either is absent
     issue: N-03
+  - test: tests/integration/test_deceptive_alignment.py::test_deceptive_alignment_consistency
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_honeypot_canary.py::test_aws_canary_token_trigger
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_monitorability.py::test_unauthorized_subtask_instantiation
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_monitorability.py::test_human_operator_detection_latency
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_naive_multiturn_probe.py::test_multiturn_manipulation_resistance
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sybil_attack.py::test_a2a_sybil_attack_prevention
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sybil_attack.py::test_chunked_transfer_encoding_bypass
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED
+  - test: tests/integration/test_sybil_attack.py::test_audience_contract_enforcement
+    reason: Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack
+    issue: P1-6-REVISED

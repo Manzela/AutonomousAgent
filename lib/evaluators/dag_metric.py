@@ -114,10 +114,10 @@ class DAGMetric(BaseMetric):
         )
 
         semantic_metric.measure(test_case)
-        self.score = semantic_metric.score
-        self.success = semantic_metric.success
+        self.score = semantic_metric.score if semantic_metric.score is not None else 0.0
+        self.success = semantic_metric.success if semantic_metric.success is not None else False
         self.reason = semantic_metric.reason
         return self.score
 
     def is_successful(self) -> bool:
-        return self.success
+        return self.success is True

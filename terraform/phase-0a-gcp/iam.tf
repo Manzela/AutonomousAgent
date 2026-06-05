@@ -64,6 +64,7 @@ locals {
     "roles/artifactregistry.writer",
     "roles/iam.serviceAccountUser",
     "roles/iap.tunnelResourceAccessor",
+    "roles/compute.osAdminLogin",
   ]
 }
 

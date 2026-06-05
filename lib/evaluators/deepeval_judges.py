@@ -45,9 +45,7 @@ from pydantic import BaseModel
 # where it is not (the C5 import-only path, where no judge is ever constructed). The runtime
 # import path stays clean; the eval path is not weakened.
 if typing.TYPE_CHECKING:
-
-    class DeepEvalBaseLLM:
-        pass
+    from deepeval.models.base_model import DeepEvalBaseLLM
 
     _HAVE_DEEPEVAL = True
 else:

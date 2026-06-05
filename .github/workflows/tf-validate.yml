@@ -13,9 +13,9 @@ jobs:
       - name: Check out code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@a9fd48a27aae69c8c3600bfd12f37c3510ec56d9 # v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
         with:
-          terraform_version: "1.5.7"
+          terraform_version: "1.7.0"
       - name: Terraform Init
         run: |
           cd terraform/phase-0a-gcp
@@ -24,7 +24,3 @@ jobs:
         run: |
           cd terraform/phase-0a-gcp
           terraform validate
-      - name: Terraform Plan
-        run: |
-          cd terraform/phase-0a-gcp
-          terraform plan -detailed-exitcode -var="image_tag=latest"

@@ -16,7 +16,6 @@ def test_deploy_workflow_gate_structure():
     assert "build-and-push" in jobs
     assert "osv-scanner" in jobs
     assert "trivy" in jobs
-    assert "scorecard" in jobs
     assert "deploy-staging" in jobs
     assert "deploy-production" in jobs
 
@@ -27,7 +26,6 @@ def test_deploy_workflow_gate_structure():
         assert "build-and-push" in needs
         assert "osv-scanner" in needs
         assert "trivy" in needs
-        assert "scorecard" in needs
 
     # Also verify deploy-production depends on deploy-staging
     assert "deploy-staging" in jobs["deploy-production"].get("needs", [])

@@ -407,7 +407,11 @@ jobs:
 
           echo "[deploy] Verifying image signatures and attestations..."
           COSIGN_VERSION="v3.0.6"
-          if ! command -v cosign &> /dev/null || ! cosign version 2>&1 | grep -q "${COSIGN_VERSION}"; then
+          installed_version=""
+          if command -v cosign &> /dev/null; then
+            installed_version=$(cosign version 2>&1) || true
+          fi
+          if [[ -z "${installed_version}" || ! "${installed_version}" =~ "${COSIGN_VERSION}" ]]; then
             echo "Installing cosign ${COSIGN_VERSION} (pinned)..."
             curl -fsSL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
               -o /tmp/cosign-linux-amd64
@@ -610,7 +614,11 @@ jobs:
 
           echo "[deploy] Verifying image signatures and attestations..."
           COSIGN_VERSION="v3.0.6"
-          if ! command -v cosign &> /dev/null || ! cosign version 2>&1 | grep -q "${COSIGN_VERSION}"; then
+          installed_version=""
+          if command -v cosign &> /dev/null; then
+            installed_version=$(cosign version 2>&1) || true
+          fi
+          if [[ -z "${installed_version}" || ! "${installed_version}" =~ "${COSIGN_VERSION}" ]]; then
             echo "Installing cosign ${COSIGN_VERSION} (pinned)..."
             curl -fsSL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
               -o /tmp/cosign-linux-amd64

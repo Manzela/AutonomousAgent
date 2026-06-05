@@ -275,6 +275,50 @@ async def lifespan(app: FastAPI):
 
     drafter = _build_spec_drafter()
 
+    # Telegram Integration Setup
+    telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    telegram_adapter = None
+    notifier = None
+    if telegram_token:
+        logger.info("spine: TELEGRAM_BOT_TOKEN detected — initializing Telegram integration")
+        allowed_users_raw = os.environ.get("TELEGRAM_ALLOWED_USERS")
+        operator_ids = None
+        if allowed_users_raw:
+            try:
+                operator_ids = frozenset(
+                    int(uid.strip()) for uid in allowed_users_raw.split(",") if uid.strip()
+                )
+            except ValueError:
+                logger.warning("Invalid TELEGRAM_ALLOWED_USERS value: %r", allowed_users_raw)
+
+        chat_id = os.environ.get("TELEGRAM_HOME_CHANNEL")
+        if not chat_id and operator_ids:
+            chat_id = str(next(iter(operator_ids)))
+
+        if chat_id:
+            logger.info("spine: Telegram notifier target chat ID resolved to %s", chat_id)
+            from app.adapters.telegram.notifier import HttpxTransport, TelegramNotifier
+            from pathlib import Path
+
+            transport = HttpxTransport(bot_token=telegram_token)
+
+            # Use /data if it exists (e.g. persistent volume), else fallback to /tmp
+            if os.path.exists("/data"):
+                db_path = Path("/data/telegram_outbox.db")
+            else:
+                db_path = Path("/tmp/telegram_outbox.db")
+
+            notifier = TelegramNotifier(chat_id=chat_id, transport=transport, db_path=db_path)
+
+            from app.adapters.telegram.adapter import TelegramAdapter
+
+            telegram_adapter = TelegramAdapter(bus, operator_ids=operator_ids)
+        else:
+            logger.warning(
+                "TELEGRAM_BOT_TOKEN set but no target chat ID "
+                "(TELEGRAM_HOME_CHANNEL or TELEGRAM_ALLOWED_USERS) resolved. Notifier disabled."
+            )
+
     runner = SpineRunner(
         checkpointer,
         board=board,
@@ -282,6 +326,8 @@ async def lifespan(app: FastAPI):
         kill_switch=kill_switch,
         sandbox=sandbox,
         drafter=drafter,
+        telegram_adapter=telegram_adapter,
+        notifier=notifier,
     )
 
     _state.runner = runner
@@ -493,6 +539,23 @@ async def rollback(req: RollbackRequest, request: Request):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _get_active_interrupt_ids(runner: SpineRunner, thread_id: str) -> list[str]:
+    """Resolve active interrupt IDs for the thread from the current state."""
+    try:
+        state = runner.get_state(thread_id)
+        if not state or not getattr(state, "tasks", None):
+            return []
+        ids = []
+        for task in state.tasks:
+            if getattr(task, "interrupts", None):
+                for intr in task.interrupts:
+                    ids.append(intr.id)
+        return ids
+    except Exception as exc:
+        logger.warning("Failed to resolve active interrupts for thread %s: %s", thread_id, exc)
+        return []
+
+
 @app.post("/webhook/telegram", tags=["integrations"])
 @_limit("webhook")
 async def telegram_webhook(request: Request):
@@ -505,7 +568,34 @@ async def telegram_webhook(request: Request):
             body.get("thread_id")
             or (body.get("message") or {}).get("chat", {}).get("id", "telegram")
         )
-        adapter.handle_update(body, thread_id=thread_id)
+
+        # 1. Resolve interrupt_id
+        cq = body.get("callback_query")
+        encoded_iid = None
+        if cq:
+            data = (cq.get("data") or "").strip()
+            parts = data.split(":", 1)
+            if len(parts) > 1 and parts[1]:
+                encoded_iid = parts[1]
+
+        interrupt_id = encoded_iid
+        if not interrupt_id:
+            active_ids = _get_active_interrupt_ids(runner, thread_id)
+            if active_ids:
+                interrupt_id = active_ids[0]
+
+        # 2. Ingest the update
+        accepted = adapter.handle_update(body, thread_id=thread_id, interrupt_id=interrupt_id)
+
+        # 3. Route to resume execution asynchronously
+        if accepted and interrupt_id:
+            import asyncio
+
+            bus = runner.require_bus()
+            asyncio.create_task(
+                bus.route_to_interrupt(runner, thread_id=thread_id, interrupt_id=interrupt_id)
+            )
+
         return {"status": "ok"}
     except RuntimeError as exc:
         # TelegramAdapter not configured — expected in non-Telegram deployments

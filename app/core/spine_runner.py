@@ -194,6 +194,7 @@ class SpineRunner:
             gate=self._gate,
             reaper=self._reaper,
             decomposer=self._decomposer,
+            notifier=self._notifier,
         )
 
     @property

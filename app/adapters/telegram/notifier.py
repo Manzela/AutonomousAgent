@@ -101,6 +101,35 @@ class RecordingTransport(AbstractTransport):
         logger.debug("RecordingTransport.send chat_id=%s text=%r", chat_id, text[:80])
 
 
+class HttpxTransport(AbstractTransport):
+    """Production transport using httpx to call the Telegram Bot API."""
+
+    def __init__(self, bot_token: str, timeout: float = 10.0) -> None:
+        if not bot_token:
+            raise ValueError("bot_token is required for HttpxTransport")
+        self._bot_token = bot_token
+        self._timeout = timeout
+
+    def send(self, *, chat_id: str, text: str, reply_markup: Optional[list] = None) -> None:
+        import httpx
+
+        url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": text,
+        }
+        if reply_markup:
+            payload["reply_markup"] = {"inline_keyboard": reply_markup}
+
+        try:
+            resp = httpx.post(url, json=payload, timeout=self._timeout)
+            resp.raise_for_status()
+            logger.info("Telegram notification sent successfully to chat_id=%s", chat_id)
+        except Exception as exc:
+            logger.error("Failed to send Telegram notification to chat_id=%s: %s", chat_id, exc)
+            raise RuntimeError(f"Telegram API call failed: {exc}") from exc
+
+
 # ── Idempotency ledger ───────────────────────────────────────────────────────
 
 _CREATE_OUTBOX = """

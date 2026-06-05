@@ -114,3 +114,10 @@ resource "google_storage_bucket_iam_member" "j3_trajectories_vm_writer" {
   role   = "roles/storage.objectCreator"
   member = "serviceAccount:${google_service_account.vm_runtime.email}"
 }
+
+# VM runtime SA needs objectViewer permission on the snapshots bucket to fetch the bootstrap tarball during deployment.
+resource "google_storage_bucket_iam_member" "snapshots_vm_viewer" {
+  bucket = google_storage_bucket.snapshots.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.vm_runtime.email}"
+}

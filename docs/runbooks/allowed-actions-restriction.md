@@ -146,6 +146,7 @@ what enforces immutability of the version actually executed.
     "google-github-actions/setup-gcloud@*",
     "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@*",
     "google/osv-scanner-action@*",
+    "google/osv-scanner-action/*",
     "ossf/scorecard-action@*",
     "returntocorp/semgrep-action@*",
     "hashicorp/setup-terraform@*"

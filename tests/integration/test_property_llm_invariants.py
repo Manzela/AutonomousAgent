@@ -6,14 +6,22 @@ Requires the live docker stack to execute (litellm proxy must be up).
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 from hypothesis import given, settings, strategies as st
+
+_LIVE_STACK = bool(os.environ.get("INTEGRATION_LIVE_STACK"))
 
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.docker,
     pytest.mark.slow,
+    pytest.mark.skipif(
+        not _LIVE_STACK,
+        reason="Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack",
+    ),
 ]
 
 # 1.2 Invariant: No destructive tools without confirmation

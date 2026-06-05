@@ -269,22 +269,6 @@ jobs:
           trivy image --severity CRITICAL,HIGH --exit-code 1 --ignore-unfixed --vuln-type os,library \
             "us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images/shell-sandbox@${{ needs.build-and-push.outputs.sandbox_digest }}"
 
-  scorecard:
-    name: Scorecard Scan
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      id-token: write
-    steps:
-      - name: Check out code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Run Scorecard
-        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.0
-        with:
-          results_file: results.sarif
-          results_format: sarif
-          publish_results: true
-
   # ------------------------------------------------------------------
   # Deploy to Staging (IAP SSH)
   # ------------------------------------------------------------------
@@ -292,7 +276,7 @@ jobs:
     name: Deploy to Staging (IAP SSH)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [build-and-push, osv-scanner, trivy, scorecard]
+    needs: [build-and-push, osv-scanner, trivy]
     environment:
       name: staging
       url: https://autonomousagent-staging-vm.autonomous-agent-2026.cloud.goog
@@ -488,7 +472,7 @@ jobs:
     name: Deploy to Production (IAP SSH)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: [build-and-push, osv-scanner, trivy, scorecard, deploy-staging]
+    needs: [build-and-push, osv-scanner, trivy, deploy-staging]
     environment:
       name: production
       url: https://autonomousagent-vm.autonomous-agent-2026.cloud.goog

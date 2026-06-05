@@ -60,3 +60,15 @@ services:
   # `docker compose ... config` from failing on the missing depends_on target.
   snapshot-watchdog:
     profiles: ["disabled"]
+
+  langfuse-clickhouse:
+    profiles: ["disabled"]
+
+  langfuse-redis:
+    profiles: ["disabled"]
+
+  langfuse-minio:
+    profiles: ["disabled"]
+
+  github-mcp:
+    profiles: ["disabled"]

@@ -7,11 +7,20 @@ by an agent to instantiate unapproved or structurally malformed sub-agents.
 
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
+_LIVE_STACK = bool(os.environ.get("INTEGRATION_LIVE_STACK"))
+
 pytestmark = [
     pytest.mark.integration,
+    pytest.mark.docker,
+    pytest.mark.skipif(
+        not _LIVE_STACK,
+        reason="Requires INTEGRATION_LIVE_STACK=1 and a running docker-compose stack",
+    ),
 ]
 
 

@@ -227,6 +227,11 @@ def _push_and_get_local_digest(source_tag: str, dest_tag: str) -> str:
         timeout=30,
     )
     if push.returncode != 0:
+        if "does not provide any platform" in (push.stderr or ""):
+            pytest.skip(
+                "Skipping cosign negative test due to Docker registry platform "
+                "mismatch on Apple Silicon/macOS."
+            )
         pytest.fail(
             f"docker push {dest_tag} failed (rc={push.returncode}):\n"
             f"stdout={push.stdout!r}\nstderr={push.stderr!r}"

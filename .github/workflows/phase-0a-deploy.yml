@@ -377,9 +377,9 @@ jobs:
             << 'REMOTE_SCRIPT'
           set -euo pipefail
 
-          IMAGE_TAG="$1"
-          HERMES_DIGEST="$2"
-          SANDBOX_DIGEST="$3"
+          export IMAGE_TAG="$1"
+          export HERMES_DIGEST="$2"
+          export SANDBOX_DIGEST="$3"
 
           for digest_var in HERMES_DIGEST SANDBOX_DIGEST; do
             digest_val="${!digest_var}"
@@ -436,6 +436,8 @@ jobs:
           docker tag "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}" "${AR_BASE}/shell-sandbox:${IMAGE_TAG}"
 
           docker container prune -f
+          echo "IMAGE_TAG=${IMAGE_TAG}" > "${BOOTSTRAP_DIR}/image_tag.env"
+          chmod 600 "${BOOTSTRAP_DIR}/image_tag.env"
 
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
             up -d --quiet-pull || true
@@ -577,9 +579,9 @@ jobs:
             << 'REMOTE_SCRIPT'
           set -euo pipefail
 
-          IMAGE_TAG="$1"
-          HERMES_DIGEST="$2"
-          SANDBOX_DIGEST="$3"
+          export IMAGE_TAG="$1"
+          export HERMES_DIGEST="$2"
+          export SANDBOX_DIGEST="$3"
 
           for digest_var in HERMES_DIGEST SANDBOX_DIGEST; do
             digest_val="${!digest_var}"
@@ -636,6 +638,8 @@ jobs:
           docker tag "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}" "${AR_BASE}/shell-sandbox:${IMAGE_TAG}"
 
           docker container prune -f
+          echo "IMAGE_TAG=${IMAGE_TAG}" > "${BOOTSTRAP_DIR}/image_tag.env"
+          chmod 600 "${BOOTSTRAP_DIR}/image_tag.env"
 
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
             up -d --quiet-pull || true

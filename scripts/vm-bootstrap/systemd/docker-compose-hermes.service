@@ -8,6 +8,7 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/hermes/bootstrap
 EnvironmentFile=/run/hermes/env/*
+EnvironmentFile=-/opt/hermes/bootstrap/image_tag.env
 ExecStartPre=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.gcp.override.yml pull
 ExecStart=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.gcp.override.yml up -d
 ExecStop=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.gcp.override.yml down

@@ -89,7 +89,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
 
       - name: Run Semgrep
-        uses: semgrep/semgrep-action@713efdd345f3035192eaa63f56887e63e4e5d  # v1
+        uses: semgrep/semgrep-action@713efdd345f3035192eaa63f56867b88e63e4e5d  # v1
         with:
           config: >-
             p/python p/security-audit p/owasp-top-ten p/jwt

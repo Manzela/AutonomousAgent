@@ -1,62 +1,52 @@
-"""VertexSpecDrafter — DEFERRED GCP/Vertex concretion of AbstractSpecDrafter.
+"""VertexSpecDrafter — GCP/Vertex concretion of AbstractSpecDrafter.
 
 This is the production spec-drafter: a Vertex structured-output (Pydantic-
 constrained) drafter that emits TaskSpec fields + typed clarifying questions + an
-ambiguity report (PRD §6 SP-03). It is an INTENTIONALLY-UNWIRED stub — the safe
-core (the ABC + the deterministic in-memory drafter + the driver) ships first;
-the live Vertex concretion is DEFERRED to a follow-up (it needs the Vertex SDK,
-WIF credentials per SP-00b, and the vendored SP-25 `constitution.md` asset for the
-`applied_standards[]` grounding).
-
-Kept as a sibling per the CLAUDE.md builder-agent rule (do NOT collapse the ABC;
-add the GCP subclass alongside the in-memory one). CI runs against
-`app.adapters.inmemory.spec_drafter.InMemorySpecDrafter`; staging + prod will run
-against this class once implemented.
-
-is_production_grade=False until draft() is real — same posture as
-FirecrackerSandbox (H-06): a True flag on a stub would let a production selector
-falsely accept this class and then crash on the first call.
-
-GROUNDING RULE (C16 / non-goal #6): the structured-output prompt is grounded ONLY
-in model knowledge + the vendored SP-25 `constitution.md` asset. There is NO live
-web tool / general-web egress — a web fetch here would breach non-goal #6 and open
-a C16 untrusted-read surface. The Vertex call returns Pydantic-validated
-`DraftResult` JSON (response_schema-constrained), never free text the harness must
-re-parse.
+ambiguity report (PRD §6 SP-03).
 """
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from typing import Optional
 
-from app.core.spec_drafter import AbstractSpecDrafter, DraftResult
+import litellm
+
+from app.core.spec_drafter import (
+    MAX_QUESTIONS_PER_ROUND,
+    AbstractSpecDrafter,
+    CONSTITUTION_PATH,
+    DraftResult,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class VertexSpecDrafter(AbstractSpecDrafter):
-    """Vertex structured-output spec-drafter.
+    """Vertex structured-output spec-drafter."""
 
-    NOT YET IMPLEMENTED — SP-03 Vertex concretion (DEFERRED). ``__init__`` and
-    ``draft()`` raise NotImplementedError until the Vertex client + response-schema
-    binding + constitution.md grounding asset are wired.
-    """
-
-    is_production_grade = False
+    is_production_grade = True
 
     def __init__(
         self,
         *,
         project: Optional[str] = None,
         location: str = "us-central1",
-        model: str = "claude-opus-4-7",
+        model: str = "vertex_ai/gemini-3.1-pro-preview",
     ) -> None:
-        raise NotImplementedError(
-            "SP-03 Vertex spec-drafter not yet implemented. Use "
-            "app.adapters.inmemory.spec_drafter.InMemorySpecDrafter for CI. The "
-            "Vertex concretion needs: the Vertex SDK + WIF creds (SP-00b), a "
-            "response_schema-constrained structured-output call returning DraftResult "
-            "JSON, and the vendored SP-25 constitution.md asset for applied_standards "
-            "grounding (model knowledge + asset ONLY — no live web tool, C16 / non-goal #6)."
-        )
+        self.project = project or os.environ.get("GCP_PROJECT_ID", "autonomous-agent-2026")
+        self.location = location
+        # Ensure correct prefix for Vertex models
+        if model and not (
+            model.startswith("vertex_ai/")
+            or model.startswith("openrouter/")
+            or model.startswith("hosted_vllm/")
+        ):
+            self.model = f"vertex_ai/{model}"
+        else:
+            self.model = model or "vertex_ai/gemini-3.1-pro-preview"
 
     def draft(
         self,
@@ -65,5 +55,58 @@ class VertexSpecDrafter(AbstractSpecDrafter):
         answers: Optional[dict[str, str]] = None,
         round_index: int = 0,
     ) -> DraftResult:
-        """Produce one round via Vertex structured output. DEFERRED — stub."""
-        raise NotImplementedError("SP-03 Vertex spec-drafter stub")
+        """Produce one round via Vertex structured output."""
+        answers = answers or {}
+
+        # Grounding rule (C16 / non-goal #6): load the constitution.md asset
+        constitution_content = ""
+        if CONSTITUTION_PATH.exists():
+            try:
+                constitution_content = CONSTITUTION_PATH.read_text(encoding="utf-8")
+            except Exception as exc:
+                logger.warning("VertexSpecDrafter: failed to read constitution.md: %s", exc)
+
+        system_prompt = (
+            "You are a Senior Principal Software Architect. Given the user's intent, "
+            "prior clarification answers, and the system constitution, produce a DraftResult.\n\n"
+            f"=== System Constitution ===\n{constitution_content}\n\n"
+            "Constraints:\n"
+            f"1. You must not seek/ask more than {MAX_QUESTIONS_PER_ROUND} questions.\n"
+            "2. Ground your applied_standards and ambiguities strictly in the system constitution and model knowledge. Do not reference external links.\n"
+            "3. Return the output matching the requested schema format."
+        )
+
+        user_content = f"User Intent: {intent}\n\nAnswers so far: {json.dumps(answers)}"
+
+        resp = litellm.completion(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            response_format=DraftResult,
+            temperature=0.0,
+        )
+
+        raw_content = resp.choices[0].message.content
+        if not raw_content:
+            raise ValueError("VertexSpecDrafter: model returned empty content")
+
+        # Mistake-proofing: Parse the JSON dictionary first, slice questions if they exceed MAX_QUESTIONS_PER_ROUND, and instantiate DraftResult.
+        try:
+            data = json.loads(raw_content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"VertexSpecDrafter: failed to parse JSON response: {raw_content[:200]!r}"
+            ) from exc
+
+        if isinstance(data, dict) and "questions" in data and isinstance(data["questions"], list):
+            if len(data["questions"]) > MAX_QUESTIONS_PER_ROUND:
+                logger.warning(
+                    "VertexSpecDrafter: model returned %d questions, slicing to %d",
+                    len(data["questions"]),
+                    MAX_QUESTIONS_PER_ROUND,
+                )
+                data["questions"] = data["questions"][:MAX_QUESTIONS_PER_ROUND]
+
+        return DraftResult(**data)

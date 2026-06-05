@@ -351,3 +351,28 @@ def test_scrub_filter_no_exc_info_unchanged() -> None:
     assert result is True
     assert record.exc_text is None
     assert record.exc_info is None
+
+
+def test_gcp_json_formatter_emits_scrubbed_exception_traceback() -> None:
+    """_GcpJsonFormatter must emit the scrubbed traceback (exc_text) even when exc_info is cleared."""
+    from lib.observability.otel_setup import _GcpJsonFormatter
+    import json
+
+    _reset_singleton_for_tests()
+    ant_key = "sk-ant-api03-" + "a" * 20
+    record = _make_exc_record(ant_key)
+
+    # 1. Scrub filter processes the record
+    ScrubFilter().filter(record)
+    assert record.exc_info is None
+    assert record.exc_text is not None
+
+    # 2. Formatter formats the record
+    formatter = _GcpJsonFormatter()
+    formatted_str = formatter.format(record)
+
+    # 3. Verify the formatted string contains the redacted traceback in the 'exc' field
+    payload = json.loads(formatted_str)
+    assert "exc" in payload
+    assert ant_key not in payload["exc"]
+    assert "[REDACTED:anthropic_key]" in payload["exc"]

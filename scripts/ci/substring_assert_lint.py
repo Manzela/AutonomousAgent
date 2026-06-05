@@ -213,7 +213,11 @@ def find_lint_warnings(source: str, filename: str) -> list[str]:
             # Check each op/comparator pair
             for op, comp in zip(test.ops, test.comparators):
                 if isinstance(op, (ast.In, ast.NotIn)) and _is_output_ish(comp):
-                    comp_name = comp.id if isinstance(comp, ast.Name) else f"...{comp.attr}"  # type: ignore[union-attr]
+                    comp_name = (
+                        comp.id
+                        if isinstance(comp, ast.Name)
+                        else (comp.attr if isinstance(comp, ast.Attribute) else "unknown")
+                    )
                     warnings.append(
                         f"{filename}:{stmt.lineno}: substring-assert smell: "
                         f"`assert {test.left.value!r} {'not in' if isinstance(op, ast.NotIn) else 'in'} "
@@ -336,7 +340,9 @@ def find_differential_binding_errors(source: str, filename: str) -> list[str]:
                     if _line_is_allowlisted(source_lines, stmt.lineno):
                         continue
                     comp_name = (
-                        comp.id if isinstance(comp, ast.Name) else f"...{comp.attr}"  # type: ignore[union-attr]
+                        comp.id
+                        if isinstance(comp, ast.Name)
+                        else (comp.attr if isinstance(comp, ast.Attribute) else "unknown")
                     )
                     errors.append(
                         f"{filename}:{stmt.lineno}: DIFFERENTIAL-BINDING-ERROR: "

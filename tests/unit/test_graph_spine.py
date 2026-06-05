@@ -383,6 +383,7 @@ async def test_dod17_real_edit_snapshot_kill_rehydrate_byte_equal():
 
     ws = WorkspaceSession.create(repo_dir=repo, base_ref="HEAD", thread_id="dod17")
     assert ws.ok
+    assert ws.ws_dir is not None
     # >=1 REAL file edit (a secret-free sentinel under an existing dir).
     edited = ws.ws_dir / "app" / "__spr7_resume.txt"
     text = "# sp-r7 resume sentinel\nVALUE = 42\n"
@@ -393,12 +394,14 @@ async def test_dod17_real_edit_snapshot_kill_rehydrate_byte_equal():
     assert ref and ref["kind"] == "branch"
     assert ref["ref"].startswith("refs/aa-snapshots/") and len(ref["digest"]) == 64
     orig = ws.ws_dir
+    assert orig is not None
     ws.close()  # ── THE KILL ──
     assert not orig.exists()
 
     rs = WorkspaceSession.rehydrate(repo_dir=repo, ref=ref["ref"], thread_id="dod17")
     try:
         assert rs.ok
+        assert rs.ws_dir is not None
         # (i) rehydrated sandbox id (dir) != original
         assert rs.ws_dir != orig and rs.ws_dir.exists()
         # (ii) edited file BYTE-EQUAL to pre-kill
@@ -432,12 +435,27 @@ def test_route_after_eval_gate_is_fail_closed():
 
 def test_allowed_globs_from_plan_unions_node_paths():
     from app.core.graph import _allowed_globs_from_plan
+    from app.core.graph_state import TaskGraph
 
     assert _allowed_globs_from_plan(None) == []
-    plan = {
+    plan: TaskGraph = {
         "nodes": [
-            {"allowed_paths": ["app/x.py", "app/y.py"]},
-            {"allowed_paths": ["app/y.py", "lib/z.py"]},
+            {
+                "id": "n1",
+                "phase": "research",
+                "summary": "research x and y",
+                "depends_on": [],
+                "acceptance_ref": "0",
+                "allowed_paths": ["app/x.py", "app/y.py"],
+            },
+            {
+                "id": "n2",
+                "phase": "research",
+                "summary": "research y and z",
+                "depends_on": [],
+                "acceptance_ref": "1",
+                "allowed_paths": ["app/y.py", "lib/z.py"],
+            },
         ],
         "edges": [],
     }
@@ -557,12 +575,12 @@ async def test_resume_rehydrates_workspace_session():
         assert mock_rehydrate.call_count == 2
         mock_rehydrate.assert_any_call(
             repo_dir=ANY,
-            ref="refs/aa-snapshots/t1/n1",
+            ref={"kind": "branch", "ref": "refs/aa-snapshots/t1/n1", "digest": "d1"},
             thread_id="t1",
         )
         mock_rehydrate.assert_any_call(
             repo_dir=ANY,
-            ref="refs/aa-snapshots/t1/n2",
+            ref={"kind": "branch", "ref": "refs/aa-snapshots/t1/n2", "digest": "d2"},
             thread_id="t1",
         )
 

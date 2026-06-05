@@ -32,6 +32,7 @@ distinct post-resume nodes and are ledger-guarded via apply_once().
 from __future__ import annotations
 
 import asyncio
+import os
 import hashlib
 import json
 import sys
@@ -42,13 +43,14 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Mapping, Optional
+from typing import Any, AsyncGenerator, Callable, Mapping, Optional
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
 from app.adapters.inmemory.decompose import InMemoryDecomposer
 from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
+from app.core.decompose import AbstractDecomposer
 from app.core import graph_state as gs
 from app.core.board import AbstractBoard, BoardError, GateReader, project_plan
 from app.core.decision_record import append_decision
@@ -214,7 +216,7 @@ def _scrub_persisted(obj):
 
 # ── nodes (closure over the injected capability + sandbox + drafter — no callables in state) ──
 @asynccontextmanager
-async def _async_cm(sync_cm) -> AsyncIterator[None]:
+async def _async_cm(sync_cm) -> AsyncGenerator[None, None]:
     """Bridge a SYNC context manager (SP-R6 ``GlobalThreadCap.slot`` / ``BranchLease.hold`` —
     both wrap a BLOCKING ``BoundedSemaphore.acquire`` / ``fcntl.flock``) into an async one:
     enter/exit OFF the event loop via a worker thread, so a contended acquire never FREEZES the
@@ -342,6 +344,7 @@ def _build_nodes(
     board: Optional[AbstractBoard] = None,
     gate: Optional[GateReader] = None,
     reaper: Optional[WorkspaceReaper] = None,
+    decomposer: Optional[AbstractDecomposer] = None,
 ):
     # SP-16 (slice 3): the C14 GateReader the ship_effect node consults to close the root goal card
     # (`done` is gate-derived — the agent never self-marks it). gate=None (default) => the root card
@@ -355,6 +358,19 @@ def _build_nodes(
     # the DEFERRED VertexSpecDrafter in prod). Default to the hermetic in-memory drafter
     # so the spine stays runnable without live Vertex (CLAUDE.md hybrid-adapter rule).
     drafter = drafter or InMemorySpecDrafter()
+
+    # SP-02: the decomposer is injected (InMemory deterministic in CI;
+    # the VertexDecomposer in prod). Dynamic selection based on SPINE_DECOMPOSER.
+    if decomposer is None:
+        kind = os.environ.get("SPINE_DECOMPOSER", "").lower()
+        if kind == "vertex":
+            from app.adapters.gcp.decompose import VertexDecomposer
+
+            model = os.environ.get("SPINE_DECOMPOSER_MODEL", "gemini-3-5-flash")
+            decomposer = VertexDecomposer(model=model)
+        else:
+            decomposer = InMemoryDecomposer()
+
     # SP-11/SP-R6: the fan-out concurrency cap + per-branch lease. Defaults keep every existing
     # caller working — cap=1 (serial, no behaviour change for single-node plans) + an ephemeral
     # lease dir. SpineRunner injects the real cap (SPINE_MAX_ACTIVE) + a per-runner lease dir.
@@ -594,7 +610,7 @@ def _build_nodes(
                 f"decompose: locked spec {spec_id} not found in the store — a sealed spec "
                 "must be retrievable; refusing to build an empty plan"
             )
-        plan = InMemoryDecomposer().decompose(spec)
+        plan = decomposer.decompose(spec)
         # SP-R1 (C9): scrub before persist — the plan node summaries derive from the
         # operator's acceptance_criteria text, which can carry PII.
         delta = _scrub_persisted(
@@ -1119,6 +1135,7 @@ def build_spine(
     board: Optional[AbstractBoard] = None,
     gate: Optional[GateReader] = None,
     reaper: Optional[WorkspaceReaper] = None,
+    decomposer: Optional[AbstractDecomposer] = None,
 ):
     """Compile the spine StateGraph with the single writable checkpointer.
 
@@ -1130,7 +1147,9 @@ def build_spine(
     loop runs goal_intake → clarify (≤5 Qs/round, loops on ask_next) → sign_off ON the
     drafted PRD → seal_spec (SP-04: nothing builds before resume)."""
     capability = capability or _default_capability()
-    nodes = _build_nodes(capability, sandbox, drafter, cap, lease, budget_usd, board, gate, reaper)
+    nodes = _build_nodes(
+        capability, sandbox, drafter, cap, lease, budget_usd, board, gate, reaper, decomposer
+    )
     g = StateGraph(SpineState)
     for name, fn in nodes.items():
         g.add_node(name, fn)

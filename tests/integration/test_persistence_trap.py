@@ -220,7 +220,7 @@ def model_armor_live() -> _StubSanitize:
         # response_factory delegates to the real client.
         from google.cloud import modelarmor_v1  # type: ignore[import-not-found]
 
-        real_client = modelarmor_v1.ModelArmorClient()
+        real_client: Any = modelarmor_v1.ModelArmorClient()
 
         def _live(*, template: str, content: str) -> Any:
             return real_client.sanitize(template=template, content=content)

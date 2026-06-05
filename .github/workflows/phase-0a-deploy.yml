@@ -282,22 +282,23 @@ jobs:
           publish_results: true
 
   # ------------------------------------------------------------------
-  # Deploy: SSH to the VM via IAP, pull new images, restart compose.
+  # Deploy to Staging (IAP SSH)
   # ------------------------------------------------------------------
-  deploy:
-    name: Deploy to VM (IAP SSH)
+  deploy-staging:
+    name: Deploy to Staging (IAP SSH)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     needs: [build-and-push, osv-scanner, trivy, scorecard]
     environment:
-      name: production
-      url: https://autonomousagent-vm.autonomous-agent-2026.cloud.goog
+      name: staging
+      url: https://autonomousagent-staging-vm.autonomous-agent-2026.cloud.goog
 
     permissions:
       contents: read
       id-token: write   # WIF
 
     env:
+      VM_NAME: autonomousagent-staging-vm
       IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
       HERMES_DIGEST: ${{ needs.build-and-push.outputs.hermes_digest }}
       SANDBOX_DIGEST: ${{ needs.build-and-push.outputs.sandbox_digest }}
@@ -314,12 +315,8 @@ jobs:
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOYER_SA }}
-          # credentials_file is used by gcloud for subsequent calls (SSH, gsutil)
           create_credentials_file: true
 
-      # Install a current gcloud SDK — the runner's pre-installed gcloud has a
-      # bug (quote_from_bytes() TypeError) when calling gcloud compute ssh via
-      # IAP on some runner image versions.
       - name: Install gcloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
         with:
@@ -359,22 +356,6 @@ jobs:
             "${IMAGE}" \
             | jq -e '.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1"'
 
-      # ------------------------------------------------------------------
-      # Deploy script executed on the VM via stdin redirect (avoids copying
-      # a file to the VM). Steps:
-      #   1. Pull bootstrap tarball from GCS (contains compose + secrets mount
-      #      stubs if needed — primarily ensures the compose file is current).
-      #   2. Verify cosign signatures using the EXACT digests from the build job
-      #      (no tag→digest resolve on the VM — closes TOCTOU window).
-      #   3. Pull both images by digest, re-tag to :<sha> for compose resolution.
-      #   4. Restart the stack with zero-downtime rolling update.
-      #
-      # Note on bootstrap tarball: the tarball at the GCS path is the
-      # canonical source of the compose file + config on the VM. CI does NOT
-      # push a new tarball on every deploy — the tarball is updated manually
-      # when the compose file changes. digest-pull + `up -d` is sufficient
-      # for image-only updates.
-      # ------------------------------------------------------------------
       - name: Deploy via IAP SSH
         env:
           HERMES_DIGEST: ${{ env.HERMES_DIGEST }}
@@ -393,8 +374,6 @@ jobs:
           HERMES_DIGEST="$2"
           SANDBOX_DIGEST="$3"
 
-          # Validate digest format: must start with sha256: and be 71 chars total.
-          # Prevents a blank/injected value from reaching docker pull.
           for digest_var in HERMES_DIGEST SANDBOX_DIGEST; do
             digest_val="${!digest_var}"
             if [[ ! "${digest_val}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
@@ -403,8 +382,6 @@ jobs:
             fi
           done
 
-          # Bootstrap lives at /opt/hermes/bootstrap/ on the VM.
-          # Compose files: docker-compose.yml + docker-compose.gcp.override.yml
           BOOTSTRAP_DIR="/opt/hermes/bootstrap"
           COMPOSE_BASE="${BOOTSTRAP_DIR}/docker-compose.yml"
           COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
@@ -421,12 +398,7 @@ jobs:
           echo "[deploy] Authenticating Docker to Artifact Registry..."
           gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
 
-          # Verify the image attestation via cosign before pulling
           echo "[deploy] Verifying image signatures and attestations..."
-
-          # Fallback to cosign if it exists, but install it if missing.
-          # Version is pinned; binary is verified against the release checksums.txt
-          # before installation. Never pull from releases/latest.
           if ! command -v cosign &> /dev/null; then
             COSIGN_VERSION="v2.4.1"
             echo "Installing cosign ${COSIGN_VERSION} (pinned)..."
@@ -440,53 +412,31 @@ jobs:
             rm -f /tmp/cosign_checksums.txt
           fi
 
-          # Verify both images using the EXACT same digests that the CI build job
-          # produced and cosign-signed — no TOCTOU tag→digest resolve on the VM.
-          echo "[deploy] Verifying hermes@${HERMES_DIGEST}..."
           cosign verify \
             --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${AR_BASE}/hermes@${HERMES_DIGEST}"
 
-          echo "[deploy] Verifying shell-sandbox@${SANDBOX_DIGEST}..."
           cosign verify \
             --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
             "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
 
-          # Pull images by digest — the same digest that was cosign-verified above.
-          # This closes the TOCTOU window: no floating-tag resolution on the VM.
-          echo "[deploy] Pulling hermes by digest..."
           docker pull "${AR_BASE}/hermes@${HERMES_DIGEST}"
-          echo "[deploy] Pulling shell-sandbox by digest..."
           docker pull "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
 
-          # Re-tag with the SHA tag so docker-compose.gcp.override.yml IMAGE_TAG
-          # lookup resolves to the just-pulled (digest-verified) layers.
           docker tag "${AR_BASE}/hermes@${HERMES_DIGEST}" "${AR_BASE}/hermes:${IMAGE_TAG}"
           docker tag "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}" "${AR_BASE}/shell-sandbox:${IMAGE_TAG}"
 
-          echo "[deploy] Pruning stopped containers (clears stale references)..."
-          # Stopped/killed containers from prior chaos tests or failed deploys
-          # leave stale IDs that docker compose tries to reference during
-          # --force-recreate. Prune removes them without touching running ones.
           docker container prune -f
 
-          echo "[deploy] Starting compose stack..."
-          # || true: docker compose up can emit "No such container" for stale
-          # references from prior kills (e.g., chaos tests). These are cleanup
-          # errors — the container still starts. The smoke check is authoritative.
           docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
             up -d --quiet-pull || true
 
           echo "[deploy] Smoke check — polling up to 120 s for ${EXPECTED_CONTAINERS} containers..."
-          # snapshot-watchdog depends_on hermes which depends_on litellm-proxy
-          # (healthy) which depends_on litellm-db (healthy). The full chain
-          # takes 60-90 s; a retry loop is more reliable than a fixed sleep.
           for attempt in $(seq 1 12); do
             running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
-              ps --status running --format json \
-              | python3 -c "import sys, json; data=sys.stdin.read(); items=json.loads(data) if data.strip().startswith('[') else [json.loads(l) for l in data.splitlines() if l.strip()]; print(len(items))")
+              ps --status running -q | wc -l | xargs)
             echo "[deploy] t+${attempt}0s: running=${running}/${EXPECTED_CONTAINERS}"
             if [ "${running}" -ge "${EXPECTED_CONTAINERS}" ]; then
               echo "[deploy] Smoke check passed."
@@ -499,12 +449,212 @@ jobs:
             fi
             sleep 10
           done
+
+          echo "[deploy] Running deep semantic smoke checks..."
+          cd "${BOOTSTRAP_DIR}"
+          sudo bash ./scripts/smoke.sh
           REMOTE_SCRIPT
 
       - name: Deploy summary
         if: success()
         run: |
-          echo "### Deploy complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Deploy to Staging complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **VM**: \`$VM_NAME\` (\`$GCP_ZONE\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Image tag**: \`$IMAGE_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Containers running**: $EXPECTED_CONTAINER_COUNT" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Trigger**: \`${{ github.event_name }}\` by \`${{ github.actor }}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rollback guidance on failure
+        if: failure()
+        run: |
+          echo "### Deploy to Staging FAILED" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "To rollback manually, SSH to the VM and run:" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+          echo "gcloud compute ssh $VM_NAME --zone=$GCP_ZONE --project=$GCP_PROJECT --tunnel-through-iap" >> "$GITHUB_STEP_SUMMARY"
+          echo "# Then on the VM:" >> "$GITHUB_STEP_SUMMARY"
+          echo "sudo docker compose -f /opt/hermes/bootstrap/docker-compose.yml up -d" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ------------------------------------------------------------------
+  # Deploy to Production (IAP SSH, manual environment approval gate)
+  # ------------------------------------------------------------------
+  deploy-production:
+    name: Deploy to Production (IAP SSH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [build-and-push, osv-scanner, trivy, scorecard, deploy-staging]
+    environment:
+      name: production
+      url: https://autonomousagent-vm.autonomous-agent-2026.cloud.goog
+
+    permissions:
+      contents: read
+      id-token: write   # WIF
+
+    env:
+      VM_NAME: autonomousagent-vm
+      IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+      HERMES_DIGEST: ${{ needs.build-and-push.outputs.hermes_digest }}
+      SANDBOX_DIGEST: ${{ needs.build-and-push.outputs.sandbox_digest }}
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6
+        with:
+          submodules: false
+
+      - name: Authenticate to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093  # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+          create_credentials_file: true
+
+      - name: Install gcloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db  # v3.0.1
+        with:
+          project_id: ${{ env.GCP_PROJECT }}
+
+      - name: Set up gcloud CLI
+        run: |
+          gcloud config set project "$GCP_PROJECT"
+          gcloud config set compute/zone "$GCP_ZONE"
+          gcloud config set compute/region "$GCP_REGION"
+          gcloud auth list
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Verify image signatures
+        env:
+          HERMES_IMAGE: ${{ env.AR_REPO }}/hermes@${{ env.HERMES_DIGEST }}
+          SANDBOX_IMAGE: ${{ env.AR_REPO }}/shell-sandbox@${{ env.SANDBOX_DIGEST }}
+        run: |
+          for img in "$HERMES_IMAGE" "$SANDBOX_IMAGE"; do
+            echo "Verifying signature for $img..."
+            cosign verify \
+              --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$img"
+          done
+
+      - name: Verify SLSA provenance
+        env:
+          IMAGE: ${{ env.AR_REPO }}/hermes@${{ env.HERMES_DIGEST }}
+        run: |
+          cosign verify-attestation \
+            --type slsaprovenance \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/.+@refs/heads/main$' \
+            "${IMAGE}" \
+            | jq -e '.payload | @base64d | fromjson | .predicateType == "https://slsa.dev/provenance/v1"'
+
+      - name: Deploy via IAP SSH
+        env:
+          HERMES_DIGEST: ${{ env.HERMES_DIGEST }}
+          SANDBOX_DIGEST: ${{ env.SANDBOX_DIGEST }}
+        run: |
+          gcloud compute ssh "$VM_NAME" \
+            --zone="$GCP_ZONE" \
+            --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --quiet \
+            --command="sudo bash -s -- '$IMAGE_TAG' '$HERMES_DIGEST' '$SANDBOX_DIGEST'" \
+            << 'REMOTE_SCRIPT'
+          set -euo pipefail
+
+          IMAGE_TAG="$1"
+          HERMES_DIGEST="$2"
+          SANDBOX_DIGEST="$3"
+
+          for digest_var in HERMES_DIGEST SANDBOX_DIGEST; do
+            digest_val="${!digest_var}"
+            if [[ ! "${digest_val}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+              echo "[deploy] ERROR: ${digest_var} has unexpected format: '${digest_val}'" >&2
+              exit 1
+            fi
+          done
+
+          BOOTSTRAP_DIR="/opt/hermes/bootstrap"
+          COMPOSE_BASE="${BOOTSTRAP_DIR}/docker-compose.yml"
+          COMPOSE_GCP="${BOOTSTRAP_DIR}/docker-compose.gcp.override.yml"
+          BOOTSTRAP_TARBALL="gs://autonomous-agent-2026-snapshots/bootstrap/hermes-bootstrap.tar.gz"
+          EXPECTED_CONTAINERS=10
+          AR_BASE="us-central1-docker.pkg.dev/autonomous-agent-2026/autonomousagent-images"
+
+          echo "[deploy] Refreshing bootstrap tarball from GCS..."
+          gsutil -q cp "${BOOTSTRAP_TARBALL}" /tmp/hermes-bootstrap.tar.gz
+          tar -xzf /tmp/hermes-bootstrap.tar.gz -C "${BOOTSTRAP_DIR}" 2>/dev/null
+          rm -f /tmp/hermes-bootstrap.tar.gz
+          echo "[deploy] Bootstrap tarball extracted."
+
+          echo "[deploy] Authenticating Docker to Artifact Registry..."
+          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+          echo "[deploy] Verifying image signatures and attestations..."
+          if ! command -v cosign &> /dev/null; then
+            COSIGN_VERSION="v2.4.1"
+            echo "Installing cosign ${COSIGN_VERSION} (pinned)..."
+            curl -fsSL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign-linux-amd64" \
+              -o /tmp/cosign-linux-amd64
+            curl -fsSL "https://github.com/sigstore/cosign/releases/download/${COSIGN_VERSION}/cosign_checksums.txt" \
+              -o /tmp/cosign_checksums.txt
+            grep "cosign-linux-amd64$" /tmp/cosign_checksums.txt | sha256sum -c -
+            chmod +x /tmp/cosign-linux-amd64
+            sudo mv /tmp/cosign-linux-amd64 /usr/local/bin/cosign
+            rm -f /tmp/cosign_checksums.txt
+          fi
+
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${AR_BASE}/hermes@${HERMES_DIGEST}"
+
+          cosign verify \
+            --certificate-identity-regexp '^https://github\.com/Manzela/AutonomousAgent/\.github/workflows/phase-0a-deploy\.yml@refs/heads/main$' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
+
+          docker pull "${AR_BASE}/hermes@${HERMES_DIGEST}"
+          docker pull "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}"
+
+          docker tag "${AR_BASE}/hermes@${HERMES_DIGEST}" "${AR_BASE}/hermes:${IMAGE_TAG}"
+          docker tag "${AR_BASE}/shell-sandbox@${SANDBOX_DIGEST}" "${AR_BASE}/shell-sandbox:${IMAGE_TAG}"
+
+          docker container prune -f
+
+          docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+            up -d --quiet-pull || true
+
+          echo "[deploy] Smoke check — polling up to 120 s for ${EXPECTED_CONTAINERS} containers..."
+          for attempt in $(seq 1 12); do
+            running=$(docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" \
+              ps --status running -q | wc -l | xargs)
+            echo "[deploy] t+${attempt}0s: running=${running}/${EXPECTED_CONTAINERS}"
+            if [ "${running}" -ge "${EXPECTED_CONTAINERS}" ]; then
+              echo "[deploy] Smoke check passed."
+              break
+            fi
+            if [ "${attempt}" -eq 12 ]; then
+              echo "[deploy] ERROR: timeout — only ${running}/${EXPECTED_CONTAINERS} containers running." >&2
+              docker compose -f "${COMPOSE_BASE}" -f "${COMPOSE_GCP}" ps >&2
+              exit 1
+            fi
+            sleep 10
+          done
+
+          echo "[deploy] Running deep semantic smoke checks..."
+          cd "${BOOTSTRAP_DIR}"
+          sudo bash ./scripts/smoke.sh
+          REMOTE_SCRIPT
+
+      - name: Deploy summary
+        if: success()
+        run: |
+          echo "### Deploy to Production complete" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "- **VM**: \`$VM_NAME\` (\`$GCP_ZONE\`)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Image tag**: \`$IMAGE_TAG\`" >> "$GITHUB_STEP_SUMMARY"
@@ -517,11 +667,11 @@ jobs:
       - name: Rollback guidance on failure
         if: failure()
         run: |
-          echo "### Deploy FAILED" >> "$GITHUB_STEP_SUMMARY"
+          echo "### Deploy to Production FAILED" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "To rollback manually, SSH to the VM and run:" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
           echo "gcloud compute ssh $VM_NAME --zone=$GCP_ZONE --project=$GCP_PROJECT --tunnel-through-iap" >> "$GITHUB_STEP_SUMMARY"
           echo "# Then on the VM:" >> "$GITHUB_STEP_SUMMARY"
-          echo "sudo docker compose -f /opt/autonomousagent/deploy/docker-compose.yml up -d" >> "$GITHUB_STEP_SUMMARY"
+          echo "sudo docker compose -f /opt/hermes/bootstrap/docker-compose.yml up -d" >> "$GITHUB_STEP_SUMMARY"
           echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"

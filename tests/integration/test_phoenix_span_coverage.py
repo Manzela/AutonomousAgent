@@ -27,6 +27,7 @@ rules.
 
 from __future__ import annotations
 
+from typing import Callable
 import pytest
 
 # OTel SDK is required for this test; skip cleanly when absent so host venvs
@@ -72,7 +73,7 @@ class _FakeHermesContext:
     contract on the consuming side."""
 
     def __init__(self) -> None:
-        self.hooks: dict[str, callable] = {}
+        self.hooks: dict[str, Callable] = {}
 
     def register_hook(self, name: str, callback) -> None:
         self.hooks[name] = callback

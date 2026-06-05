@@ -137,3 +137,31 @@ class TestCostTracker:
         assert "CostTracker" in r
         assert "total_usd=" in r
         assert "calls=" in r
+
+    def test_active_tracker_contextvar(self):
+        from lib.cost_tracker import CostTracker, active_tracker
+        from lib.observability import _post_api_request
+        from unittest.mock import MagicMock
+        import lib.observability as obs
+
+        tracker = CostTracker()
+        token = active_tracker.set(tracker)
+        try:
+            mock_tracer = MagicMock()
+            mock_span = MagicMock()
+            with (
+                patch("lib.observability._tracer", mock_tracer),
+                patch("lib.cost_tracker.llm_request_cost_usd", return_value=0.005),
+                patch.dict(obs._LLM_SPANS, {"test-session": (mock_span, None)}),
+                patch.dict(obs._LLM_MODEL_BY_SESSION, {"test-session": "test-model"}),
+            ):
+                _post_api_request(
+                    session_id="test-session",
+                    usage={"input_tokens": 100, "output_tokens": 50},
+                    response_model="test-model",
+                )
+            assert tracker.total_usd == pytest.approx(0.005)
+            assert tracker.call_count == 1
+            assert tracker.priced_count == 1
+        finally:
+            active_tracker.reset(token)

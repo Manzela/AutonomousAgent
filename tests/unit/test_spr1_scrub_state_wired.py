@@ -16,7 +16,8 @@ from __future__ import annotations
 import pytest
 
 from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
-from app.core.schemas import AgentCapability, ExecutionResult, TaskStatus
+from typing import Any
+from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskStatus
 from app.core.spine_runner import SpineRunner
 
 
@@ -26,11 +27,11 @@ def _isolate_decision_record(tmp_path, monkeypatch):
 
 
 def _cap() -> AgentCapability:
-    async def _invoke(req: object) -> ExecutionResult:
+    async def _invoke(req: Any) -> ExecutionResult:
         return ExecutionResult(task_id=req.task_id, status=TaskStatus.COMPLETED)
 
     return AgentCapability(
-        agent_id="stub",
+        agent_id=AgentID("stub"),
         version="1",
         phase="draft",
         description="hermetic stub",

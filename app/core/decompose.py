@@ -94,7 +94,7 @@ def acceptance_indices(graph: TaskGraph) -> set[int]:
 
 
 def _split_refs(acceptance_ref: str) -> list[str]:
-    return [t.strip() for t in str(acceptance_ref).split(",") if t.strip()]
+    return [t.strip() for t in acceptance_ref.split(",") if t.strip()]
 
 
 def validate_taskgraph(graph: TaskGraph) -> None:

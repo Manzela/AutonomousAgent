@@ -29,6 +29,7 @@ RED/GREEN design:
 from __future__ import annotations
 
 import pytest
+from typing import Any
 
 from app.adapters.inmemory.file_checkpointer import SqliteFileCheckpointer
 
@@ -74,14 +75,13 @@ def test_build_saver_raises_before_setup():
 @pytest.mark.asyncio
 async def test_checkpoint_round_trip_same_connection():
     """F4: a value PUT via the saver can be GET'd back on the same connection."""
-    from langgraph.checkpoint.base import Checkpoint, CheckpointMetadata
 
     provider = SqliteFileCheckpointer(":memory:")
     await provider.setup()
     saver = provider.build_saver()
 
     config = {"configurable": {"thread_id": "spr3-f4", "checkpoint_ns": "", "checkpoint_id": "1"}}
-    checkpoint: Checkpoint = {
+    checkpoint: Any = {
         "v": 1,
         "id": "1",
         "ts": "2026-06-03T00:00:00+00:00",
@@ -90,7 +90,7 @@ async def test_checkpoint_round_trip_same_connection():
         "versions_seen": {},
         "pending_sends": [],
     }
-    metadata: CheckpointMetadata = {"source": "input", "step": 0, "writes": {}, "parents": {}}
+    metadata: Any = {"source": "input", "step": 0, "writes": {}, "parents": {}}
 
     saved_config = await saver.aput(config, checkpoint, metadata, {})
     assert saved_config is not None
@@ -113,11 +113,10 @@ async def test_file_checkpoint_survives_provider_restart(tmp_path):
 
     Note: ':memory:' databases lose all state on aclose() — only a real file path
     delivers the failover guarantee this adapter exists for."""
-    from langgraph.checkpoint.base import Checkpoint, CheckpointMetadata
 
     db_path = tmp_path / "spine.db"
     config = {"configurable": {"thread_id": "spr3-f4b", "checkpoint_ns": "", "checkpoint_id": "1"}}
-    checkpoint: Checkpoint = {
+    checkpoint: Any = {
         "v": 1,
         "id": "1",
         "ts": "2026-06-03T00:00:00+00:00",
@@ -126,7 +125,7 @@ async def test_file_checkpoint_survives_provider_restart(tmp_path):
         "versions_seen": {},
         "pending_sends": [],
     }
-    metadata: CheckpointMetadata = {"source": "input", "step": 0, "writes": {}, "parents": {}}
+    metadata: Any = {"source": "input", "step": 0, "writes": {}, "parents": {}}
 
     # Provider A: write then close (simulate the original process dying)
     provider_a = SqliteFileCheckpointer(db_path)

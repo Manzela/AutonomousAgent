@@ -34,9 +34,10 @@ import asyncio
 
 import pytest
 
+from typing import Any
 from app.adapters.inmemory.checkpointer import InMemoryCheckpointer
 from app.core import graph_state as gs
-from app.core.schemas import AgentCapability, ExecutionResult, TaskStatus
+from app.core.schemas import AgentCapability, AgentID, ExecutionResult, TaskStatus
 from app.core.spine_runner import SpineRunner
 
 
@@ -50,11 +51,11 @@ def _isolate_decision_record(tmp_path, monkeypatch):
 
 
 def _cap(status: TaskStatus = TaskStatus.COMPLETED, cost_usd: float = 0.0) -> AgentCapability:
-    async def _invoke(req: object) -> ExecutionResult:
+    async def _invoke(req: Any) -> ExecutionResult:
         return ExecutionResult(task_id=req.task_id, status=status, cost_usd=cost_usd)
 
     return AgentCapability(
-        agent_id="stub",
+        agent_id=AgentID("stub"),
         version="1",
         phase="draft",
         description="hermetic stub",

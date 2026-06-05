@@ -8,17 +8,28 @@ from typing import Any, Iterable
 
 import numpy as np
 
-_MISSING_DEPS: list[str] = []
-try:
+import typing
+
+if typing.TYPE_CHECKING:
     from google.api_core import retry, exceptions
     from google.cloud import aiplatform
-except ImportError:  # pragma: no cover
-    retry = None  # type: ignore[assignment]
-    exceptions = None  # type: ignore[assignment]
-    aiplatform = None  # type: ignore[assignment]
-    _MISSING_DEPS.append("google-cloud-aiplatform")
 
-_HAS_AIPLATFORM = not _MISSING_DEPS
+    _HAS_AIPLATFORM = True
+else:
+    _MISSING_DEPS: list[str] = []
+    try:
+        from google.api_core import retry as _retry, exceptions as _exceptions
+        from google.cloud import aiplatform as _aiplatform
+
+        retry: typing.Any = _retry
+        exceptions: typing.Any = _exceptions
+        aiplatform: typing.Any = _aiplatform
+    except ImportError:  # pragma: no cover
+        retry = None
+        exceptions = None
+        aiplatform = None
+        _MISSING_DEPS.append("google-cloud-aiplatform")
+    _HAS_AIPLATFORM = not _MISSING_DEPS
 
 # Build a retry decorator that is safe to use at class-body evaluation time
 # (i.e. when the module is imported) regardless of whether the GCP SDK is

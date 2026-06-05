@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -159,30 +160,35 @@ class WorkspaceSession:
             pass
 
     # ── SP-R7: lossless snapshot / rehydrate (the FS resume piece) ───────────────────
-    def snapshot(self, *, thread_id: str, node_id: str) -> Optional[dict]:
+    def snapshot(self, *, thread_id: str, node_id: str) -> Optional[dict[str, Any]]:
         """Snapshot the live worktree as a DURABLE, content-addressed git object — call
         BEFORE close() (the ordering is load-bearing: the ref must outlive the worktree).
 
-        Mechanism (the PRD §5.1 "committed agent branch IS the snapshot" alternative —
-        no GCS/zstd needed): ``git write-tree`` + ``git commit-tree`` capture the worktree
-        content as an immutable object; ``git update-ref refs/aa-snapshots/<tid>/<node>``
-        anchors it in the COMMON ref store so it survives the worktree teardown AND a
-        ``git gc`` (an unreferenced commit-tree object would be pruned). Resume rehydrates
-        a FRESH sandbox from this ref via :meth:`rehydrate`.
-
-        Returns a ``WorkspaceRef``-shaped dict ``{kind:'branch', ref, digest}`` or ``None``
-        on any git error (FAIL-OPEN, same posture as :meth:`diff`/:meth:`close` — a
-        snapshot failure degrades to the synthetic ship_effect ref, never crashes the spine).
-
-        The commit is UNSIGNED (``commit-tree`` does not sign without ``-S`` even though
-        ``commit.gpgsign=true``); these objects live only under ``refs/aa-snapshots/*`` and
-        are never pushed/merged/main-bound, so the signed-commit rule never evaluates them.
-
-        ``digest`` = sha256 of ``git ls-tree -r --full-tree`` (a deterministic per-file
-        ``mode/type/blob-sha/path`` manifest) — a genuine content hash, byte-equal iff the
-        content is. NOT ``git archive`` (whose tar embeds mtimes → non-deterministic)."""
+        Supports either GCS bucket storage (SPINE_SNAPSHOT_STORE="gcs") or the standard
+        committed agent git branch ref store as default fallback."""
         if not self.ok or self.ws_dir is None:
             return None
+
+        # Check SPINE_SNAPSHOT_STORE env var
+        store_type = os.environ.get("SPINE_SNAPSHOT_STORE", "").lower()
+        if store_type == "gcs":
+            try:
+                from app.adapters.gcp.gcs_snapshotter import GcsWorkspaceSnapshotter
+
+                bucket = os.environ.get("SPINE_SNAPSHOT_BUCKET", "autonomous-agent-snapshots")
+                kms_key = os.environ.get("SPINE_SNAPSHOT_KMS_KEY")
+                snapshotter = GcsWorkspaceSnapshotter(bucket_name=bucket, kms_key_name=kms_key)
+                result = snapshotter.snapshot(self.ws_dir, thread_id, node_id)
+                if result:
+                    result["base_sha"] = self.base_sha
+                    self.snapshot_ref = result["ref"]
+                return result
+            except Exception as exc:
+                logger.warning(
+                    "WorkspaceSession.snapshot to GCS failed, falling back to git ref: %s", exc
+                )
+
+        # Fallback to standard git branch snapshotting
         try:
             _git(["add", "-A"], cwd=self.ws_dir)
             tree = _git(["write-tree"], cwd=self.ws_dir).stdout.strip()
@@ -218,13 +224,64 @@ class WorkspaceSession:
         return {"kind": "branch", "ref": ref, "digest": digest}
 
     @classmethod
-    def rehydrate(cls, *, repo_dir: Path, ref: str, thread_id: str) -> "WorkspaceSession":
+    def rehydrate(
+        cls, *, repo_dir: Path, ref: str | dict[str, Any], thread_id: str
+    ) -> "WorkspaceSession":
         """Materialise a FRESH worktree from a snapshot ref (resume into a new sandbox).
         Graceful-degrades (ok=False) on any git error so a bad/expired ref never crashes
         the spine. The fresh worktree has a DIFFERENT path from the killed original."""
+        kind = "branch"
+        ref_str = ""
+        base_sha = "HEAD"
+
+        if isinstance(ref, dict):
+            kind = ref.get("kind", "branch")
+            ref_str = ref.get("ref", "")
+            base_sha = ref.get("base_sha", "HEAD")
+        elif isinstance(ref, str):
+            ref_str = ref
+            kind = "gcs" if ref.startswith("gs://") else "branch"
+
+        if kind == "gcs":
+            try:
+                # Extract node_id from the GCS URL to ensure correct prefix matching
+                # GCS ref structure: gs://{bucket}/workspaces/{thread_id}/{node_id}.tar.gz
+                node_id = "snap"
+                parts = ref_str.replace("gs://", "").split("/")
+                if len(parts) >= 4:
+                    node_id = parts[-1].replace(".tar.gz", "")
+
+                # 1. Create a fresh clean workspace session at base_sha
+                ws = cls.create(
+                    repo_dir=repo_dir, base_ref=base_sha, thread_id=thread_id, node_id=node_id
+                )
+                if not ws.ok or ws.ws_dir is None:
+                    return ws
+
+                # 2. Download GCS archive and extract it over the newly created ws_dir (skipping .git)
+                from app.adapters.gcp.gcs_snapshotter import GcsWorkspaceSnapshotter
+
+                bucket = os.environ.get("SPINE_SNAPSHOT_BUCKET", "autonomous-agent-snapshots")
+                snapshotter = GcsWorkspaceSnapshotter(bucket_name=bucket)
+                success = snapshotter.rehydrate(ws.ws_dir, thread_id, node_id)
+                if not success:
+                    ws.close()
+                    return cls(ws_dir=None, parent=None, repo_dir=repo_dir, base_sha="", ok=False)
+
+                ws.snapshot_ref = ref_str
+                try:
+                    _git(["add", "-A"], cwd=ws.ws_dir)
+                except Exception:
+                    pass
+                return ws
+            except Exception as exc:
+                logger.warning("WorkspaceSession.rehydrate from GCS failed: %s", exc)
+                return cls(ws_dir=None, parent=None, repo_dir=repo_dir, base_sha="", ok=False)
+
+        # Standard git branch rehydration
         try:
             snap_sha = _git(
-                ["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo_dir
+                ["rev-parse", "--verify", f"{ref_str}^{{commit}}"], cwd=repo_dir
             ).stdout.strip()
             parent = Path(tempfile.mkdtemp(prefix=f"aa-rehydrate-{_slug(thread_id)}-"))
             ws_dir = parent / "wt"
@@ -235,7 +292,7 @@ class WorkspaceSession:
                 repo_dir=repo_dir,
                 base_sha=snap_sha,
                 ok=True,
-                snapshot_ref=ref,
+                snapshot_ref=ref_str,
             )
         except (subprocess.SubprocessError, OSError) as exc:
             logger.warning("WorkspaceSession.rehydrate degraded (no worktree): %s", exc)

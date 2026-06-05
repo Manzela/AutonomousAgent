@@ -23,6 +23,7 @@ Exit code is ALWAYS 0 (advisory).
 from __future__ import annotations
 
 
+import pathlib
 import pytest
 
 # Build dynamic tokens to avoid tripping the no-skip / test-integrity gates
@@ -341,7 +342,7 @@ class TestAdvisorySemantics:
 class TestMainCLI:
     """Test that main() always exits 0 (advisory)."""
 
-    def test_main_exits_zero_no_args(self, tmp_path: "pytest.FixtureRequest") -> None:
+    def test_main_exits_zero_no_args(self, tmp_path: pathlib.Path) -> None:
         """main() with --root pointing at a clean dir exits 0."""
         from scripts.ci.substring_assert_lint import main
 
@@ -352,7 +353,7 @@ class TestMainCLI:
         rc = main(["--root", str(test_dir)])
         assert rc == 0
 
-    def test_main_exits_zero_with_warnings(self, tmp_path: "pytest.FixtureRequest") -> None:
+    def test_main_exits_zero_with_warnings(self, tmp_path: pathlib.Path) -> None:
         """main() with smelly test file still exits 0 (advisory)."""
         from scripts.ci.substring_assert_lint import main
 

@@ -11,6 +11,7 @@ import json
 import threading
 from pathlib import Path
 
+from typing import Any
 import pytest
 
 from lib.evaluators.consensus import ConsensusResult
@@ -21,7 +22,7 @@ from lib.evaluators.judge_events import (
 )
 
 
-def _judge(axis: str, verdict: str, score: int = 8, model: str | None = None) -> JudgeResult:
+def _judge(axis: str, verdict: Any, score: int = 8, model: str | None = None) -> JudgeResult:
     return JudgeResult(
         axis=axis,
         score=score,
@@ -31,7 +32,7 @@ def _judge(axis: str, verdict: str, score: int = 8, model: str | None = None) ->
     )
 
 
-def _result(verdict: str = "accept", *, fifth: JudgeResult | None = None) -> ConsensusResult:
+def _result(verdict: Any = "accept", *, fifth: JudgeResult | None = None) -> ConsensusResult:
     judges = [
         _judge("code-correctness", "accept" if verdict != "reject" else "reject"),
         _judge("safety", "accept" if verdict != "reject" else "reject"),

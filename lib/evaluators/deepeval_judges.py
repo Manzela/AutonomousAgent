@@ -44,17 +44,24 @@ from pydantic import BaseModel
 # deepeval is installed (the eval/test path), and fall back to a minimal structural shim
 # where it is not (the C5 import-only path, where no judge is ever constructed). The runtime
 # import path stays clean; the eval path is not weakened.
-try:
-    from deepeval.models.base_model import DeepEvalBaseLLM
+if typing.TYPE_CHECKING:
+
+    class DeepEvalBaseLLM:
+        pass
 
     _HAVE_DEEPEVAL = True
-except ModuleNotFoundError:  # pragma: no cover - exercised only in the deepeval-less C5 env
-    _HAVE_DEEPEVAL = False
+else:
+    try:
+        from deepeval.models.base_model import DeepEvalBaseLLM
 
-    class DeepEvalBaseLLM:  # type: ignore[no-redef]
-        """Import-time shim so the judge subclasses below are *defined* (not constructed)
-        when deepeval is absent. Never used as a real judge — DeepEval's metrics, and the
-        isinstance-bypass that routes them off OpenAI, only run where the real base exists."""
+        _HAVE_DEEPEVAL = True
+    except ModuleNotFoundError:  # pragma: no cover - exercised only in the deepeval-less C5 env
+        _HAVE_DEEPEVAL = False
+
+        class DeepEvalBaseLLM:  # type: ignore[no-redef]
+            """Import-time shim so the judge subclasses below are *defined* (not constructed)
+            when deepeval is absent. Never used as a real judge — DeepEval's metrics, and the
+            isinstance-bypass that routes them off OpenAI, only run where the real base exists."""
 
 
 # The GEval raw-score field is on a 0-10 scale (divided by 10 internally); return the top

@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from lib.durability.checkpoint import SCHEMA_VERSION, Checkpoint
 from lib.durability.resume import rehydrate_for_session
 
 
 def _make_checkpoint(tmp_path: Path, **kwargs) -> Checkpoint:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         session_id="sess-test",
         taskspec_id="ts-test",
         root_dir=tmp_path,

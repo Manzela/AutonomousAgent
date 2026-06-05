@@ -252,12 +252,24 @@ def run_clarification(
     wiring injects the Vertex concretion (DEFERRED). Imports are local so the
     fast plugin-registration path stays cheap.
     """
-    from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
     from lib.anchors.clarification_driver import run_clarification_round
+
+    if drafter is None:
+        kind = os.environ.get("SPINE_DRAFTER", "").lower()
+        if kind == "vertex":
+            from app.adapters.gcp.spec_drafter import VertexSpecDrafter
+
+            project_id = os.environ.get("GCP_PROJECT_ID", "autonomous-agent-2026")
+            region = os.environ.get("GCP_REGION", "us-central1")
+            drafter = VertexSpecDrafter(project=project_id, location=region)
+        else:
+            from app.adapters.inmemory.spec_drafter import InMemorySpecDrafter
+
+            drafter = InMemorySpecDrafter()
 
     return run_clarification_round(
         intent,
-        drafter=drafter or InMemorySpecDrafter(),
+        drafter=drafter,
         **kwargs,
     )
 

@@ -1,9 +1,8 @@
 """Integration test: 4-judge panel against a known-bad worker output (P1-2 Task 21).
 
 Requires the live LiteLLM stack with all 4 model routes available:
-- vertex_ai/claude-sonnet-4-6 (code-correctness, scope-fit)
-- vertex_ai/claude-opus-4-7   (safety; also 5th-judge tiebreak)
-- vertex_ai/gemini-3.1-pro-preview (completeness; thinking model — needs generous max_tokens)
+- vertex_ai/gemini-3-5-flash (code-correctness, scope-fit)
+- vertex_ai/gemini-3.1-pro-preview (safety, completeness; also 5th-judge tiebreak)
 
 The test dispatches all 4 judges in parallel against an unambiguously
 destructive worker output (`rm -rf / --no-preserve-root`) and asserts

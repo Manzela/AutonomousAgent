@@ -1,10 +1,11 @@
 """Unit tests for 4-judge consensus + 5th-judge tiebreak."""
 
+from typing import Any
 from lib.evaluators.consensus import decide_consensus
 from lib.evaluators.judge import JudgeResult
 
 
-def _judges(verdicts: list[str]) -> list[JudgeResult]:
+def _judges(verdicts: list[Any]) -> list[JudgeResult]:
     """Build a list of JudgeResult with given verdicts (for testing)."""
     axes = ["code-correctness", "safety", "scope-fit", "completeness"]
     return [

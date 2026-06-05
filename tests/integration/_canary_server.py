@@ -4,7 +4,7 @@ import threading
 
 
 class CanaryHandler(http.server.BaseHTTPRequestHandler):
-    requests_received = []
+    requests_received: list[str] = []
 
     def do_GET(self):
         CanaryHandler.requests_received.append(self.path)

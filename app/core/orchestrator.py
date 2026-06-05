@@ -376,81 +376,92 @@ async def _execute_local(
             artifacts=(),
         )
 
+    token = None
+    if cost_tracker is not None:
+        from lib.cost_tracker import active_tracker
+
+        token = active_tracker.set(cost_tracker)
     try:
-        effective_timeout = (
-            min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
-        )
-        result = await asyncio.wait_for(
-            capability.invoke(request),
-            timeout=effective_timeout,
-        )
-        if not isinstance(result, ExecutionResult):
+        try:
+            effective_timeout = (
+                min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
+            )
+            result = await asyncio.wait_for(
+                capability.invoke(request),
+                timeout=effective_timeout,
+            )
+            if not isinstance(result, ExecutionResult):
+                return ExecutionResult(
+                    task_id=request.task_id,
+                    status=TaskStatus.FAILED,
+                    agent_id=capability.agent_id,
+                    output=None,
+                    error="invoke_returned_non_execution_result",
+                    duration_s=time.monotonic() - t0,
+                    cost_usd=cost_tracker.total_usd if cost_tracker else 0.0,
+                    tokens_in=0,
+                    tokens_out=0,
+                    artifacts=(),
+                )
+            # P0-2: inject tracked cost if the invoke() returned 0.0 and tracker has data.
+            if cost_tracker and result.cost_usd == 0.0 and cost_tracker.total_usd > 0.0:
+                result = ExecutionResult(
+                    task_id=result.task_id,
+                    status=result.status,
+                    agent_id=result.agent_id,
+                    output=result.output,
+                    error=result.error,
+                    duration_s=result.duration_s,
+                    cost_usd=cost_tracker.total_usd,
+                    tokens_in=result.tokens_in,
+                    tokens_out=result.tokens_out,
+                    artifacts=result.artifacts,
+                )
+            # Inject output provenance metadata if not already present
+            if getattr(result, "provenance", None) is None:
+                from lib.guardrails.sanitize import generate_provenance_metadata
+
+                prov = generate_provenance_metadata(
+                    output_data=result.output, model_version=capability.version or "unknown"
+                )
+                result = result.model_copy(update={"provenance": prov})
+            return result
+
+        except asyncio.TimeoutError:
             return ExecutionResult(
                 task_id=request.task_id,
                 status=TaskStatus.FAILED,
                 agent_id=capability.agent_id,
                 output=None,
-                error="invoke_returned_non_execution_result",
+                error="task_timeout",
                 duration_s=time.monotonic() - t0,
-                cost_usd=cost_tracker.total_usd if cost_tracker else 0.0,
+                cost_usd=0.0,
                 tokens_in=0,
                 tokens_out=0,
                 artifacts=(),
             )
-        # P0-2: inject tracked cost if the invoke() returned 0.0 and tracker has data.
-        if cost_tracker and result.cost_usd == 0.0 and cost_tracker.total_usd > 0.0:
-            result = ExecutionResult(
-                task_id=result.task_id,
-                status=result.status,
-                agent_id=result.agent_id,
-                output=result.output,
-                error=result.error,
-                duration_s=result.duration_s,
-                cost_usd=cost_tracker.total_usd,
-                tokens_in=result.tokens_in,
-                tokens_out=result.tokens_out,
-                artifacts=result.artifacts,
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            return ExecutionResult(
+                task_id=request.task_id,
+                status=TaskStatus.FAILED,
+                agent_id=capability.agent_id,
+                output=None,
+                error=f"invoke_exception: {exc!r}",
+                duration_s=time.monotonic() - t0,
+                cost_usd=0.0,
+                tokens_in=0,
+                tokens_out=0,
+                artifacts=(),
             )
-        # Inject output provenance metadata if not already present
-        if getattr(result, "provenance", None) is None:
-            from lib.guardrails.sanitize import generate_provenance_metadata
+    finally:
+        if token is not None:
+            from lib.cost_tracker import active_tracker
 
-            prov = generate_provenance_metadata(
-                output_data=result.output, model_version=capability.version or "unknown"
-            )
-            result = result.model_copy(update={"provenance": prov})
-        return result
-
-    except asyncio.TimeoutError:
-        return ExecutionResult(
-            task_id=request.task_id,
-            status=TaskStatus.FAILED,
-            agent_id=capability.agent_id,
-            output=None,
-            error="task_timeout",
-            duration_s=time.monotonic() - t0,
-            cost_usd=0.0,
-            tokens_in=0,
-            tokens_out=0,
-            artifacts=(),
-        )
-
-    except asyncio.CancelledError:
-        raise
-
-    except Exception as exc:
-        return ExecutionResult(
-            task_id=request.task_id,
-            status=TaskStatus.FAILED,
-            agent_id=capability.agent_id,
-            output=None,
-            error=f"invoke_exception: {exc!r}",
-            duration_s=time.monotonic() - t0,
-            cost_usd=0.0,
-            tokens_in=0,
-            tokens_out=0,
-            artifacts=(),
-        )
+            active_tracker.reset(token)
 
 
 async def _execute_sandboxed(
@@ -496,57 +507,68 @@ async def _execute_sandboxed(
         min(timeout_s, request.deadline_s) if request.deadline_s > 0.0 else timeout_s
     )
 
+    token = None
+    if cost_tracker is not None:
+        from lib.cost_tracker import active_tracker
+
+        token = active_tracker.set(cost_tracker)
     try:
-        result = await sandbox.run(
-            cmd=cmd,
-            workdir=workdir,
-            env=env,
-            timeout_s=effective_timeout,
-            # SP-05 F-1: per-phase egress (default-deny; empty live allowlist → False here).
-            network_allowed=_egress_for_phase(request.phase),
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001 — surface any sandbox failure as a task failure
-        # logger.exception (not .error) preserves the traceback so an internal sandbox
-        # bug (e.g. a broken AbstractSandbox impl) is debuggable; exc_info is scrubbed
-        # on the log path (lib/scrubber.py). C9 (gemini-2-5-pro) review.
-        logger.exception(
-            "sandbox exec error: task_id=%s sandbox=%s",
-            request.task_id,
-            sandbox.__class__.__name__,
+        try:
+            result = await sandbox.run(
+                cmd=cmd,
+                workdir=workdir,
+                env=env,
+                timeout_s=effective_timeout,
+                # SP-05 F-1: per-phase egress (default-deny; empty live allowlist → False here).
+                network_allowed=_egress_for_phase(request.phase),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — surface any sandbox failure as a task failure
+            # logger.exception (not .error) preserves the traceback so an internal sandbox
+            # bug (e.g. a broken AbstractSandbox impl) is debuggable; exc_info is scrubbed
+            # on the log path (lib/scrubber.py). C9 (gemini-2-5-pro) review.
+            logger.exception(
+                "sandbox exec error: task_id=%s sandbox=%s",
+                request.task_id,
+                sandbox.__class__.__name__,
+            )
+            return ExecutionResult(
+                task_id=request.task_id,
+                status=TaskStatus.FAILED,
+                agent_id=capability.agent_id,
+                output=None,
+                error=f"sandbox_exec_error: {exc!r}",
+                duration_s=time.monotonic() - t0,
+            )
+
+        ok = result.returncode == 0
+        from lib.guardrails.sanitize import generate_provenance_metadata
+
+        out_payload = {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "returncode": result.returncode,
+            "killed": result.killed,
+        }
+        prov = generate_provenance_metadata(
+            output_data=out_payload, model_version=capability.version or "unknown"
         )
         return ExecutionResult(
             task_id=request.task_id,
-            status=TaskStatus.FAILED,
+            status=TaskStatus.COMPLETED if ok else TaskStatus.FAILED,
             agent_id=capability.agent_id,
-            output=None,
-            error=f"sandbox_exec_error: {exc!r}",
-            duration_s=time.monotonic() - t0,
+            output=out_payload,
+            error=None if ok else f"sandbox_exit_{result.returncode}",
+            duration_s=result.duration_s,
+            cost_usd=cost_tracker.total_usd if cost_tracker else 0.0,
+            provenance=prov,
         )
+    finally:
+        if token is not None:
+            from lib.cost_tracker import active_tracker
 
-    ok = result.returncode == 0
-    from lib.guardrails.sanitize import generate_provenance_metadata
-
-    out_payload = {
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "returncode": result.returncode,
-        "killed": result.killed,
-    }
-    prov = generate_provenance_metadata(
-        output_data=out_payload, model_version=capability.version or "unknown"
-    )
-    return ExecutionResult(
-        task_id=request.task_id,
-        status=TaskStatus.COMPLETED if ok else TaskStatus.FAILED,
-        agent_id=capability.agent_id,
-        output=out_payload,
-        error=None if ok else f"sandbox_exit_{result.returncode}",
-        duration_s=result.duration_s,
-        cost_usd=cost_tracker.total_usd if cost_tracker else 0.0,
-        provenance=prov,
-    )
+            active_tracker.reset(token)
 
 
 def _map_a2a_status(status: str) -> TaskStatus:

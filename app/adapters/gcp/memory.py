@@ -25,20 +25,33 @@ import json
 import os
 from typing import Optional
 
-_MISSING_DEPS: list[str] = []
-try:
+import typing
+
+if typing.TYPE_CHECKING:
     import asyncpg
-except ImportError:  # pragma: no cover
-    asyncpg = None  # type: ignore[assignment]
-    _MISSING_DEPS.append("asyncpg")
-
-try:
     from pgvector.asyncpg import register_vector
-except ImportError:  # pragma: no cover
-    register_vector = None  # type: ignore[assignment]
-    _MISSING_DEPS.append("pgvector")
 
-_HAS_ASYNCPG = not _MISSING_DEPS
+    _HAS_ASYNCPG = True
+    _MISSING_DEPS: list[str] = []
+else:
+    _MISSING_DEPS: list[str] = []
+    try:
+        import asyncpg as _asyncpg
+
+        asyncpg: typing.Any = _asyncpg
+    except ImportError:  # pragma: no cover
+        asyncpg = None
+        _MISSING_DEPS.append("asyncpg")
+
+    try:
+        from pgvector.asyncpg import register_vector as _register_vector
+
+        register_vector: typing.Any = _register_vector
+    except ImportError:  # pragma: no cover
+        register_vector = None
+        _MISSING_DEPS.append("pgvector")
+
+    _HAS_ASYNCPG = not _MISSING_DEPS
 
 import numpy as np  # noqa: E402
 
@@ -213,8 +226,8 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
                 record.content,
                 emb,  # pgvector binary codec
                 json.dumps(record.metadata),  # cast to jsonb in SQL
-                float(record.created_at),
-                None if record.expires_at is None else float(record.expires_at),
+                record.created_at,
+                record.expires_at,
                 record.content_hash,
                 record.namespace_token,
             )
@@ -274,7 +287,7 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
             # next caller's session via the pool.
             async with conn.transaction():
                 ef = ef_search if ef_search is not None else self._ef_search
-                await conn.execute(f"SET LOCAL hnsw.ef_search = {int(ef)}")
+                await conn.execute(f"SET LOCAL hnsw.ef_search = {ef}")
                 # 1 - cosine_distance = cosine_similarity. The `<=>` operator
                 # is pgvector's cosine-distance op; we sort ascending on
                 # distance (= descending on similarity) and return similarity
@@ -298,7 +311,7 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
                     tier.value,
                     non_null_scopes,
                     include_consensus,
-                    int(k),
+                    k,
                 )
 
         out: list[tuple[MemoryRecord, float]] = []
@@ -359,7 +372,7 @@ class CloudSqlPgvectorStore(AbstractMemoryStore):
                 SELECT count(*)::int FROM deleted
                 """,
                 tier.value,
-                float(before_ts),
+                before_ts,
             )
         return count or 0
 

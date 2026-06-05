@@ -30,7 +30,7 @@
 
 ## LLM Backend
 
-- **Primary**: Anthropic Claude Opus 4.7 via Vertex AI
+- **Primary**: Gemini 3.1 Pro Preview via Vertex AI
 - **Vertex AI project**: `autonomous-agent-2026` (org-wide quotas carry over)
 - **Proxy**: LiteLLM (`deploy/litellm/config.yaml`)
 - **Judges**: Gemini 3.1 Pro via Vertex AI

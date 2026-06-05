@@ -87,6 +87,7 @@ class TestSentinel:
 class TestTokenRevoker:
     def test_recording_revoker_records_call(self, ks: KillSwitch) -> None:  # ⑤
         ks.trigger("test")
+        assert ks.recording_revoker is not None
         assert ks.recording_revoker.revoked
         assert ks.recording_revoker.revoke_count == 1
 
@@ -146,8 +147,12 @@ class TestTokenRevoker:
             def revoke(self) -> None:
                 order.append("revoke")
 
+        def _sweep() -> int:
+            order.append("sweep")
+            return 0
+
         mock_reaper = MagicMock()
-        mock_reaper.sweep_all.side_effect = lambda: order.append("sweep") or 0
+        mock_reaper.sweep_all.side_effect = _sweep
 
         ks = KillSwitch(
             reaper=mock_reaper,

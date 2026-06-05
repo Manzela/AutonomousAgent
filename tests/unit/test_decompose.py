@@ -22,6 +22,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from typing import Any
 import pytest
 
 from app.adapters.inmemory.decompose import InMemoryDecomposer
@@ -41,7 +42,7 @@ from lib.anchors.task_spec import Scope, TaskSpec
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 def _spec(acceptance_criteria: list[str], **over) -> TaskSpec:
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "title": "Build the widget pipeline",
         "intent": "Ship a validated widget pipeline before the P2 cutover.",
         "acceptance_criteria": acceptance_criteria,

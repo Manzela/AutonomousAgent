@@ -31,6 +31,7 @@ from app.core.rollback import AbstractRevisionRollback
 from app.core.sandbox import AbstractSandbox
 from app.core.schemas import AgentCapability
 from app.core.spec_drafter import AbstractSpecDrafter
+from app.core.decompose import AbstractDecomposer
 from app.core.steering import SteeringEventBus
 from lib.durability.branch_lease import BranchLease, GlobalThreadCap
 from lib.scrubber import scrub_string
@@ -124,12 +125,14 @@ class SpineRunner:
         telegram_adapter: Optional[TelegramAdapter] = None,
         notifier: Optional[TelegramNotifier] = None,
         revision_rollback: Optional[AbstractRevisionRollback] = None,
+        decomposer: Optional[AbstractDecomposer] = None,
     ) -> None:
         self._provider = checkpointer
         self._saver = checkpointer.build_saver()
         self._capability = capability
         self._sandbox = sandbox
         self._drafter = drafter
+        self._decomposer = decomposer
         # SP-17: the SteeringEventBus routes inbound Telegram/board events to open interrupts
         # (C15 dedup + arbitration). None => bus-less skeleton (tests that don't need steering).
         # The live bus is constructed by the caller (FastAPI lifespan, nightly integration tests).
@@ -190,6 +193,7 @@ class SpineRunner:
             board=self._board,
             gate=self._gate,
             reaper=self._reaper,
+            decomposer=self._decomposer,
         )
 
     @property
@@ -211,6 +215,44 @@ class SpineRunner:
         # leaked through node outputs gets caught here before the caller sees it).
         return gs.scrub_state(result) if isinstance(result, dict) else result
 
+    def _rehydrate_workspaces(self, thread_id: str) -> None:
+        """Rehydrate workspaces from the state snapshot if they are not already tracked."""
+        from pathlib import Path as _Path
+        from app.core.workspace import WorkspaceSession
+
+        try:
+            state_snap = self.get_state(thread_id)
+            if state_snap and state_snap.values:
+                repo_dir = _Path(__file__).resolve().parents[2]
+
+                # Rehydrate single workspace_ref
+                wref = state_snap.values.get("workspace_ref")
+                if isinstance(wref, dict) and wref.get("kind") in ("branch", "gcs"):
+                    ref = wref.get("ref")
+                    if ref and self._reaper.get_workspace_by_ref(ref) is None:
+                        ws = WorkspaceSession.rehydrate(
+                            repo_dir=repo_dir, ref=wref, thread_id=thread_id
+                        )
+                        self._reaper.register_workspace(ws)
+
+                # Rehydrate list of workspace_refs
+                wrefs = state_snap.values.get("workspace_refs")
+                if isinstance(wrefs, list):
+                    for r in wrefs:
+                        if isinstance(r, dict) and r.get("kind") in ("branch", "gcs"):
+                            ref = r.get("ref")
+                            if ref and self._reaper.get_workspace_by_ref(ref) is None:
+                                ws = WorkspaceSession.rehydrate(
+                                    repo_dir=repo_dir, ref=r, thread_id=thread_id
+                                )
+                                self._reaper.register_workspace(ws)
+        except Exception as exc:
+            logger.warning(
+                "SpineRunner: workspace rehydration failed (fail-open) for thread %s: %s",
+                thread_id,
+                exc,
+            )
+
     async def resume(
         self,
         *,
@@ -219,38 +261,7 @@ class SpineRunner:
         decision: Any,
         durability: Optional[DurabilityMode] = None,
     ) -> dict:
-        from pathlib import Path as _Path
-        from app.core.workspace import WorkspaceSession
-
-        # Rehydrate workspace from state snapshot if not already tracked
-        try:
-            state_snap = self.get_state(thread_id)
-            if state_snap and state_snap.values:
-                repo_dir = _Path(__file__).resolve().parents[2]
-
-                # Rehydrate single workspace_ref
-                wref = state_snap.values.get("workspace_ref")
-                if isinstance(wref, dict) and wref.get("kind") == "branch":
-                    ref = wref.get("ref")
-                    if ref and self._reaper.get_workspace_by_ref(ref) is None:
-                        ws = WorkspaceSession.rehydrate(
-                            repo_dir=repo_dir, ref=ref, thread_id=thread_id
-                        )
-                        self._reaper.register_workspace(ws)
-
-                # Rehydrate list of workspace_refs
-                wrefs = state_snap.values.get("workspace_refs")
-                if isinstance(wrefs, list):
-                    for r in wrefs:
-                        if isinstance(r, dict) and r.get("kind") == "branch":
-                            ref = r.get("ref")
-                            if ref and self._reaper.get_workspace_by_ref(ref) is None:
-                                ws = WorkspaceSession.rehydrate(
-                                    repo_dir=repo_dir, ref=ref, thread_id=thread_id
-                                )
-                                self._reaper.register_workspace(ws)
-        except Exception as exc:
-            logger.warning("SpineRunner.resume: workspace rehydration failed (fail-open): %s", exc)
+        self._rehydrate_workspaces(thread_id)
 
         # Stamp the resumed value with the REAL Interrupt.id so the decision-record
         # is keyed by the id the operator resumed with (not __pregel_task_id).

@@ -23,6 +23,7 @@ leaf gets its own tracker instance. The lock guards against concurrent
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import threading
 from typing import Optional
@@ -30,6 +31,11 @@ from typing import Optional
 from lib.cost import llm_request_cost_usd
 
 logger = logging.getLogger(__name__)
+
+
+active_tracker: contextvars.ContextVar[Optional[CostTracker]] = contextvars.ContextVar(
+    "active_tracker", default=None
+)
 
 
 class CostTracker:

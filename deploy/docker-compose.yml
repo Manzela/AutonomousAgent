@@ -428,8 +428,9 @@ services:
   #   DO NOT run autonomously until SP-00f.2 closes.
 
   github-mcp:
-    # Pinned by digest. Resolved 2026-05-19.
-    image: ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.github-mcp
     <<: [*restart_policy, *json_logging]
     command: ["http", "--port", "8003", "--toolsets", "repos,issues,pull_requests,actions"]
     # HIGH-7: capability hardening for GitHub MCP (holds a live GitHub PAT).
@@ -438,24 +439,10 @@ services:
       - no-new-privileges:true
       - apparmor=docker-default
       - seccomp=sandboxes/seccomp-sidecar.json
+    tmpfs:
+      - /tmp:size=10M
     environment:
-      # SP-00f.2 DRAFT — App-credential wiring (replaces static PAT).
-      # GATED: the broad PAT secret (github_pat) is NOT revoked yet;
-      # PAT revocation + App secret provisioning are operator steps listed
-      # in gated_operator_steps of the SP-00f.2 PR.  Do NOT set these
-      # env vars live until the App private key is SOPS-encrypted and the
-      # PAT has been revoked — otherwise the service will fail to start.
-      #
-      # github-mcp-server reads GITHUB_PERSONAL_ACCESS_TOKEN (or _FILE)
-      # once at startup.  It has NO built-in App auth and NO hot-reload.
-      # Because installation tokens expire ≤1 h, a token-refresh sidecar
-      # (SP-00f.3, NOT built here) or a cron-restart strategy is required:
-      #   Option A (interim): restart: always + mint token at container start
-      #     via an entrypoint wrapper that calls lib/github_auth.py and writes
-      #     the result to /run/secrets/github_token before exec-ing the server.
-      #   Option B (target, SP-00f.3): token-refresh sidecar that re-mints
-      #     ~5 min before expiry and SIGHUPs / docker-restarts github-mcp.
-      # See lib/github_auth.py docstring for full rationale.
+      # GITHUB_APP_ID / INSTALLATION_ID etc.
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
       GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
       # Path inside the container to the SOPS-decrypted PEM key (bind-mounted
@@ -464,7 +451,7 @@ services:
       # The server still reads GITHUB_PERSONAL_ACCESS_TOKEN_FILE at startup;
       # once the operator mints + injects the installation token this env var
       # should point at the tmpfs file written by the entrypoint wrapper.
-      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /run/secrets/github_token
+      GITHUB_PERSONAL_ACCESS_TOKEN_FILE: /tmp/github_token
     secrets:
       - github_app_key
     networks: [internal, egress]   # needs api.github.com egress

@@ -121,3 +121,73 @@ resource "google_compute_instance" "autonomousagent" {
   allow_stopping_for_update = true
   depends_on                = [google_storage_bucket.snapshots]
 }
+
+resource "google_compute_disk" "boot_staging" {
+  project = var.project_id
+  name    = "autonomousagent-staging-vm-boot"
+  type    = "pd-balanced"
+  zone    = var.zone
+  size    = var.vm_boot_disk_gb
+  image   = "debian-cloud/debian-12"
+}
+
+resource "google_compute_disk" "data_staging" {
+  project = var.project_id
+  name    = "autonomousagent-staging-vm-data"
+  type    = "pd-balanced"
+  zone    = var.zone
+  size    = var.vm_data_disk_gb
+}
+
+resource "google_compute_instance" "autonomousagent_staging" {
+  name         = "autonomousagent-staging-vm"
+  machine_type = var.vm_machine_type
+  zone         = var.zone
+  tags         = ["autonomousagent-vm", "autonomousagent-staging-vm"]
+
+  boot_disk {
+    source      = google_compute_disk.boot_staging.self_link
+    auto_delete = false
+  }
+
+  attached_disk {
+    source      = google_compute_disk.data_staging.self_link
+    device_name = "hermes-data"
+    mode        = "READ_WRITE"
+  }
+
+  network_interface {
+    subnetwork = google_compute_subnetwork.autonomousagent.id
+    # No access_config block — no public IP.
+  }
+
+  service_account {
+    email  = google_service_account.vm_runtime.email
+    scopes = ["cloud-platform"]
+  }
+
+  shielded_instance_config {
+    enable_secure_boot          = true
+    enable_vtpm                 = true
+    enable_integrity_monitoring = true
+  }
+
+  scheduling {
+    automatic_restart   = true
+    on_host_maintenance = "MIGRATE"
+    preemptible         = false
+  }
+
+  metadata = {
+    enable-oslogin     = "TRUE"
+    startup-script-url = "gs://autonomous-agent-2026-snapshots/bootstrap/install.sh"
+    hermes-image-repo  = "us-central1-docker.pkg.dev/${var.project_id}/autonomousagent-images"
+  }
+
+  labels = {
+    phase = "0a"
+  }
+
+  allow_stopping_for_update = true
+  depends_on                = [google_storage_bucket.snapshots]
+}

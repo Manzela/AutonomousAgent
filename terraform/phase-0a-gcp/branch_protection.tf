@@ -21,8 +21,16 @@ provider "github" {
 # The drift-guard test tests/ci/test_required_gates_coverage.py asserts that this
 # list stays in sync with config/required_gates.txt and that no path-filtered or
 # advisory job was accidentally added.
+resource "github_repository" "main" {
+  name = "AutonomousAgent"
+
+  allow_squash_merge = true
+  allow_rebase_merge = false
+  allow_merge_commit = false
+}
+
 resource "github_branch_protection" "main" {
-  repository_id = "AutonomousAgent"
+  repository_id = github_repository.main.name
   pattern       = "main"
 
   require_signed_commits  = true

@@ -261,8 +261,81 @@ def test_build_spec_drafter_routing(monkeypatch):
     monkeypatch.setenv("SPINE_DRAFTER", "inmemory")
     assert isinstance(_build_spec_drafter(), InMemorySpecDrafter)
 
-    # 3. "vertex" -> VertexSpecDrafter (stub concretion, but constructor fails with NotImplementedError)
+    # 3. "vertex" -> VertexSpecDrafter
     monkeypatch.setenv("SPINE_DRAFTER", "vertex")
-    with pytest.raises(NotImplementedError) as exc_info:
-        _build_spec_drafter()
-    assert "Vertex spec-drafter not yet implemented" in str(exc_info.value)
+    from app.adapters.gcp.spec_drafter import VertexSpecDrafter
+
+    assert isinstance(_build_spec_drafter(), VertexSpecDrafter)
+
+
+def test_build_sandbox_collect_logs(monkeypatch):
+    """Verify that CloudRunJobSandbox is built with collect_logs=True in production."""
+    from app.main import _build_sandbox
+    from app.adapters.gcp.cloud_run_sandbox import CloudRunJobSandbox
+
+    # Dev/development environment
+    monkeypatch.setenv("SPINE_ENVIRONMENT", "development")
+    monkeypatch.setenv("SPINE_SANDBOX", "cloudrun")
+    sb_dev = _build_sandbox()
+    assert isinstance(sb_dev, CloudRunJobSandbox)
+    assert sb_dev._collect_logs is False
+
+    # Production environment
+    monkeypatch.setenv("SPINE_ENVIRONMENT", "production")
+    monkeypatch.setenv("SPINE_SANDBOX", "cloudrun")
+    sb_prod = _build_sandbox()
+    assert isinstance(sb_prod, CloudRunJobSandbox)
+    assert sb_prod._collect_logs is True
+
+
+async def test_lifespan_startup_recovery(monkeypatch):
+    """Verify that active crashed threads are recovered during lifespan startup."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from app.main import lifespan, app
+    from langgraph.checkpoint.base import CheckpointTuple
+
+    # Mock checkpointer, saver
+    mock_checkpointer = MagicMock()
+    mock_saver = MagicMock()
+    mock_checkpointer.build_saver.return_value = mock_saver
+    mock_checkpointer.setup = AsyncMock()
+    mock_checkpointer.aclose = AsyncMock()
+
+    monkeypatch.setattr("app.main._build_checkpointer", lambda: mock_checkpointer)
+
+    # Yield one active checkpoint tuple (state.next is non-empty, tasks has no interrupts)
+    ckpt_tuple = CheckpointTuple(
+        config={"configurable": {"thread_id": "test-recover-tid"}},
+        checkpoint={"ts": "2026-06-05T09:00:00Z", "next": ("decompose",)},
+        metadata={},
+        parent_config=None,
+    )
+
+    async def mock_alist(*args, **kwargs):
+        yield ckpt_tuple
+
+    mock_saver.alist = mock_alist
+
+    # Mock SpineRunner and state
+    mock_runner = MagicMock()
+    mock_state = MagicMock()
+    mock_state.next = ("decompose",)
+    mock_state.tasks = ()  # no interrupts
+    mock_runner.get_state.return_value = mock_state
+
+    # Verify helper methods
+    mock_runner._rehydrate_workspaces = MagicMock()
+    mock_runner._app = MagicMock()
+    mock_runner._app.ainvoke = AsyncMock()
+    mock_runner._cfg.return_value = {"configurable": {"thread_id": "test-recover-tid"}}
+
+    with patch("app.main.SpineRunner", return_value=mock_runner):
+        async with lifespan(app):
+            # Give background task a moment to run
+            await asyncio.sleep(0.05)
+
+    mock_runner._rehydrate_workspaces.assert_called_once_with("test-recover-tid")
+    mock_runner._app.ainvoke.assert_called_once_with(
+        None, {"configurable": {"thread_id": "test-recover-tid"}}
+    )

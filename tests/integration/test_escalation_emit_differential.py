@@ -44,6 +44,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+import pathlib
 import pytest
 
 os.environ.setdefault("A2A_DEV_INSECURE", "1")
@@ -335,7 +336,7 @@ def test_deceptive_emits_refusal_and_binding_confirms_escalation_fires(
 
 
 def test_run_once_calls_emit_escalation_for_stale_card(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bind to lib.durability.escalation.run_once (line 123) directly.
@@ -389,7 +390,7 @@ def test_run_once_calls_emit_escalation_for_stale_card(
 
 
 def test_run_once_does_not_call_emit_escalation_when_no_stale_cards(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bind to run_once: with a fresh (non-stale) blocked card, no escalation fires.

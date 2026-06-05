@@ -300,7 +300,9 @@ class _GcpJsonFormatter(logging.Formatter):
             "logger": record.name,
             "msg": record.getMessage(),
         }
-        if record.exc_info:
+        if record.exc_text:
+            payload["exc"] = record.exc_text
+        elif record.exc_info:
             payload["exc"] = self.formatException(record.exc_info)
         return _json.dumps(payload, ensure_ascii=False)
 

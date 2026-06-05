@@ -20,7 +20,7 @@ resource "google_project_iam_audit_config" "gcs" {
   }
   audit_log_config {
     log_type         = "DATA_READ"
-    exempted_members = []   # log every reader; redact via log routing if needed
+    exempted_members = [] # log every reader; redact via log routing if needed
   }
   audit_log_config {
     log_type = "DATA_WRITE"

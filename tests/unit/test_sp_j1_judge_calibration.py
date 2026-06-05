@@ -25,6 +25,7 @@ Oracles:
 from __future__ import annotations
 
 
+from typing import Any
 import pytest
 
 from lib.evaluators.judge_calibration import (
@@ -40,7 +41,7 @@ from lib.evaluators.judge_calibration import (
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _gold(item_id: str, human_verdict: str, axis: str = "code-correctness") -> GoldItem:
+def _gold(item_id: str, human_verdict: Any, axis: str = "code-correctness") -> GoldItem:
     return GoldItem(
         item_id=item_id,
         description=f"item {item_id}",
@@ -49,7 +50,7 @@ def _gold(item_id: str, human_verdict: str, axis: str = "code-correctness") -> G
     )
 
 
-def _rating(item_id: str, judge_id: str, verdict: str) -> JudgeRating:
+def _rating(item_id: str, judge_id: str, verdict: Any) -> JudgeRating:
     return JudgeRating(item_id=item_id, judge_id=judge_id, judge_verdict=verdict)
 
 

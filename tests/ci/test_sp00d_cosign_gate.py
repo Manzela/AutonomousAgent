@@ -17,15 +17,20 @@ def test_deploy_workflow_gate_structure():
     assert "osv-scanner" in jobs
     assert "trivy" in jobs
     assert "scorecard" in jobs
-    assert "deploy" in jobs
+    assert "deploy-staging" in jobs
+    assert "deploy-production" in jobs
 
-    # 2. Check that deploy job enforces the gate by needing all scans
-    deploy_job = jobs["deploy"]
-    needs = deploy_job.get("needs", [])
-    assert "build-and-push" in needs
-    assert "osv-scanner" in needs
-    assert "trivy" in needs
-    assert "scorecard" in needs
+    # 2. Check that both deploy jobs enforce the gate by needing all scans
+    for job_name in ["deploy-staging", "deploy-production"]:
+        deploy_job = jobs[job_name]
+        needs = deploy_job.get("needs", [])
+        assert "build-and-push" in needs
+        assert "osv-scanner" in needs
+        assert "trivy" in needs
+        assert "scorecard" in needs
+
+    # Also verify deploy-production depends on deploy-staging
+    assert "deploy-staging" in jobs["deploy-production"].get("needs", [])
 
     # 3. Check build-and-push job signs images after push
     bp_steps = jobs["build-and-push"].get("steps", [])
@@ -33,21 +38,23 @@ def test_deploy_workflow_gate_structure():
     # We expect at least 2 signing commands (one for hermes, one for shell-sandbox)
     assert len(sign_steps) >= 2
 
-    # 4. Check deploy job verifies signatures before deployment
-    deploy_steps = deploy_job.get("steps", [])
-    verify_step = next(
-        (s for s in deploy_steps if s.get("name") == "Verify image signatures"), None
-    )
-    assert verify_step is not None
-    assert "cosign verify" in verify_step["run"]
-    assert "phase-0a-deploy" in verify_step["run"]
+    # 4. Check that both deploy jobs verify signatures and use IAP SSH verification
+    for job_name in ["deploy-staging", "deploy-production"]:
+        deploy_job = jobs[job_name]
+        deploy_steps = deploy_job.get("steps", [])
+        verify_step = next(
+            (s for s in deploy_steps if s.get("name") == "Verify image signatures"), None
+        )
+        assert verify_step is not None
+        assert "cosign verify" in verify_step["run"]
+        assert "phase-0a-deploy" in verify_step["run"]
 
-    # 5. Check VM script also has verification logic
-    ssh_step = next((s for s in deploy_steps if s.get("name") == "Deploy via IAP SSH"), None)
-    assert ssh_step is not None
-    ssh_cmd = ssh_step.get("run", "")
-    assert "cosign verify" in ssh_cmd
-    assert "phase-0a-deploy" in ssh_cmd
+        # 5. Check VM script also has verification logic
+        ssh_step = next((s for s in deploy_steps if s.get("name") == "Deploy via IAP SSH"), None)
+        assert ssh_step is not None
+        ssh_cmd = ssh_step.get("run", "")
+        assert "cosign verify" in ssh_cmd
+        assert "phase-0a-deploy" in ssh_cmd
 
 
 def test_workflow_permissions():
@@ -60,9 +67,10 @@ def test_workflow_permissions():
     bp_job = wf["jobs"]["build-and-push"]
     assert bp_job.get("permissions", {}).get("id-token") == "write"
 
-    # deploy needs id-token: write for GCP WIF auth
-    deploy_job = wf["jobs"]["deploy"]
-    assert deploy_job.get("permissions", {}).get("id-token") == "write"
+    # deploy jobs need id-token: write for GCP WIF auth
+    for job_name in ["deploy-staging", "deploy-production"]:
+        deploy_job = wf["jobs"][job_name]
+        assert deploy_job.get("permissions", {}).get("id-token") == "write"
 
 
 def test_no_mutable_latest_tag_in_deploy_workflow():
@@ -117,39 +125,44 @@ def test_no_registry_buildcache_in_deploy_workflow():
 
 
 def test_deploy_pulls_by_digest():
-    """H-19a: the deploy job must thread HERMES_DIGEST and SANDBOX_DIGEST from the
+    """H-19a: both deploy jobs must thread HERMES_DIGEST and SANDBOX_DIGEST from the
     build job into the remote script and pull images by digest, not by tag."""
     wf_path = Path(".github/workflows/phase-0a-deploy.yml")
     with open(wf_path, "r") as f:
         wf = yaml.safe_load(f)
 
-    deploy_job = wf["jobs"]["deploy"]
-    deploy_env = deploy_job.get("env", {})
+    for job_name in ["deploy-staging", "deploy-production"]:
+        deploy_job = wf["jobs"][job_name]
+        deploy_env = deploy_job.get("env", {})
 
-    # HERMES_DIGEST and SANDBOX_DIGEST must be wired from build-and-push outputs
-    assert "HERMES_DIGEST" in deploy_env, "HERMES_DIGEST not in deploy job env"
-    assert "SANDBOX_DIGEST" in deploy_env, "SANDBOX_DIGEST not in deploy job env"
-    assert (
-        "hermes_digest" in deploy_env["HERMES_DIGEST"]
-    ), "HERMES_DIGEST must reference build-and-push.outputs.hermes_digest"
-    assert (
-        "sandbox_digest" in deploy_env["SANDBOX_DIGEST"]
-    ), "SANDBOX_DIGEST must reference build-and-push.outputs.sandbox_digest"
+        # HERMES_DIGEST and SANDBOX_DIGEST must be wired from build-and-push outputs
+        assert "HERMES_DIGEST" in deploy_env, f"HERMES_DIGEST not in {job_name} env"
+        assert "SANDBOX_DIGEST" in deploy_env, f"SANDBOX_DIGEST not in {job_name} env"
+        assert (
+            "hermes_digest" in deploy_env["HERMES_DIGEST"]
+        ), f"HERMES_DIGEST must reference build-and-push.outputs.hermes_digest in {job_name}"
+        assert (
+            "sandbox_digest" in deploy_env["SANDBOX_DIGEST"]
+        ), f"SANDBOX_DIGEST must reference build-and-push.outputs.sandbox_digest in {job_name}"
 
-    # The IAP SSH step must pass the digests into the remote script
-    deploy_steps = deploy_job.get("steps", [])
-    ssh_step = next((s for s in deploy_steps if s.get("name") == "Deploy via IAP SSH"), None)
-    assert ssh_step is not None, "Deploy via IAP SSH step not found"
+        # The IAP SSH step must pass the digests into the remote script
+        deploy_steps = deploy_job.get("steps", [])
+        ssh_step = next((s for s in deploy_steps if s.get("name") == "Deploy via IAP SSH"), None)
+        assert ssh_step is not None, f"Deploy via IAP SSH step not found in {job_name}"
 
-    ssh_run = ssh_step.get("run", "")
-    # Digests must be forwarded as positional args to bash on the VM
-    assert "HERMES_DIGEST" in ssh_run, "HERMES_DIGEST not threaded into remote script"
-    assert "SANDBOX_DIGEST" in ssh_run, "SANDBOX_DIGEST not threaded into remote script"
-    # The VM must docker pull by digest, not by floating tag
-    assert "docker pull" in ssh_run, "remote script must docker pull by digest"
-    assert (
-        "@${HERMES_DIGEST}" in ssh_run or "@$HERMES_DIGEST" in ssh_run
-    ), "remote script must pull hermes by @digest reference"
-    assert (
-        "@${SANDBOX_DIGEST}" in ssh_run or "@$SANDBOX_DIGEST" in ssh_run
-    ), "remote script must pull shell-sandbox by @digest reference"
+        ssh_run = ssh_step.get("run", "")
+        # Digests must be forwarded as positional args to bash on the VM
+        assert (
+            "HERMES_DIGEST" in ssh_run
+        ), f"HERMES_DIGEST not threaded into remote script in {job_name}"
+        assert (
+            "SANDBOX_DIGEST" in ssh_run
+        ), f"SANDBOX_DIGEST not threaded into remote script in {job_name}"
+        # The VM must docker pull by digest, not by floating tag
+        assert "docker pull" in ssh_run, f"remote script must docker pull by digest in {job_name}"
+        assert (
+            "@${HERMES_DIGEST}" in ssh_run or "@$HERMES_DIGEST" in ssh_run
+        ), f"remote script must pull hermes by @digest reference in {job_name}"
+        assert (
+            "@${SANDBOX_DIGEST}" in ssh_run or "@$SANDBOX_DIGEST" in ssh_run
+        ), f"remote script must pull shell-sandbox by @digest reference in {job_name}"

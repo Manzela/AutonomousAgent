@@ -171,6 +171,7 @@ def _build_sandbox() -> Optional[AbstractSandbox]:
             project_id=project_id,
             region=region,
             job_name=job_name,
+            collect_logs=(spine_env == "production"),
         )
     logger.warning("Unknown SPINE_SANDBOX=%r — running without sandbox", kind)
     return None
@@ -286,6 +287,67 @@ async def lifespan(app: FastAPI):
     _state.runner = runner
     _state.kill_switch = kill_switch
     _state.memory_store = memory_store
+
+    # F-2: Auto-recovery of crashed/restarted active threads during lifespan startup.
+    import asyncio
+
+    async def _recover_active_threads() -> None:
+        logger.info("spine: scanning checkpointer for active threads to recover")
+        try:
+            seen_threads = set()
+            saver = checkpointer.build_saver()
+            async for checkpoint_tuple in saver.alist(None):
+                thread_id = checkpoint_tuple.config["configurable"]["thread_id"]
+                if thread_id in seen_threads:
+                    continue
+                seen_threads.add(thread_id)
+
+                state = runner.get_state(thread_id)
+                if state and state.next:
+                    has_interrupts = False
+                    if getattr(state, "tasks", None):
+                        for task in state.tasks:
+                            if getattr(task, "interrupts", None):
+                                has_interrupts = True
+                                break
+                    if not has_interrupts:
+                        logger.info(
+                            "spine: recovering active crashed thread: %s (resuming at %s)",
+                            thread_id,
+                            state.next,
+                        )
+                        try:
+                            # Rehydrate workspace files/git snapshots
+                            runner._rehydrate_workspaces(thread_id)
+                        except Exception as rehydrate_exc:
+                            logger.error(
+                                "spine: workspace rehydration failed for thread %s: %s",
+                                thread_id,
+                                rehydrate_exc,
+                            )
+
+                        # Define background task to run the thread to completion / interrupt
+                        async def _run_recovered_thread(tid: str) -> None:
+                            try:
+                                await runner._app.ainvoke(None, runner._cfg(tid))
+                                logger.info(
+                                    "spine: recovered active thread %s completed successfully", tid
+                                )
+                            except Exception as run_exc:
+                                logger.error(
+                                    "spine: recovered active thread %s failed: %s", tid, run_exc
+                                )
+
+                        asyncio.create_task(_run_recovered_thread(thread_id))
+        except Exception as recovery_exc:
+            logger.error(
+                "spine: error during startup recovery of active threads: %s",
+                recovery_exc,
+                exc_info=True,
+            )
+
+    # Spawn recovery task in the background
+    asyncio.create_task(_recover_active_threads())
 
     logger.info("spine: lifespan startup complete — SpineRunner ready")
     yield

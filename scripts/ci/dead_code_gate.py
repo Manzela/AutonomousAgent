@@ -992,11 +992,11 @@ def find_entrypoints(
             # symbols (operator is granting entry to the whole module).
             entrypoints.add(f"{normalized}:<module>")
             # Enumerate top-level public symbols from the module source
-            mod_path = module_to_path.get(normalized)
-            if mod_path:
+            target_mod_path: str | None = module_to_path.get(normalized)
+            if target_mod_path:
                 try:
-                    source = file_reader(mod_path)
-                    tree = ast.parse(source, filename=mod_path)
+                    source = file_reader(target_mod_path)
+                    tree = ast.parse(source, filename=target_mod_path)
                     syms = _collect_symbols_from_ast(tree, normalized)
                     for sym in syms:
                         # Only top-level symbols (not nested methods)

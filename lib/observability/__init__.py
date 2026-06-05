@@ -952,6 +952,21 @@ def _post_api_request(
                             _llm_call_cost_hist.record(
                                 _cost_usd, {"gen_ai.response.model": _cost_model}
                             )
+                # Record in active cost tracker if available (F-3)
+                try:
+                    from lib.cost_tracker import active_tracker
+
+                    tracker = active_tracker.get()
+                    if tracker is not None:
+                        if response_model:
+                            _tracker_model: Optional[str] = str(response_model)
+                        else:
+                            with _LOCK:
+                                _tracker_model = _LLM_MODEL_BY_SESSION.get(session_id)
+                        if _tracker_model:
+                            tracker.record(_tracker_model, in_tok, out_tok)
+                except Exception as tracker_exc:
+                    logger.debug("Failed to record cost in active_tracker: %s", tracker_exc)
 
             # J9 wiring — feed the per-request prompt-token count into the
             # F-CONTEXT detector. Uses ``in_tok`` (the current request's

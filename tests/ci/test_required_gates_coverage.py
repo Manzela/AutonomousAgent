@@ -87,7 +87,9 @@ def _load_workflow_job_names() -> dict[str, list[str]]:
         jobs = data.get("jobs", {})
         if not isinstance(jobs, dict):
             continue
-        names = [job.get("name", job_id) for job_id, job in jobs.items() if isinstance(job, dict)]
+        names = [
+            str(job.get("name", job_id)) for job_id, job in jobs.items() if isinstance(job, dict)
+        ]
         result[wf_path.name] = names
     return result
 

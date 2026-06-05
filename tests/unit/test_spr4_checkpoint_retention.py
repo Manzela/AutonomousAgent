@@ -41,6 +41,7 @@ import json
 import re
 
 import pytest
+from typing import Any
 from langgraph.checkpoint.memory import MemorySaver
 from unittest.mock import AsyncMock
 
@@ -79,7 +80,7 @@ def _has_credential(text: str) -> bool:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_checkpoint(ts: str, goal: str = "test-goal") -> dict:
+def _make_checkpoint(ts: str, goal: str = "test-goal") -> Any:
     return {
         "v": 1,
         "id": "1",
@@ -91,18 +92,19 @@ def _make_checkpoint(ts: str, goal: str = "test-goal") -> dict:
     }
 
 
-_METADATA = {"source": "input", "step": 0, "writes": {}, "parents": {}}
+_METADATA: Any = {"source": "input", "step": 0, "writes": {}, "parents": {}}
 
 
 async def _put(saver: MemorySaver, thread_id: str, ts: str, checkpoint_id: str = "1") -> None:
-    config = {
+    config: Any = {
         "configurable": {
             "thread_id": thread_id,
             "checkpoint_ns": "",
             "checkpoint_id": checkpoint_id,
         }
     }
-    await saver.aput(config, _make_checkpoint(ts), dict(_METADATA), {})
+    metadata: Any = dict(_METADATA)
+    await saver.aput(config, _make_checkpoint(ts), metadata, {})
 
 
 def _je_event(ts: str, summary: str) -> str:

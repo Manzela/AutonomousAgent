@@ -1,0 +1,34 @@
+# Custom Dockerfile for GitHub MCP Server sidecar wrapping App authentication.
+# Pinned to the official github-mcp-server digest to guarantee reproducibility.
+FROM python:3.11-slim AS builder
+
+WORKDIR /app
+
+# Install cryptographical dependencies and JWT utilities
+RUN pip install --no-cache-dir pyjwt cryptography
+
+# Upstream image to pull the compiled server from
+FROM ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4 AS upstream
+
+# Runtime container
+FROM python:3.11-slim
+
+WORKDIR /server
+
+# Copy virtualenv dependencies
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy upstream compiled server and system certificates
+COPY --from=upstream /server /server
+COPY --from=upstream /etc/ssl/certs /etc/ssl/certs
+
+# Copy the custom authentication Python library and the entrypoint script
+COPY lib/ /server/lib/
+COPY deploy/scripts/github_mcp_entrypoint.py /server/github_mcp_entrypoint.py
+
+ENV PYTHONPATH=/server
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
+ENTRYPOINT ["python", "/server/github_mcp_entrypoint.py"]
+CMD ["stdio"]

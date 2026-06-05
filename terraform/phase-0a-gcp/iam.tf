@@ -94,12 +94,12 @@ resource "google_service_account" "hermes_agent" {
 
 locals {
   hermes_agent_roles = [
-    "roles/aiplatform.user",         # Vertex AI (LLM inference)
-    "roles/cloudsql.client",         # Cloud SQL for pgvector memory store
+    "roles/aiplatform.user",              # Vertex AI (LLM inference)
+    "roles/cloudsql.client",              # Cloud SQL for pgvector memory store
     "roles/secretmanager.secretAccessor", # Runtime secrets (Honcho, Telegram, etc.)
-    "roles/logging.logWriter",       # Cloud Logging
-    "roles/monitoring.metricWriter", # Cloud Monitoring custom metrics
-    "roles/storage.objectCreator",   # GCS snapshot bucket writes
+    "roles/logging.logWriter",            # Cloud Logging
+    "roles/monitoring.metricWriter",      # Cloud Monitoring custom metrics
+    "roles/storage.objectCreator",        # GCS snapshot bucket writes
   ]
 }
 

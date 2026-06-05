@@ -21,7 +21,7 @@ resource "google_billing_budget" "monthly" {
   amount {
     specified_amount {
       currency_code = "USD"
-      units         = "2000"   # monthly cap
+      units         = "2000" # monthly cap
     }
   }
 

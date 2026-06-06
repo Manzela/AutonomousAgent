@@ -5,7 +5,6 @@ aligning with the Persistence Trap (#12.c) contract.
 from __future__ import annotations
 
 import json
-import os
 import pathlib
 from typing import Any
 import pytest
@@ -22,13 +21,14 @@ from tests.integration.test_persistence_trap import (
 _CANARY_TRAJECTORY = [
     {
         "role": "user",
-        "content": f"My SSN is {CANARY_TOKENS['US_SOCIAL_SECURITY_NUMBER']}",
+        "content": f"My SSN is {CANARY_TOKENS['US_SOCIAL_SECURITY_NUMBER']} and credit card is {CANARY_TOKENS['CREDIT_CARD_NUMBER']}",
     },
     {
         "role": "assistant",
-        "content": f"I will send emails to {CANARY_TOKENS['EMAIL_ADDRESS']}",
-    }
+        "content": f"I will send emails to {CANARY_TOKENS['EMAIL_ADDRESS']} or call {CANARY_TOKENS['PHONE_NUMBER']}",
+    },
 ]
+
 
 class _DispatchRecorder:
     def __init__(self) -> None:
@@ -36,8 +36,10 @@ class _DispatchRecorder:
 
     def __call__(self, f_code: str, **kwargs: Any):
         self.calls.append((f_code, kwargs))
+
         class _Sentinel:
             action = "halt"
+
         return _Sentinel()
 
 
@@ -62,6 +64,7 @@ def stub_sanitize() -> _StubSanitize:
 def broken_sanitize() -> _StubSanitize:
     def _raise(*, template: str, content: str) -> Any:
         raise RuntimeError("Model Armor sanitize unavailable")
+
     return _StubSanitize(_raise)
 
 
@@ -93,7 +96,7 @@ def test_ship_trajectory_floor_only_redacts(
     blob_content = fake_gcs.get("test-bucket", expected_object_name)
     data = json.loads(blob_content)
     assert data["session_id"] == session_id
-    
+
     # Check that GCS content is sanitized (tokens absent, markers present)
     for info_type, token in CANARY_TOKENS.items():
         assert token not in blob_content, f"leak: {token!r} ({info_type}) found in GCS blob"
@@ -127,7 +130,7 @@ def test_ship_trajectory_writes_local_backup_when_env_set(
     # Check local backup exists and is identical to GCS blob
     local_file = local_dir / f"{session_id}.json"
     assert local_file.exists()
-    
+
     local_content = local_file.read_text()
     assert local_content == fake_gcs.get("test-bucket", expected_object_name)
 
@@ -141,7 +144,7 @@ def test_ship_trajectory_sanitize_unavailable_fails_loud(
 ) -> None:
     """T3: If sanitize is unavailable, ship_trajectory MUST fail loud,
     dispatch F37 with the session_id, and upload/write NOTHING.
-    
+
     # DO NOT WEAKEN THIS TEST
     # Contract reference: audit/2026-05-21-persistence-trap-12c/test-contract.md
     """
@@ -184,6 +187,7 @@ def test_ship_trajectory_unrecognizable_response_fails_loud(
     """If sanitize response is unrecognizable, ship_trajectory must fail loud,
     dispatch F37 (if handled), and upload NOTHING.
     """
+
     class _UnrecognizableSanitize:
         def sanitize(self, *, template: str, content: str) -> Any:
             # Return something that doesn't have a sanitized_content attribute

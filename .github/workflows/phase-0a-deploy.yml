@@ -201,14 +201,14 @@ jobs:
             "${{ env.AR_REPO }}/shell-sandbox@${{ steps.build_sandbox.outputs.digest }}"
 
       - name: Attest hermes image
-        uses: actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c  # v1.4.3
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-name: ${{ env.AR_REPO }}/hermes
           subject-digest: ${{ steps.build_hermes.outputs.digest }}
           push-to-registry: true
 
       - name: Attest shell-sandbox image
-        uses: actions/attest-build-provenance@1c608d11d69870c2092266b3f9a6f3abbf17002c  # v1.4.3
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-name: ${{ env.AR_REPO }}/shell-sandbox
           subject-digest: ${{ steps.build_sandbox.outputs.digest }}

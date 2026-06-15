@@ -1,6 +1,6 @@
 # Custom Dockerfile for GitHub MCP Server sidecar wrapping App authentication.
 # Pinned to the official github-mcp-server digest to guarantee reproducibility.
-FROM python:3.11-slim AS builder
+FROM python:3.13-slim AS builder
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir pyjwt cryptography
 FROM ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4 AS upstream
 
 # Runtime container
-FROM python:3.11-slim
+FROM python:3.13-slim
 
 WORKDIR /server
 

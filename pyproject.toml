@@ -78,7 +78,7 @@ dev = [
 # Install on production: `uv sync --extra gcp`
 gcp = [
   "asyncpg>=0.29,<0.32",
-  "pgvector>=0.3,<0.5",
+  "pgvector>=0.3,<0.6",
   # Vertex AI embeddings (VertexEmbeddingsEmbedder in app/adapters/gcp/embedder.py).
   # Uses the gapic PredictionServiceClient from the high-level aiplatform package.
   "google-cloud-aiplatform>=1.50",

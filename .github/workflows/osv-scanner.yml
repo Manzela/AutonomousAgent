@@ -1,5 +1,8 @@
 name: OSV Scanner
 on:
+  pull_request:
+    branches: [main]
+    paths: ['pyproject.toml', 'uv.lock']
   workflow_dispatch: {}
 permissions:
   actions: read

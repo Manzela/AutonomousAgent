@@ -1,5 +1,8 @@
 name: No new skip/skipif/xfail/manual markers or bare pytest.skip() (C6)
 on:
+  pull_request:
+    branches: [main, "remediation/**"]
+    paths: ['tests/**', 'lib/**', 'app/**', 'scripts/**']
   workflow_dispatch: {}
 permissions:
   contents: read

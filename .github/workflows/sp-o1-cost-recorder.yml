@@ -11,6 +11,8 @@
 name: sp-o1-cost-recorder
 
 on:
+  pull_request:
+    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

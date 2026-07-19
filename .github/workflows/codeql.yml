@@ -13,6 +13,13 @@
 name: CodeQL
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - '!docs/research/**'
+      - '.github/workflows/codeql.yml'
+      - '.github/codeql/codeql-config.yml'
   workflow_dispatch:
 
 # Cancel superseded PR runs.

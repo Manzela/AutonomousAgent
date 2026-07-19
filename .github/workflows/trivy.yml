@@ -8,6 +8,9 @@
 name: Trivy
 
 on:
+  pull_request:
+    branches: [main]
+    paths: ['deploy/**', 'pyproject.toml', 'uv.lock']
   workflow_dispatch:
 
 permissions:

@@ -22,6 +22,16 @@
 name: model-pin-gate
 
 on:
+  pull_request:
+    branches: [main, "remediation/**"]
+    paths:
+      - config/hermes/model-tiers.yaml
+      - config/limits.yaml
+      - deploy/litellm/config.yaml
+      - scripts/ci/model_pin_check.py
+      - tests/ci/test_model_pin_check.py
+      - .github/workflows/model-pin-gate.yml
+      - audit/acceptance/SP-00i.yaml
   workflow_dispatch: {}
 
 permissions:

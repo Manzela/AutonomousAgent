@@ -1,6 +1,9 @@
 name: Lint Cost Tiers
 
 on:
+  pull_request:
+    paths:
+      - 'config/hermes/model-tiers.yaml'
   workflow_dispatch: {}
 
 # Minimal permissions — read-only on repo contents.

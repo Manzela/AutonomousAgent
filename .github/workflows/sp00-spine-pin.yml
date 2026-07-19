@@ -9,6 +9,15 @@
 name: SP-00 Spine Pin Acceptance
 
 on:
+  pull_request:
+    branches: [main, "remediation/**"]
+    paths:
+      - pyproject.toml
+      - uv.lock
+      - scripts/ci/run_acceptance.py
+      - scripts/ci/sp00_garak_removal_probe.sh
+      - audit/acceptance/SP-00.yaml
+      - .github/workflows/sp00-spine-pin.yml
   workflow_dispatch: {}
 
 permissions:

@@ -12,6 +12,8 @@
 name: test-integrity-gate
 
 on:
+  pull_request:
+    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

@@ -1,5 +1,8 @@
 name: Terraform Validate and Plan
 on:
+  pull_request:
+    branches: [main]
+    paths: ['terraform/**']
   workflow_dispatch: {}
 permissions:
   contents: read

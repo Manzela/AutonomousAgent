@@ -101,6 +101,27 @@ DEFAULT_REVIEWER_ALLOWLIST_PATH = "config/c9-reviewer-allowlist.txt"
 #   etc.
 
 MODEL_NORM: dict[str, list[str]] = {
+    # Anthropic Claude — 5 family (added when the org's default model line moved
+    # to Sonnet 5 / Haiku 4.5 / Fable 5, alongside the still-current Opus 4.8).
+    "claude-sonnet-5": [
+        "claude-sonnet-5",
+        "claude sonnet 5",
+        "sonnet 5",
+        "sonnet-5",
+    ],
+    "claude-haiku-4-5": [
+        "claude-haiku-4-5",
+        "claude haiku 4.5",
+        "claude haiku 4-5",
+        "haiku 4.5",
+        "haiku-4-5",
+    ],
+    "claude-fable-5": [
+        "claude-fable-5",
+        "claude fable 5",
+        "fable 5",
+        "fable-5",
+    ],
     # Anthropic Claude — Opus
     "claude-opus-4-8": [
         "claude-opus-4-8",

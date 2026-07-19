@@ -111,6 +111,18 @@ class TestNormaliseModel:
     def test_haiku_35(self):
         assert normalise_model("Claude Haiku 3.5") == "claude-haiku-3-5"
 
+    def test_sonnet_5_canonical(self):
+        assert normalise_model("claude-sonnet-5") == "claude-sonnet-5"
+
+    def test_sonnet_5_display_name(self):
+        assert normalise_model("Claude Sonnet 5") == "claude-sonnet-5"
+
+    def test_haiku_45_display_name(self):
+        assert normalise_model("Claude Haiku 4.5") == "claude-haiku-4-5"
+
+    def test_fable_5_display_name(self):
+        assert normalise_model("Claude Fable 5") == "claude-fable-5"
+
 
 # ---------------------------------------------------------------------------
 # extract_reviewer_model tests

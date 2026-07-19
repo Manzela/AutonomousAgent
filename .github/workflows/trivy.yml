@@ -11,9 +11,6 @@ on:
   pull_request:
     branches: [main]
     paths: ['deploy/**', 'pyproject.toml', 'uv.lock']
-  push:
-    tags: ['v*']
-    branches: [main]
   workflow_dispatch:
 
 permissions:

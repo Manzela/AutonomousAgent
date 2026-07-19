@@ -19,9 +19,6 @@
 name: SBOM + Cosign
 
 on:
-  push:
-    tags: ['v*']
-    branches: ['main']
   # Allow dry-runs from a release branch — skips the release-asset step.
   workflow_dispatch:
 

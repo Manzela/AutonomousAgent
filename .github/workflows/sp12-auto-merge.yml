@@ -24,12 +24,7 @@
 name: sp12-auto-merge
 
 on:
-  workflow_run:
-    workflows:
-      - "CI"
-      - "sp-06-eval-gate"
-      - "Blocking PRD-conformance eval gate"
-    types: [completed]
+  workflow_dispatch: {}
 
 permissions:
   contents: read

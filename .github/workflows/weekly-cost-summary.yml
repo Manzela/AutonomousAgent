@@ -31,8 +31,6 @@
 name: Weekly cost summary
 
 on:
-  schedule:
-    - cron: '0 9 * * 1'  # Monday 09:00 UTC
   workflow_dispatch:
     # Manual trigger for ad-hoc spot-checks and post-incident review.
 

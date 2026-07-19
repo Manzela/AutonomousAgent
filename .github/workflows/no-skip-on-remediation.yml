@@ -3,6 +3,7 @@ on:
   pull_request:
     branches: [main, "remediation/**"]
     paths: ['tests/**', 'lib/**', 'app/**', 'scripts/**']
+  workflow_dispatch: {}
 permissions:
   contents: read
   pull-requests: read

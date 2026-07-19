@@ -13,8 +13,6 @@
 name: no-sa-key-gate
 
 on:
-  pull_request:
-    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

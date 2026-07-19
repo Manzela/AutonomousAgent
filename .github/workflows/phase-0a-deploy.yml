@@ -27,18 +27,6 @@
 name: Phase 0a Deploy
 
 on:
-  push:
-    branches: [main]
-    paths:
-      # Docker image sources
-      - "deploy/Dockerfile.hermes"
-      - "deploy/sandboxes/Dockerfile.shell-sandbox"
-      # Compose stack
-      - "deploy/docker-compose.yml"
-      # Terraform (infra changes may need a re-deploy to pick up new SA bindings, etc.)
-      - "terraform/phase-0a-gcp/**"
-      # The workflow itself
-      - ".github/workflows/phase-0a-deploy.yml"
   # Allow manual trigger for rollback / forced redeploy
   workflow_dispatch:
     inputs:

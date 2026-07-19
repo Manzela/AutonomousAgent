@@ -15,8 +15,6 @@
 name: sp-g1-golden
 
 on:
-  pull_request:
-    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

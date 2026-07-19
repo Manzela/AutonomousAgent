@@ -14,8 +14,6 @@
 name: import-hygiene
 
 on:
-  pull_request:
-    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

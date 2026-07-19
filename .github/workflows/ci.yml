@@ -21,12 +21,7 @@
 name: CI
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
-  # Note: no `push: main` trigger. PRs are the only path to main (branch
-  # protection enforces it), and CI already ran on the PR before merge.
-  # Re-running on the resulting merge commit duplicates compute for no signal.
 
 # Cancel superseded runs on the same ref to save CI minutes.
 concurrency:

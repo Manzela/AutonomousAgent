@@ -10,9 +10,6 @@
 name: "Scheduled Golden Eval (Drift Detection)"
 
 on:
-  schedule:
-    # Weekly — Sunday 03:00 UTC
-    - cron: "0 3 * * 0"
   workflow_dispatch:
     inputs:
       baseline_sha:

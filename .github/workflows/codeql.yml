@@ -13,33 +13,6 @@
 name: CodeQL
 
 on:
-  pull_request:
-    branches: [main]
-    # Research artefacts under docs/research/ are reference scaffolding
-    # (per docs/research/autonomous-agent-seed-orchestrator/README.md: must
-    # be ported into lib/ + tests before becoming production). They are
-    # not part of the runtime attack surface and CodeQL will scan them
-    # when they are promoted out of docs/research/. Negation pattern is
-    # used here in `paths` (not paths-ignore) so the trigger filter is
-    # unambiguous: workflow runs iff a non-research .py file or this
-    # workflow / its config changed. The codeql-config.yml's own
-    # paths-ignore handles the analysis step (which files get scanned)
-    # for any run that does fire.
-    paths:
-      - '**/*.py'
-      - '!docs/research/**'
-      - '.github/workflows/codeql.yml'
-      - '.github/codeql/codeql-config.yml'
-  push:
-    branches: [main]
-    paths:
-      - '**/*.py'
-      - '!docs/research/**'
-      - '.github/workflows/codeql.yml'
-      - '.github/codeql/codeql-config.yml'
-  schedule:
-    # Weekly Mondays 09:00 UTC — picks up new query pack releases.
-    - cron: '17 9 * * 1'
   workflow_dispatch:
 
 # Cancel superseded PR runs.

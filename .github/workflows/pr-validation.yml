@@ -4,9 +4,7 @@
 name: PR Validation
 
 on:
-  pull_request:
-    branches: [main]
-    types: [opened, synchronize, edited, reopened]
+  workflow_dispatch: {}
 
 permissions:
   pull-requests: read

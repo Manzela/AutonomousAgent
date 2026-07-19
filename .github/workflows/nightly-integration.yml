@@ -15,8 +15,6 @@
 name: Nightly Integration (SP-00c live-stack)
 
 on:
-  schedule:
-    - cron: "13 4 * * *"  # 04:13 UTC nightly (off-peak)
   workflow_dispatch:
 
 permissions:

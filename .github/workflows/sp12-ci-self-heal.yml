@@ -16,9 +16,7 @@
 name: sp12-ci-self-heal
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
+  workflow_dispatch: {}
 
 permissions:
   contents: read

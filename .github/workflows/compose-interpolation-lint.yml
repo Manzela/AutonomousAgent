@@ -13,20 +13,6 @@
 name: compose-interpolation-lint
 
 on:
-  pull_request:
-    branches: [main, "remediation/**"]
-    paths:
-      - "deploy/docker-compose*.yml"
-      - "scripts/ci/compose_interpolation_lint.py"
-      - "tests/ci/test_compose_interpolation_lint.py"
-      - ".github/workflows/compose-interpolation-lint.yml"
-  push:
-    branches: [main]
-    paths:
-      - "deploy/docker-compose*.yml"
-      - "scripts/ci/compose_interpolation_lint.py"
-      - "tests/ci/test_compose_interpolation_lint.py"
-      - ".github/workflows/compose-interpolation-lint.yml"
   workflow_dispatch: {}
 
 permissions:

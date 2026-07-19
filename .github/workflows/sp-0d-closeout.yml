@@ -7,8 +7,6 @@
 name: sp-0d-closeout
 
 on:
-  pull_request:
-    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

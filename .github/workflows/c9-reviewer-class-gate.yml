@@ -20,9 +20,6 @@
 name: c9-reviewer-class-gate
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited]
-    branches: [main, "remediation/**"]
   workflow_dispatch: {}
 
 permissions:

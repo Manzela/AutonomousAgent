@@ -8,7 +8,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir pyjwt cryptography
 
 # Upstream image to pull the compiled server from
-FROM ghcr.io/github/github-mcp-server@sha256:e3816a476a977cfb836e7d221510011436c654d11861db66ecfd826601aba6a4 AS upstream
+FROM ghcr.io/github/github-mcp-server@sha256:2b0c48b070f61e9d3969269ead600f62d00fb237b60ac849ef3d166ee7de9ad3 AS upstream
 
 # Runtime container
 FROM python:3.11-slim
